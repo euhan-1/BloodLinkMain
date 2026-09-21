@@ -1223,7 +1223,14 @@ def create_inventory_unit(body: CreateInventoryUnitBody, facility_id: int = Depe
 @app.get("/inventory")
 def get_inventory(facility_id: int = Depends(get_acting_facility_id)):
     """The logged-in user's own facility's stock only — blood_units holds every
-    facility's inventory (for the availability search), so this must filter."""
+    facility's inventory (for the availability search), so this must filter.
+
+    Still includes expired units (unlike /inventory/summary and every
+    availability/forecast query) — staff needs to see them here to know
+    what's in the expired backlog before archiving it via
+    POST /inventory/archive-expired. Only excludes units already archived,
+    so the working list declutters once that backlog is cleared without
+    losing the rows (archived_at IS NULL, never a DELETE)."""
     with engine.begin() as conn:
         rows = conn.execute(
             text(
@@ -1231,7 +1238,7 @@ def get_inventory(facility_id: int = Depends(get_acting_facility_id)):
                 SELECT id, din, blood_type, component, location, volume_ml,
                        collected_date, expires_date, last_notified_expiry_status
                 FROM blood_units
-                WHERE facility_id = :facility_id
+                WHERE facility_id = :facility_id AND archived_at IS NULL
                 ORDER BY expires_date ASC
                 """
             ),
@@ -1276,15 +1283,49 @@ def delete_inventory_unit(din: str, facility_id: int = Depends(get_acting_facili
     return {"deleted": True, "din": din}
 
 
+@app.post("/inventory/archive-expired")
+def archive_expired_inventory(facility_id: int = Depends(get_acting_facility_id)):
+    """Clears the expired-units backlog for the logged-in facility: bulk-sets
+    archived_at on every one of its own units that's already past
+    expires_date and not already archived. Soft-delete only, matching the
+    same archive-only philosophy as facilities.is_active — never a DELETE,
+    so historical blood_units rows are preserved.
+
+    Has no effect on any usable/available count: an archived unit is by
+    definition already expired, so it was already excluded from those (see
+    /inventory/summary, GET /forecast, /facilities/nearby) by expires_date
+    alone. This only changes what GET /inventory shows by default.
+    """
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                UPDATE blood_units SET archived_at = now()
+                WHERE facility_id = :facility_id AND expires_date < CURRENT_DATE AND archived_at IS NULL
+                """
+            ),
+            {"facility_id": facility_id},
+        )
+    return {"archived_count": result.rowcount}
+
+
 @app.get("/inventory/summary")
 def get_inventory_summary(facility_id: int = Depends(get_acting_facility_id)):
-    """Per-type unit counts (the logged-in user's own facility) against
-    configured minimum thresholds.
+    """Per-type USABLE unit counts (the logged-in user's own facility)
+    against configured minimum thresholds.
 
-    A "unit" is one blood_units row (one bag/donation), not a volume measurement.
-    Types with zero current stock still appear, with units=0, so shortages are visible.
-    Thresholds are still global across facilities, not per-facility policy — a
-    known simplification from Step 5, unchanged here.
+    A "unit" is one blood_units row (one bag/donation), not a volume
+    measurement. Types with zero current stock still appear, with units=0,
+    so shortages are visible. Thresholds are still global across facilities,
+    not per-facility policy — a known simplification from Step 5, unchanged
+    here.
+
+    expires_date >= CURRENT_DATE only: an expired unit was never usable, so
+    it can't count toward "how much stock does this facility have" any more
+    than it can count as available to fulfill another facility's request
+    (see GET /facilities/nearby, which has always filtered this way) — a
+    unit that's excluded from availability elsewhere but still inflating
+    this count would just be a second, inconsistent definition of "stock."
     """
     with engine.connect() as conn:
         rows = conn.execute(
@@ -1295,7 +1336,7 @@ def get_inventory_summary(facility_id: int = Depends(get_acting_facility_id)):
                 LEFT JOIN (
                     SELECT blood_type, count(*) AS unit_count
                     FROM blood_units
-                    WHERE facility_id = :facility_id
+                    WHERE facility_id = :facility_id AND expires_date >= CURRENT_DATE
                     GROUP BY blood_type
                 ) c ON c.blood_type = t.blood_type
                 ORDER BY t.blood_type
@@ -1522,9 +1563,9 @@ def _build_hospital_threshold_view(conn, facility_id: int, is_dengue_season: boo
     core design split, a hospital's job is to notice and act on a shortage,
     not to project its own draw-down trend (that's the blood bank side's
     concern, handled by the code below this function). Reads live
-    current-stock-vs-minimum using the exact same "count every blood_units
-    row for this facility, no expiry filter" definition /inventory/summary
-    already uses, so the numbers agree with the rest of the dashboard.
+    current-stock-vs-minimum using the exact same "count every non-expired
+    blood_units row for this facility" definition /inventory/summary already
+    uses, so the numbers agree with the rest of the dashboard.
 
     The action prompt is informational only — "requires_confirmation: true"
     on every entry is the point. This endpoint never creates a request; that
@@ -1539,7 +1580,7 @@ def _build_hospital_threshold_view(conn, facility_id: int, is_dengue_season: boo
             LEFT JOIN (
                 SELECT blood_type, count(*) AS unit_count
                 FROM blood_units
-                WHERE facility_id = :facility_id
+                WHERE facility_id = :facility_id AND expires_date >= CURRENT_DATE
                 GROUP BY blood_type
             ) c ON c.blood_type = t.blood_type
             ORDER BY t.blood_type
@@ -1742,8 +1783,10 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
     endpoint, and a blood-bank-type facility can never receive the threshold
     view, regardless of what the frontend asks for.
 
-    Blood banks: every call records today's real total-per-type stock as a
-    snapshot (idempotent per day, per facility). Three tiers, gated purely on
+    Blood banks: every call records today's real total-per-type USABLE stock
+    (expires_date >= CURRENT_DATE only — an expired unit is never counted,
+    here or anywhere else stock is treated as available) as a snapshot
+    (idempotent per day, per facility). Three tiers, gated purely on
     how many distinct days of this facility's own real history exist so far:
       - < MIN_DAYS_REQUIRED (3) days: a clearly-labeled SYNTHETIC stand-in —
         the pre-fit SARIMAX(0,1,4)x(1,0,1,7)+dengue model validated in
@@ -1785,7 +1828,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
                 INSERT INTO inventory_snapshots (snapshot_date, blood_type, units, facility_id)
                 SELECT :today, blood_type, count(*), :facility_id
                 FROM blood_units
-                WHERE facility_id = :facility_id
+                WHERE facility_id = :facility_id AND expires_date >= CURRENT_DATE
                 GROUP BY blood_type
                 ON CONFLICT (snapshot_date, blood_type, facility_id)
                 DO UPDATE SET units = EXCLUDED.units
