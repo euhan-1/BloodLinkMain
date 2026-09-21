@@ -1,0 +1,31 @@
+
+  <!DOCTYPE html>
+  <html lang="en">
+    <head>
+      
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <title>BloodLink Web Application Design</title>
+      <meta name="description" content="Streamline blood supply management for hospitals and blood banks with real-time inventory tracking, emergency sourcing, and donor coordination features." />
+      <meta name="robots" content="noindex, nofollow" />
+      <style>html, body { height: 100%; margin: 0; } #root { height: 100%; }</style>
+      <script>
+        (function () {
+          try {
+            var stored = localStorage.getItem("bloodlink-theme");
+            var dark = stored === "dark" || (stored !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+            if (dark) document.documentElement.classList.add("dark");
+          } catch (e) {}
+        })();
+      </script>
+
+    </head>
+
+    <body>
+      
+      <div id="root"></div>
+      <script type="module" src="/src/main.tsx"></script>
+      
+    </body>
+  </html>
+  

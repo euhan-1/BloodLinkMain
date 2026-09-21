@@ -1,0 +1,604 @@
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --font-size: 16px;
+  --background: #FAF9F7;
+  --foreground: #1C1917;
+  --card: #ffffff;
+  --card-foreground: #1C1917;
+  /* Role accent — brand identity, kept strictly separate from the
+     safe/watch/critical status system below (status colors never read this
+     token, on either account type). Blood Bank keeps the site's original
+     oxblood; Hospital gets a deep, muted navy instead — see
+     [data-role="hospital"] below, set on <html> by App.tsx once the
+     logged-in account's facility_type is known. Defaults here (Blood Bank's
+     oxblood) also cover the logged-out login screen and admin, since
+     neither role applies to them. --role-accent-rgb is the same color as an
+     "r, g, b" triplet, only so --shadow-button* can tint itself with
+     rgba() — CSS custom properties can't be decomposed at use-time. */
+  --role-accent: #8C1B3A;
+  --role-accent-hover: #A8264C;
+  --role-accent-tint: #FBEAEE;
+  --role-accent-rgb: 140, 27, 58;
+  /* A card/panel sitting on --role-accent-tint (e.g. the Dashboard "unlock
+     your real forecast" panel) needs its own border — --role-accent itself
+     is too dark against white text, and --role-accent-tint against itself
+     is a 1:1 contrast bug. Blended 66% of the way from the tint toward
+     --role-accent, same ratio used for the --status-*-border and
+     --info-border darkening below, so every tinted-panel border in the app
+     clears ~3.2:1 by the same rule rather than a one-off value. */
+  --role-accent-border: #B26177;
+
+  --primary: var(--role-accent);
+  --primary-hover: var(--role-accent-hover);
+  --primary-tint: var(--role-accent-tint);
+  --primary-foreground: #ffffff;
+  --secondary: #F0EEEB;
+  --secondary-foreground: #443E39;
+  --muted: #F0EEEB;
+  --muted-foreground: #1C1917;
+  --accent: var(--role-accent-tint);
+  --accent-foreground: var(--role-accent);
+  /* Dark gray rather than a pale hairline — cards, table rows, tabs, and
+     inputs need to read as structure at a glance, not just on close
+     inspection. Reuses the warm gray-600 already defined below rather than
+     introducing a new color, so it stays inside the one deliberate neutral
+     scale instead of a mismatched cool gray. */
+  --border: #58514B;
+  --input-background: #FAF8F6;
+
+  /* Warm-neutral (stone) scale — replaces Tailwind's default cool gray for
+     every bg-gray, text-gray, and border-gray utility in the app (see the
+     --color-gray overrides below). A cool gray next to an oxblood primary
+     and a warm-gold watch state read as mismatched palettes fighting each
+     other; this makes every neutral in the app read as one deliberate,
+     warm-leaning system instead of "brand colors + default Tailwind gray." */
+  --gray-50: #FAFAF9;
+  --gray-100: #F5F4F2;
+  --gray-200: #E7E4E1;
+  --gray-300: #D6D2CD;
+  --gray-400: #A9A29A;
+  --gray-500: #79726B;
+  --gray-600: #58514B;
+  --gray-700: #443E39;
+  --gray-800: #2B2724;
+  --gray-900: #1C1917;
+  --font-weight-medium: 700;
+  --font-weight-normal: 600;
+  --ring: var(--role-accent);
+  --radius: 0.5rem;
+
+  /* 3-state status language — one definition per state, reused everywhere
+     status appears (expiry, threshold, availability, forecast alerts,
+     facility/account status) — and, critically, identical on every account
+     type. --role-accent varies by role; --status-* never does, and never
+     reads --role-accent, so a Hospital and a Blood Bank account looking at
+     the same shortage always see the same red. Safe is teal rather than
+     green, and watch is a gold rather than an orange-leaning amber,
+     specifically so the safe/watch/critical triad no longer relies on a
+     red-green distinction — red-green colorblindness (~8% of men) is the
+     single most common form, and status is the most important signal in
+     this app. Hue AND lightness are kept clearly separated across all three
+     (critical's hue ~12°, watch's ~43°, safe's ~175°). Critical was nudged
+     from its original ~5° to ~12° — further from Blood Bank's oxblood
+     accent (~344°, only ~21° away at 5°, ~27° away at 12°) so a solid
+     oxblood button sitting next to a critical badge reads as two distinct
+     colors, not one red blob, on the one account type that still shares
+     red's general family with a status color. */
+  --status-safe: #0F766E;
+  --status-safe-text: #115E59;
+  /* Richer/more saturated than the original near-white tints (#E6F5F3-style)
+     — same hue, same 66%-toward-text border-blend methodology, just a
+     visibly present color instead of an almost-invisible wash. Borders
+     re-measured against these new tints clear ~3.3-3.8:1, same as before. */
+  --status-safe-tint: #D6F3EC;
+  --status-safe-border: #2F7A73;
+  --status-watch: #B8860B;
+  --status-watch-text: #7C5C08;
+  --status-watch-tint: #F5E4B8;
+  --status-watch-border: #8C6B1F;
+  --status-critical: #BD4024;
+  --status-critical-text: #96331D;
+  --status-critical-tint: #FADBCF;
+  --status-critical-border: #A8503A;
+
+  /* Dashboard-only gradient overlay for the three status panels (StatusTypeTile,
+     the hero Supply Status banner, the forecast alert list) — a diagonal
+     lighten-to-tint sweep instead of a flat fill, applied via background-image
+     so it layers over the flat --status-*-tint background-color underneath
+     rather than replacing component code per-usage (see the compound
+     selectors in @layer base below). */
+  --status-safe-panel-gradient: linear-gradient(135deg, #EFFBF7 0%, #C9EEE3 100%);
+  --status-watch-panel-gradient: linear-gradient(135deg, #FCF6E2 0%, #F0DBA0 100%);
+  --status-critical-panel-gradient: linear-gradient(135deg, #FEF1EB 0%, #F7CBB6 100%);
+
+  /* Secondary accent — "informational, not a status" (blood-type
+     compatibility suggestions, reason-for-request tags, simulation
+     notices). Kept fully separate from --secondary (a neutral background
+     token) and from the safe/watch/critical triad, since blue never means
+     "OK/caution/urgent" here — it means "here's a related option." */
+  --info: #1D4ED8;
+  --info-text: #1E40AF;
+  --info-tint: #E9F1FB;
+  /* Same 66%-toward-text blend as the status borders above — was ~1.31:1
+     against --info-tint, now ~4:1. */
+  --info-border: #5673C6;
+
+  /* "This is a stand-in, not real data" — the synthetic-forecast-model
+     badge/banner and forecast-line color (Dashboard). Violet specifically
+     because it reads as neither a status (safe/watch/critical) nor --info's
+     "here's a related option" blue — it's a distinct "synthetic" signal. */
+  --synthetic: #7C3AED;
+  --synthetic-text: #6D28D9;
+  --synthetic-tint: #F5F3FF;
+  --synthetic-border: #C4B0F5;
+
+  /* Elevation — a genuinely layered "soft 3D" stack: a tight contact shadow
+     right at the card edge, a mid-distance layer, and a wide soft ambient
+     glow underneath — the combination that reads as a card actually
+     floating off the page, not a flat drawn-on line. Button shadows are
+     tinted with --role-accent (via --role-accent-rgb) instead of flat
+     black, so they reinforce whichever brand color is active — oxblood or
+     navy — rather than looking like a generic UI-kit default, or a navy
+     button glowing pink. Card shadows stay neutral since they sit behind
+     many colors regardless of role. */
+  --shadow-card:
+    0 1px 2px rgba(28, 25, 23, 0.05),
+    0 3px 6px rgba(28, 25, 23, 0.06),
+    0 10px 20px rgba(28, 25, 23, 0.07),
+    0 22px 44px rgba(28, 25, 23, 0.06);
+  --shadow-button: 0 1px 2px rgba(28, 25, 23, 0.06), 0 2px 6px -1px rgba(var(--role-accent-rgb), 0.25);
+  --shadow-button-hover: 0 2px 4px rgba(28, 25, 23, 0.07), 0 4px 12px -2px rgba(var(--role-accent-rgb), 0.32);
+  --shadow-button-active: 0 1px 1px rgba(28, 25, 23, 0.06), 0 1px 3px rgba(var(--role-accent-rgb), 0.22);
+
+  --font-body: 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-display: 'Archivo', 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Courier New', monospace;
+}
+
+/* Hospital role override — everything else (Blood Bank, Admin, logged-out)
+   uses the oxblood defaults declared in :root above. Same specificity as
+   :root (both target <html>), so source order after :root is what makes
+   this win when the attribute is present — see the data-role effect in
+   App.tsx's App() component. */
+[data-role="hospital"] {
+  --role-accent: #1E3A5F;
+  --role-accent-hover: #2C4F7C;
+  --role-accent-tint: #E7ECF1;
+  --role-accent-rgb: 30, 58, 95;
+  --role-accent-border: #6E8199;
+}
+
+/* Dark theme — toggled via the .dark class on <html> (see lib/theme.ts and
+   AccountMenu's Light/Dark control), not just a system-preference mirror.
+   Every token BloodLink actually defines above gets a real, hand-picked dark
+   counterpart here (not a generic invert) — warm near-black grounds rather
+   than pure black, brightened/desaturated-down status and accent hues so
+   they stay legible and keep their hue identity against a dark surface
+   instead of just going muddy. Typography, radius, and font weights are
+   deliberately NOT redefined here — this app's bold-everywhere type doesn't
+   change with theme, only color does. */
+.dark {
+  --background: #17130F;
+  --foreground: #F3ECE3;
+  --card: #211B16;
+  --card-foreground: #F3ECE3;
+
+  --role-accent: #C94A68;
+  --role-accent-hover: #D6607C;
+  --role-accent-tint: #33191F;
+  --role-accent-rgb: 201, 74, 104;
+  --role-accent-border: #7A3D4A;
+
+  --secondary: #241E19;
+  --secondary-foreground: #E8E0D6;
+  --muted: #241E19;
+  --muted-foreground: #F3ECE3;
+  --border: #473C33;
+  --input-background: #1C1712;
+
+  --gray-50: #1C1712;
+  --gray-100: #241E19;
+  --gray-200: #332B24;
+  --gray-300: #443A31;
+  --gray-400: #6B6156;
+  --gray-500: #8D8071;
+  --gray-600: #A69C8E;
+  --gray-700: #C2B8AB;
+  --gray-800: #DDD4C8;
+  --gray-900: #F3ECE3;
+
+  --status-safe: #4FBFAE;
+  --status-safe-text: #7DD3C4;
+  --status-safe-tint: #16302B;
+  --status-safe-border: #2A5048;
+  --status-watch: #E0B34D;
+  --status-watch-text: #F0CC80;
+  --status-watch-tint: #332913;
+  --status-watch-border: #5C4A1F;
+  --status-critical: #E5744F;
+  --status-critical-text: #F0997E;
+  --status-critical-tint: #3A2015;
+  --status-critical-border: #5C3424;
+
+  --status-safe-panel-gradient: linear-gradient(135deg, #1B332D 0%, #142924 100%);
+  --status-watch-panel-gradient: linear-gradient(135deg, #332912 0%, #2A210E 100%);
+  --status-critical-panel-gradient: linear-gradient(135deg, #331D14 0%, #2A1710 100%);
+
+  --info: #6E9AEE;
+  --info-text: #A9C4F5;
+  --info-tint: #182338;
+  --info-border: #3C5480;
+
+  --synthetic: #A78BFA;
+  --synthetic-text: #C4B5FD;
+  --synthetic-tint: #241C3A;
+  --synthetic-border: #4C3D73;
+
+  --shadow-card:
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 3px 6px rgba(0, 0, 0, 0.35),
+    0 10px 20px rgba(0, 0, 0, 0.3),
+    0 22px 44px rgba(0, 0, 0, 0.25);
+  --shadow-button: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px -1px rgba(var(--role-accent-rgb), 0.35);
+  --shadow-button-hover: 0 2px 4px rgba(0, 0, 0, 0.35), 0 4px 12px -2px rgba(var(--role-accent-rgb), 0.4);
+  --shadow-button-active: 0 1px 1px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(var(--role-accent-rgb), 0.3);
+}
+
+/* Hospital role, dark theme — same idea as [data-role="hospital"] above
+   (a navy identity instead of oxblood), brightened for a dark ground the
+   same way the default dark role-accent above is. Compound selector so it
+   wins over both .dark's default role-accent and the light-mode hospital
+   override regardless of source order. */
+.dark[data-role="hospital"] {
+  --role-accent: #3E6091;
+  --role-accent-hover: #4E76AD;
+  --role-accent-tint: #18222E;
+  --role-accent-rgb: 62, 96, 145;
+  --role-accent-border: #3C526B;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-tint: var(--primary-tint);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-role-accent-border: var(--role-accent-border);
+  --color-status-safe: var(--status-safe);
+  --color-status-safe-text: var(--status-safe-text);
+  --color-status-safe-tint: var(--status-safe-tint);
+  --color-status-safe-border: var(--status-safe-border);
+  --color-status-watch: var(--status-watch);
+  --color-status-watch-text: var(--status-watch-text);
+  --color-status-watch-tint: var(--status-watch-tint);
+  --color-status-watch-border: var(--status-watch-border);
+  --color-status-critical: var(--status-critical);
+  --color-status-critical-text: var(--status-critical-text);
+  --color-status-critical-tint: var(--status-critical-tint);
+  --color-status-critical-border: var(--status-critical-border);
+  --color-info: var(--info);
+  --color-info-text: var(--info-text);
+  --color-info-tint: var(--info-tint);
+  --color-info-border: var(--info-border);
+  --color-synthetic: var(--synthetic);
+  --color-synthetic-text: var(--synthetic-text);
+  --color-synthetic-tint: var(--synthetic-tint);
+  --color-synthetic-border: var(--synthetic-border);
+  --color-gray-50: var(--gray-50);
+  --color-gray-100: var(--gray-100);
+  --color-gray-200: var(--gray-200);
+  --color-gray-300: var(--gray-300);
+  --color-gray-400: var(--gray-400);
+  --color-gray-500: var(--gray-500);
+  --color-gray-600: var(--gray-600);
+  --color-gray-700: var(--gray-700);
+  --color-gray-800: var(--gray-800);
+  --color-gray-900: var(--gray-900);
+  --font-display: var(--font-display);
+  --font-mono: var(--font-mono);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input-background: var(--input-background);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  /* Set independently of --radius (not "+4px") so the card-level rounding
+     bump lives in one place and doesn't ripple through the smaller sm/md/lg
+     steps used by inputs, tags, and small buttons. Every rounded-xl card
+     app-wide (Dashboard, Inventory, Requests, Admin, Login) gets this
+     automatically — no per-component class changes needed. */
+  --radius-xl: 1.25rem;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  /* Themed text selection — role- and theme-aware via the same tokens
+     everything else reads, so it's always the active brand tint (Oxblood or
+     Navy) rather than the browser's default blue, which clashed with both
+     the warm palette and, on a Hospital account, the navy identity. */
+  ::selection {
+    background-color: var(--role-accent-tint);
+    color: var(--role-accent);
+  }
+
+  /* Themed scrollbar — this is a scroll-dense app (long inventory/request
+     tables), so the browser's stock scrollbar was one of the most-seen
+     unstyled surfaces in the product. Thin and warm-neutral rather than a
+     heavy chrome-colored default; Firefox via scrollbar-color, WebKit/
+     Chromium/Edge via the pseudo-elements. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--gray-400) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--gray-400);
+    border-radius: 999px;
+    border: 2px solid var(--background);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--gray-500);
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    /* Baseline body weight, bumped a third time now: regular->medium->
+       semibold->bold (400->500->600->700) for the same legibility reason —
+       Plus Jakarta Sans only ships 400/500/600/700 as static weights (see
+       fonts.css), so 700 is the last real step available, not an arbitrary
+       value. Text that already asks for font-bold explicitly (most headers,
+       all buttons, most emphasized labels) now matches this floor exactly
+       rather than exceeding it — the "important vs. plain" distinction that
+       used to be carried by font-semibold/font-bold utility classes is
+       accordingly flatter than before, which is the intended effect of
+       raising the floor this far. */
+    font-weight: 700;
+  }
+
+  /**
+  * Default typography styles for HTML elements (h1-h4, p, label, button, input).
+  * These are in @layer base, so Tailwind utility classes (like text-sm, text-lg) automatically override them.
+  */
+
+  html {
+    font-size: var(--font-size);
+    /* Reserve the scrollbar's width permanently, whether or not the current
+       page actually needs to scroll — otherwise every navigation that
+       toggles between a tall and a short page shifts all the content
+       sideways by the scrollbar's width. */
+    scrollbar-gutter: stable;
+  }
+
+  h1 {
+    font-size: var(--text-2xl);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h2 {
+    font-size: var(--text-xl);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h3 {
+    font-size: var(--text-lg);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  h4 {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  label {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  button {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.5;
+  }
+
+  input {
+    font-size: var(--text-base);
+    font-weight: var(--font-weight-normal);
+    line-height: 1.5;
+  }
+
+  /* Solid primary buttons — and selected-state pickers that reuse the same
+     bg-primary text-white pair — get a soft oxblood-tinted lift instead of
+     sitting flush with the page. Scoped to real <button> elements only, so
+     the notification-count badge and the sidebar panel (which share the
+     same two classes but aren't buttons) are unaffected. Restrained on
+     purpose: tight blur, low opacity, no spread. */
+  button.bg-primary.text-white {
+    box-shadow: var(--shadow-button);
+    transition: box-shadow 150ms ease-out;
+  }
+  button.bg-primary.text-white:hover:not(:disabled) {
+    box-shadow: var(--shadow-button-hover);
+  }
+  button.bg-primary.text-white:active:not(:disabled) {
+    box-shadow: var(--shadow-button-active);
+  }
+  button.bg-primary.text-white:disabled {
+    box-shadow: none;
+  }
+
+  /* Top-level content cards get the same soft lift, neutral rather than
+     oxblood-tinted since they sit behind every status and brand color in
+     the app. Modals/dropdowns already carry their own shadow-lg/xl utility
+     and take precedence over this (Tailwind's utility layer loads after
+     this one). Selector targets bg-card (not bg-white) since every card
+     surface in the app was moved onto that token for dark-mode support. */
+  .bg-card.border.border-border.rounded-xl {
+    box-shadow: var(--shadow-card);
+  }
+
+  /* Dashboard's status-panel usages (StatusTypeTile, the hero Supply Status
+     banner, the forecast alert list, expiry rows) — a diagonal gradient laid
+     over the flat --status-*-tint background-color each already has. Gated
+     on the "status-panel" marker class (see statusTokens.ts's
+     STATUS_STYLES[status].panel), not just the tint+border combo alone —
+     that same combo is also how ordinary error/warning banners app-wide are
+     styled now (Login, Inventory, Requests, etc.), and those should stay a
+     flat tint, not take on this panel's gradient treatment. */
+  .status-panel.bg-status-safe-tint.border.border-status-safe-border {
+    background-image: var(--status-safe-panel-gradient);
+  }
+  .status-panel.bg-status-watch-tint.border.border-status-watch-border {
+    background-image: var(--status-watch-panel-gradient);
+  }
+  .status-panel.bg-status-critical-tint.border.border-status-critical-border {
+    background-image: var(--status-critical-panel-gradient);
+  }
+}
+
+/* Restrained, one-shot motion — each animation plays exactly once per real
+   event (a value changing, an action succeeding, a notification arriving)
+   and settles; nothing here loops or repeats, since a healthcare tool's
+   motion should read as feedback, not decoration. Kept short (150-300ms)
+   except the bell pulse, which is an ambient attention cue rather than a
+   direct response to a click, so it gets a touch more room to register. */
+
+@keyframes value-flash-ring {
+  from { box-shadow: 0 0 0 3px var(--flash-ring-color, rgba(28, 25, 23, 0.35)); }
+  to { box-shadow: 0 0 0 3px transparent; }
+}
+.animate-value-flash-ring {
+  animation: value-flash-ring 280ms ease-out;
+}
+
+@keyframes value-flash-bg {
+  from { background-color: var(--role-accent-tint); }
+  to { background-color: transparent; }
+}
+.animate-value-flash-bg {
+  animation: value-flash-bg 280ms ease-out;
+}
+
+@keyframes success-pop {
+  from { opacity: 0; transform: scale(0.94); }
+  to { opacity: 1; transform: scale(1); }
+}
+.animate-success-pop {
+  animation: success-pop 180ms ease-out;
+}
+
+@keyframes bell-pulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+  100% { transform: scale(1); }
+}
+.animate-bell-pulse {
+  animation: bell-pulse 450ms ease-in-out;
+}
+
+/* One-shot entrance for whichever screen the app first renders — login,
+   the dashboard, admin console, etc. — so the page settles in instead of
+   popping straight onto a blank tab. */
+@keyframes page-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-page-enter {
+  animation: page-enter 420ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* Logged-in app shell entrance (Dashboard/Inventory/Requests/Donors) — the
+   header drops into place first, then the content area beneath it rises up;
+   noticeably more motion than the flat page-enter fade above, which read as
+   barely-there for a screen this data-dense. */
+@keyframes header-drop-in {
+  from { opacity: 0; transform: translateY(-16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-header-drop-in {
+  animation: header-drop-in 1200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes content-rise-in {
+  from { opacity: 0; transform: translateY(22px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-content-rise-in {
+  animation: content-rise-in 1300ms cubic-bezier(0.16, 1, 0.3, 1) 400ms both;
+}
+/* Individual card entrance within a screen (e.g. Dashboard's hero banner,
+   then the blood-type breakdown, each a beat apart) — pair with an inline
+   animation-delay per card. */
+@keyframes card-rise-in {
+  from { opacity: 0; transform: translateY(18px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-card-rise-in {
+  animation: card-rise-in 1250ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+/* Login screen: the two panels slide in from opposite sides (brand panel
+   from the left, form from the right, form trailing slightly), then the
+   feature bullets stagger in underneath once the brand panel has mostly
+   settled — a small nested entrance rather than everything arriving at once. */
+@keyframes panel-slide-left {
+  from { opacity: 0; transform: translateX(-28px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes panel-slide-right {
+  from { opacity: 0; transform: translateX(28px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.animate-panel-slide-left {
+  animation: panel-slide-left 560ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.animate-panel-slide-right {
+  animation: panel-slide-right 560ms cubic-bezier(0.16, 1, 0.3, 1) 90ms both;
+}
+@keyframes bullet-rise-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-bullet-rise-in {
+  animation: bullet-rise-in 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+/* Cross-screen "going inside" transition — driven by the View Transitions
+   API (see withViewTransition in lib/motion.ts), not a component animation,
+   so it covers the actual login -> dashboard (and logout -> login) hand-off
+   instead of just each screen's own mount. The outgoing screen settles back
+   slightly like a door closing behind you; the incoming one arrives very
+   faintly enlarged, like stepping through into it. */
+::view-transition-old(root) {
+  animation: app-transition-exit 280ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+::view-transition-new(root) {
+  animation: app-transition-enter 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes app-transition-exit {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(0.96); }
+}
+@keyframes app-transition-enter {
+  from { opacity: 0; transform: scale(1.035); }
+  to { opacity: 1; transform: scale(1); }
+}

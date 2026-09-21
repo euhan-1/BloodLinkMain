@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.local
+.claude/settings.local.json
+*.log
+.claude/
+.impeccable/
+__pycache__/
+.pytest_cache/
