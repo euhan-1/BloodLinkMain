@@ -5,10 +5,13 @@ import json
 import math
 import os
 import secrets
+import warnings
+from contextlib import nullcontext
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 import jwt
+import pandas as pd
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +19,7 @@ from pydantic import BaseModel, EmailStr, field_validator
 from scipy import stats as scipy_stats
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 import auth
 import email_service
@@ -41,6 +45,23 @@ DENGUE_SEASON_MONTHS = {6, 7, 8, 9, 10}
 MIN_DAYS_REQUIRED = 3
 FORECAST_CHECKPOINTS = [0, 5, 10, 15, 20, 25, 30]
 FORECAST_INTERVAL_CONFIDENCE = 0.95
+
+# A materially higher bar than MIN_DAYS_REQUIRED above: SARIMAX(0,1,4)x(1,0,1,7)
+# needs enough runway to estimate a 4-lag MA term plus several full weekly
+# seasonal cycles before its fit means anything. Below this, a facility that
+# has cleared MIN_DAYS_REQUIRED still gets the plain linear trend
+# (forecast_source: "linear_trend"), not SARIMAX.
+SARIMAX_MIN_DAYS_REQUIRED = 30
+
+# The fixed, already-validated order from SYNTHETIC_SARIMAX_VALIDATION.md —
+# the same order fit_and_cache_synthetic_forecast.py uses for the synthetic
+# reference model. Per-facility, AI-chosen order selection is a separate,
+# later step; this endpoint always fits this one fixed order once a facility
+# clears SARIMAX_MIN_DAYS_REQUIRED.
+FACILITY_SARIMAX_ORDER = (0, 1, 4)
+FACILITY_SARIMAX_SEASONAL_ORDER = (1, 0, 1, 7)
+FACILITY_SARIMAX_LABEL = "SARIMAX(0,1,4)x(1,0,1,7)+dengue"
+FACILITY_SARIMAX_MAXITER = 200
 
 EARTH_RADIUS_KM = 6371.0
 
@@ -605,6 +626,234 @@ def _prediction_interval_half_width(
     se_pred = math.sqrt(mse * (1 + 1 / n + (x0 - x_bar) ** 2 / ss_xx))
     t_crit = scipy_stats.t.ppf(1 - (1 - confidence) / 2, df)
     return t_crit * se_pred
+
+
+def dengue_season_index(d: date) -> float:
+    """Binary Philippine dengue/rainy-season calendar indicator: 1.0 for
+    June-October, 0.0 otherwise. Same months as DENGUE_SEASON_MONTHS, which
+    stays the single source of truth for "what counts as dengue season"
+    everywhere else in this file (alert text, the synthetic reference
+    model's own exog) — this function is just that set-membership check
+    wrapped so both a training-window exog column and a future exog column
+    can be built from nothing but a date range.
+
+    Deliberately kept binary rather than a smoother continuous weighting:
+    FACILITY_SARIMAX_ORDER was only ever validated (see
+    SYNTHETIC_SARIMAX_VALIDATION.md) against this exact binary exog shape,
+    and changing that shape here — without re-running that validation — would
+    be fitting an untested model, not the validated one. A continuous
+    severity index is a reasonable future improvement, but belongs in the
+    same step that revisits the order itself.
+
+    Because it's a pure calendar lookup, future exog values for the 30-day
+    forecast horizon come for free — no forecasting of the exogenous
+    variable itself is needed.
+    """
+    return 1.0 if d.month in DENGUE_SEASON_MONTHS else 0.0
+
+
+def _resample_daily_series(
+    type_rows: dict[date, int], observed_dates: set[date], end: date
+) -> list[tuple[date, int]]:
+    """Turns one blood type's own (possibly gappy) snapshot rows into a
+    continuous day-by-day series from that type's own first observed date
+    through `end` inclusive. SARIMAX needs a regular daily frequency for its
+    weekly seasonal term (s=7) to mean anything; inventory_snapshots only
+    ever has rows for days someone actually loaded the dashboard (or
+    backfilled), so gaps are the normal case, not an edge case.
+
+    Two different kinds of gap, deliberately handled differently:
+      - A day this facility WAS observed on (it's in `observed_dates` —
+        i.e. at least one OTHER blood type got a snapshot row that day) but
+        THIS type has no row for it is a real zero. That's exactly why the
+        GROUP BY in GET /forecast's snapshot INSERT never produced a row for
+        it: this type genuinely had zero units on hand that day.
+      - A day this facility was NEVER observed at all (no type has a row for
+        it — the dashboard just wasn't loaded that day) is genuinely
+        missing, not a zero. A stock level doesn't reset to 0 because nobody
+        checked it; the last known level is carried forward instead of
+        fabricating a stockout that didn't happen.
+
+    Starts at this type's own first observed date, not the facility's
+    overall first date, so nothing is invented before this type had any
+    recorded presence at all. Returns [] if `type_rows` is empty.
+    """
+    type_dates = sorted(type_rows)
+    if not type_dates:
+        return []
+
+    result: list[tuple[date, int]] = []
+    last_known = type_rows[type_dates[0]]
+    d = type_dates[0]
+    while d <= end:
+        if d in type_rows:
+            last_known = type_rows[d]
+            result.append((d, last_known))
+        elif d in observed_dates:
+            last_known = 0
+            result.append((d, 0))
+        else:
+            result.append((d, last_known))
+        d += timedelta(days=1)
+    return result
+
+
+def _fit_sarimax_facility_forecast(daily_series: list[tuple[date, int]], today: date) -> Optional[dict]:
+    """Fits FACILITY_SARIMAX_ORDER/FACILITY_SARIMAX_SEASONAL_ORDER with a
+    dengue-season exogenous regressor on one blood type's own resampled
+    daily series (see _resample_daily_series), and forecasts
+    max(FORECAST_CHECKPOINTS) days past `today`.
+
+    Pure — no DB access — so it's directly unit-testable the same way
+    _linear_trend and _prediction_interval_half_width are. The caller is
+    responsible for resampling real history into `daily_series` first and
+    for caching the result; this function always actually fits.
+
+    `daily_series` must already extend through `today` (its last entry's
+    date must equal `today`) — that's what makes checkpoint 0 well-defined.
+    Checkpoint 0 uses today's real observed value directly rather than a
+    model estimate: it's a known fact, not a forecast, so there's nothing to
+    gain by substituting a fitted value the way the linear-trend path does.
+
+    Returns None — never raises — whenever there isn't enough data to
+    attempt a fit, the fit doesn't converge, or it converges to a
+    non-finite/degenerate forecast. The caller falls back to a linear trend
+    for that blood type whenever this returns None; a bad fit here must
+    never 500 the /forecast endpoint.
+    """
+    if len(daily_series) < SARIMAX_MIN_DAYS_REQUIRED or daily_series[-1][0] != today:
+        return None
+
+    dates = [d for d, _ in daily_series]
+    values = [v for _, v in daily_series]
+    idx = pd.DatetimeIndex(dates)
+    endog = pd.Series(values, index=idx, dtype=float)
+    exog = pd.DataFrame({"dengue_season": [dengue_season_index(d) for d in dates]}, index=idx)
+
+    horizon = max(FORECAST_CHECKPOINTS)
+    future_dates = [today + timedelta(days=i) for i in range(1, horizon + 1)]
+    future_exog = pd.DataFrame(
+        {"dengue_season": [dengue_season_index(d) for d in future_dates]},
+        index=pd.DatetimeIndex(future_dates),
+    )
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            fit = SARIMAX(
+                endog, exog=exog,
+                order=FACILITY_SARIMAX_ORDER, seasonal_order=FACILITY_SARIMAX_SEASONAL_ORDER,
+                trend=None, enforce_stationarity=False, enforce_invertibility=False,
+            ).fit(disp=False, maxiter=FACILITY_SARIMAX_MAXITER)
+
+        if not fit.mle_retvals.get("converged", False):
+            return None
+
+        forecast_res = fit.get_forecast(steps=horizon, exog=future_exog)
+        point = forecast_res.predicted_mean
+        ci = forecast_res.conf_int(alpha=1 - FORECAST_INTERVAL_CONFIDENCE)
+    except Exception:
+        # Any statsmodels failure (non-convergence raised as an exception,
+        # a singular/rank-deficient fit, a linear-algebra error on a
+        # pathological series, ...) falls back to the linear trend for this
+        # blood type rather than ever reaching the caller as a 500.
+        return None
+
+    lower_col, upper_col = ci.columns[0], ci.columns[1]
+    checkpoints: dict[int, dict[str, int]] = {
+        0: {"units": int(values[-1]), "lower": int(values[-1]), "upper": int(values[-1])}
+    }
+    for i, forecast_date in enumerate(future_dates):
+        offset = i + 1
+        if offset not in FORECAST_CHECKPOINTS:
+            continue
+        est, lo, hi = float(point.iloc[i]), float(ci[lower_col].iloc[i]), float(ci[upper_col].iloc[i])
+        if not (math.isfinite(est) and math.isfinite(lo) and math.isfinite(hi)):
+            return None
+        checkpoints[offset] = {"units": max(0, round(est)), "lower": max(0, round(lo)), "upper": max(0, round(hi))}
+
+    if set(checkpoints) != set(FORECAST_CHECKPOINTS):
+        return None
+
+    return {"checkpoints": checkpoints, "exog_included": True, "model_order": FACILITY_SARIMAX_LABEL}
+
+
+def _get_or_fit_cached_sarimax(
+    conn, facility_id: int, blood_type: str, daily_series: list[tuple[date, int]], today: date
+) -> Optional[dict]:
+    """Reads facility_forecast_cache for this facility+type's checkpoint
+    dates; reuses it only if every checkpoint is present AND was trained
+    through `today` (trained_through_date == today). Otherwise fits fresh
+    via _fit_sarimax_facility_forecast and replaces the cached rows.
+
+    Because inventory_snapshots only gains a new date for this
+    facility+type at most once per day, this bounds a real refit to at most
+    once per day per facility+type — same request that writes today's
+    snapshot is the same request that (at most) triggers one refit, not a
+    refit on every dashboard poll.
+    """
+    checkpoint_dates = [today + timedelta(days=c) for c in FORECAST_CHECKPOINTS]
+    cached_rows = conn.execute(
+        text(
+            """
+            SELECT forecast_date, forecast_units, lower_units, upper_units, trained_through_date
+            FROM facility_forecast_cache
+            WHERE facility_id = :facility_id AND blood_type = :blood_type AND forecast_date = ANY(:dates)
+            """
+        ),
+        {"facility_id": facility_id, "blood_type": blood_type, "dates": checkpoint_dates},
+    ).mappings().all()
+
+    by_date = {row["forecast_date"]: row for row in cached_rows}
+    fresh = len(by_date) == len(checkpoint_dates) and all(
+        row["trained_through_date"] == today for row in cached_rows
+    )
+    if fresh:
+        return {
+            "checkpoints": {
+                c: {
+                    "units": int(by_date[cd]["forecast_units"]),
+                    "lower": int(by_date[cd]["lower_units"]),
+                    "upper": int(by_date[cd]["upper_units"]),
+                }
+                for c, cd in zip(FORECAST_CHECKPOINTS, checkpoint_dates)
+            },
+            "exog_included": True,
+            "model_order": FACILITY_SARIMAX_LABEL,
+        }
+
+    result = _fit_sarimax_facility_forecast(daily_series, today)
+    if result is None:
+        return None
+
+    conn.execute(
+        text("DELETE FROM facility_forecast_cache WHERE facility_id = :facility_id AND blood_type = :blood_type"),
+        {"facility_id": facility_id, "blood_type": blood_type},
+    )
+    conn.execute(
+        text(
+            """
+            INSERT INTO facility_forecast_cache
+                (facility_id, blood_type, forecast_date, forecast_units, lower_units, upper_units, trained_through_date, model_order)
+            VALUES
+                (:facility_id, :blood_type, :forecast_date, :forecast_units, :lower_units, :upper_units, :trained_through_date, :model_order)
+            """
+        ),
+        [
+            {
+                "facility_id": facility_id,
+                "blood_type": blood_type,
+                "forecast_date": today + timedelta(days=c),
+                "forecast_units": result["checkpoints"][c]["units"],
+                "lower_units": result["checkpoints"][c]["lower"],
+                "upper_units": result["checkpoints"][c]["upper"],
+                "trained_through_date": today,
+                "model_order": result["model_order"],
+            }
+            for c in FORECAST_CHECKPOINTS
+        ],
+    )
+    return result
 
 
 # SYNTHETIC — must match MODEL_LABEL in fit_and_cache_synthetic_forecast.py.
@@ -1493,15 +1742,27 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
     endpoint, and a blood-bank-type facility can never receive the threshold
     view, regardless of what the frontend asks for.
 
-    Blood banks (unchanged from before this split): every call records
-    today's real total-per-type stock as a snapshot (idempotent per day, per
-    facility). Once MIN_DAYS_REQUIRED days of real history have accumulated
-    for THIS facility, fits a real linear trend over it. Below that, rather
-    than showing nothing, falls back to a clearly-labeled SYNTHETIC stand-in:
-    the pre-fit SARIMAX(0,1,4)x(1,0,1,7)+dengue model validated in
-    SYNTHETIC_SARIMAX_VALIDATION.md, rescaled to today's real stock levels.
-    Every response says which of the two produced it via "forecast_source" —
-    no numbers are ever presented as real-facility-derived unless they are.
+    Blood banks: every call records today's real total-per-type stock as a
+    snapshot (idempotent per day, per facility). Three tiers, gated purely on
+    how many distinct days of this facility's own real history exist so far:
+      - < MIN_DAYS_REQUIRED (3) days: a clearly-labeled SYNTHETIC stand-in —
+        the pre-fit SARIMAX(0,1,4)x(1,0,1,7)+dengue model validated in
+        SYNTHETIC_SARIMAX_VALIDATION.md on generated data, rescaled to
+        today's real stock levels ("synthetic_model_stand_in").
+      - MIN_DAYS_REQUIRED to SARIMAX_MIN_DAYS_REQUIRED (30) days: a real
+        linear trend fit on this facility's own history — real data, simple
+        method ("linear_trend").
+      - >= SARIMAX_MIN_DAYS_REQUIRED (30) days: a real
+        FACILITY_SARIMAX_ORDER/FACILITY_SARIMAX_SEASONAL_ORDER SARIMAX fit
+        (with a calendar-based dengue exog) on this facility's own real,
+        gap-resampled daily history per blood type, cached in
+        facility_forecast_cache and only refit when new data has landed
+        ("sarimax_facility_history"). Falls back to the linear trend, per
+        blood type, if a fit doesn't converge or produces a degenerate
+        result — see _fit_sarimax_facility_forecast.
+    Every response says exactly which of the three produced it via
+    "forecast_source" — no numbers are ever presented as more real, or more
+    sophisticated, than they are.
 
     Hospitals: see _build_hospital_threshold_view.
     """
@@ -1589,12 +1850,17 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
             }
 
     first_date = distinct_dates[0]
+    observed_dates = set(distinct_dates)
     by_type: dict[str, list[tuple[int, int]]] = {}
+    raw_units_by_type: dict[str, dict[date, int]] = {}
     for row in history_rows:
         x = (row["snapshot_date"] - first_date).days
         by_type.setdefault(row["blood_type"], []).append((x, row["units"]))
+        raw_units_by_type.setdefault(row["blood_type"], {})[row["snapshot_date"]] = row["units"]
 
     today_offset = (today - first_date).days
+    use_sarimax = days_of_history >= SARIMAX_MIN_DAYS_REQUIRED
+    sarimax_fallback_types: list[str] = []
     alerts = []
     total_by_checkpoint = {c: 0 for c in FORECAST_CHECKPOINTS}
     # Lower/upper are summed across types the same way the point estimate is —
@@ -1606,44 +1872,92 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
     upper_by_checkpoint = {c: 0 for c in FORECAST_CHECKPOINTS}
     band_available = False
 
-    for blood_type, points in by_type.items():
-        slope, intercept = _linear_trend(points)
-        minimum = thresholds.get(blood_type)
-        current_units = intercept + slope * today_offset
+    with (engine.begin() if use_sarimax else nullcontext()) as maybe_conn:
+        for blood_type, points in by_type.items():
+            minimum = thresholds.get(blood_type)
+            method_used = "linear_trend"
+            checkpoint_values: dict[int, tuple[float, Optional[float], Optional[float]]] = {}
+            slope: Optional[float] = None
 
-        for checkpoint in FORECAST_CHECKPOINTS:
-            x0 = today_offset + checkpoint
-            point_estimate = intercept + slope * x0
-            projected = max(0, round(point_estimate))
-            total_by_checkpoint[checkpoint] += projected
+            sarimax_result = None
+            if use_sarimax:
+                daily_series = _resample_daily_series(raw_units_by_type[blood_type], observed_dates, today)
+                sarimax_result = _get_or_fit_cached_sarimax(maybe_conn, facility_id, blood_type, daily_series, today)
 
-            half_width = _prediction_interval_half_width(points, slope, intercept, x0)
-            if half_width is not None:
-                band_available = True
-                lower_by_checkpoint[checkpoint] += max(0, round(point_estimate - half_width))
-                upper_by_checkpoint[checkpoint] += max(0, round(point_estimate + half_width))
+            if sarimax_result is not None:
+                method_used = "sarimax"
+                for c in FORECAST_CHECKPOINTS:
+                    cp = sarimax_result["checkpoints"][c]
+                    checkpoint_values[c] = (cp["units"], cp["lower"], cp["upper"])
+                current_units = checkpoint_values[0][0]
             else:
-                # This type's own history is too sparse (n < 3) to have an
-                # interval yet, even though the facility as a whole cleared
-                # MIN_DAYS_REQUIRED — contributes its point estimate to the
-                # band with zero added width rather than widening it, since
-                # there's nothing principled to add.
-                lower_by_checkpoint[checkpoint] += projected
-                upper_by_checkpoint[checkpoint] += projected
+                if use_sarimax:
+                    sarimax_fallback_types.append(blood_type)
+                slope, intercept = _linear_trend(points)
+                current_units = intercept + slope * today_offset
+                for checkpoint in FORECAST_CHECKPOINTS:
+                    x0 = today_offset + checkpoint
+                    point_estimate = intercept + slope * x0
+                    projected = max(0, round(point_estimate))
+                    half_width = _prediction_interval_half_width(points, slope, intercept, x0)
+                    if half_width is not None:
+                        lower, upper = max(0, round(point_estimate - half_width)), max(0, round(point_estimate + half_width))
+                    else:
+                        # This type's own history is too sparse (n < 3) to have
+                        # an interval yet, even though the facility as a whole
+                        # cleared MIN_DAYS_REQUIRED.
+                        lower = upper = None
+                    checkpoint_values[checkpoint] = (projected, lower, upper)
 
-        # Only flags types currently at/above minimum but trending toward it —
-        # types already below minimum are already surfaced by /inventory/summary.
-        if minimum is None or slope >= 0 or current_units < minimum:
-            continue
+            for checkpoint in FORECAST_CHECKPOINTS:
+                projected, lower, upper = checkpoint_values[checkpoint]
+                total_by_checkpoint[checkpoint] += projected
+                if lower is not None and upper is not None:
+                    band_available = True
+                    lower_by_checkpoint[checkpoint] += lower
+                    upper_by_checkpoint[checkpoint] += upper
+                else:
+                    # Nothing principled to add — contribute the point
+                    # estimate with zero added width rather than widening it.
+                    lower_by_checkpoint[checkpoint] += projected
+                    upper_by_checkpoint[checkpoint] += projected
 
-        days_until_threshold = (minimum - current_units) / slope
-        if 0 <= days_until_threshold <= 30:
-            severity = "critical" if days_until_threshold <= 14 else "warn"
-            reason = (
-                f"{abs(slope):.1f} unit/day decline over a {days_of_history}-day trend; "
-                f"projected to fall below minimum threshold ({minimum} units) in "
-                f"{round(days_until_threshold)} days"
+            # Only flags types currently at/above minimum but trending toward
+            # it — types already below minimum are already surfaced by
+            # /inventory/summary. SARIMAX has no single slope, so the
+            # checkpoint-30-vs-today delta stands in as the trend-direction
+            # signal for that path.
+            is_declining = (checkpoint_values[30][0] - checkpoint_values[0][0]) < 0 if method_used == "sarimax" else slope < 0
+            if minimum is None or not is_declining or current_units < minimum:
+                continue
+
+            breach_checkpoint = next(
+                (c for c in FORECAST_CHECKPOINTS if checkpoint_values[c][0] < minimum), None
             )
+            if breach_checkpoint is None or breach_checkpoint == 0:
+                continue
+
+            prev_checkpoint = FORECAST_CHECKPOINTS[FORECAST_CHECKPOINTS.index(breach_checkpoint) - 1]
+            prev_units, breach_units = checkpoint_values[prev_checkpoint][0], checkpoint_values[breach_checkpoint][0]
+            if breach_units == prev_units:
+                days_until_threshold = breach_checkpoint
+            else:
+                frac = (prev_units - minimum) / (prev_units - breach_units)
+                days_until_threshold = prev_checkpoint + frac * (breach_checkpoint - prev_checkpoint)
+
+            severity = "critical" if days_until_threshold <= 14 else "warn"
+            if method_used == "sarimax":
+                reason = (
+                    f"{FACILITY_SARIMAX_LABEL} fit on this facility's own {days_of_history}-day history; "
+                    f"projected to fall below minimum threshold ({minimum} units) in "
+                    f"{round(days_until_threshold)} days"
+                )
+            else:
+                reason = (
+                    f"{abs(slope):.1f} unit/day decline over a {days_of_history}-day trend; "
+                    f"projected to fall below minimum threshold ({minimum} units) in "
+                    f"{round(days_until_threshold)} days"
+                )
             if is_dengue_season:
                 reason += " Coincides with dengue season, a period of historically elevated demand in this region."
             alerts.append({
@@ -1669,17 +1983,23 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
     with engine.begin() as conn:
         _check_forecast_shortage_notifications(conn, facility_id, alerts)
 
-    return {
+    forecast_source = "sarimax_facility_history" if use_sarimax else "linear_trend"
+    response = {
         "view": "forecast",
         "has_sufficient_history": True,
         "days_of_history": days_of_history,
         "min_days_required": MIN_DAYS_REQUIRED,
+        "sarimax_min_days_required": SARIMAX_MIN_DAYS_REQUIRED,
         "is_dengue_season": is_dengue_season,
-        "forecast_source": "real_facility_history",
+        "forecast_source": forecast_source,
         "interval_confidence": FORECAST_INTERVAL_CONFIDENCE if band_available else None,
         "series": series,
         "alerts": alerts,
     }
+    if forecast_source == "sarimax_facility_history":
+        response["sarimax_model_label"] = FACILITY_SARIMAX_LABEL
+        response["sarimax_fallback_types"] = sarimax_fallback_types
+    return response
 
 
 @app.get("/facilities")
