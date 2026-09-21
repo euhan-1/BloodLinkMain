@@ -698,6 +698,16 @@ def _resample_daily_series(
     return result
 
 
+# NOTE ON THE AI MODEL-SELECTION FEATURE: deliberately NOT wired in here.
+# train_sarimax_selector.py builds and evaluates a decision-tree selector
+# that chooses among sarimax_selector_common.CANDIDATE_LIBRARY, but its own
+# evaluation (AI-recommended config vs this fixed default vs a full
+# Box-Jenkins search, on held-out synthetic series) did not clear the bar
+# set in advance — see that script's STOP CONDITION CHECK output. Per that
+# script's own explicit instruction, a selector that doesn't beat this fixed
+# default is not integrated. This function still hard-codes
+# FACILITY_SARIMAX_ORDER/FACILITY_SARIMAX_SEASONAL_ORDER exactly as it did
+# before that work started.
 def _fit_sarimax_facility_forecast(daily_series: list[tuple[date, int]], today: date) -> Optional[dict]:
     """Fits FACILITY_SARIMAX_ORDER/FACILITY_SARIMAX_SEASONAL_ORDER with a
     dengue-season exogenous regressor on one blood type's own resampled
