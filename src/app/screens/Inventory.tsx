@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
-import { Plus, Upload, ChevronDown, SlidersHorizontal, Trash2, Search } from "lucide-react";
-import { apiGet, apiUploadFile, updateThreshold, deleteInventoryUnit, createInventoryUnit, type ThresholdRow } from "../lib/api";
+import { Plus, Upload, ChevronDown, SlidersHorizontal, Trash2, Search, Archive } from "lucide-react";
+import { apiGet, apiUploadFile, updateThreshold, deleteInventoryUnit, createInventoryUnit, archiveExpiredInventory, type ThresholdRow } from "../lib/api";
 import { BLOOD_TYPE_ORDER, getExpiryStatus, EXPIRY_STYLES } from "../lib/statusTokens";
 import { BloodTypeBadge, DinLabel, DateStamp } from "../components/BloodTypeBadge";
 import { Skeleton } from "../components/Skeleton";
@@ -43,6 +43,15 @@ export function InventoryScreen() {
   const [deleteConfirmDin, setDeleteConfirmDin] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // Expired units still appear in the list below (so staff can see what
+  // needs clearing) but are already excluded from every usable/available
+  // count elsewhere (Dashboard totals, thresholds, forecast, emergency
+  // sourcing — all filter expires_date server-side). Archiving here is
+  // soft-delete only: it never removes the row, just clears it out of this
+  // working list.
+  const [archivingExpired, setArchivingExpired] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
 
   const emptyUnitForm = {
     din: "",
@@ -209,6 +218,21 @@ export function InventoryScreen() {
     }
   }
 
+  const expiredUnits = rows.filter((r) => getExpiryStatus(r.daysLeft) === "expired");
+
+  async function handleArchiveExpired() {
+    setArchivingExpired(true);
+    setArchiveError(null);
+    try {
+      await archiveExpiredInventory();
+      loadInventory();
+    } catch (err) {
+      setArchiveError(err instanceof Error ? err.message : "Failed to clear expired backlog");
+    } finally {
+      setArchivingExpired(false);
+    }
+  }
+
   const types = ["All", ...Array.from(new Set(rows.map((r) => r.type)))];
 
   const byType = filterType === "All"
@@ -251,9 +275,30 @@ export function InventoryScreen() {
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h2 className="font-display text-lg font-bold text-foreground">Blood Inventory</h2>
-          <p className="text-[14px] text-muted-foreground">{rows.length} units on record</p>
+          <p className="text-[14px] text-muted-foreground">
+            {rows.length} units on record
+            {expiredUnits.length > 0 && (
+              <>
+                {" · "}
+                <span className="text-status-critical-text font-semibold">
+                  {expiredUnits.length} expired — needs clearing
+                </span>
+              </>
+            )}
+          </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          {expiredUnits.length > 0 && (
+            <button
+              onClick={handleArchiveExpired}
+              disabled={archivingExpired}
+              title="Archives every expired unit on file — soft-delete only, nothing is permanently removed."
+              className="flex items-center gap-1.5 h-8 px-3 bg-card border border-status-critical-border text-status-critical-text rounded-lg text-[13px] font-semibold hover:bg-status-critical-tint transition-colors disabled:opacity-60"
+            >
+              <Archive size={14} />
+              {archivingExpired ? "Clearing…" : `Clear Expired Backlog (${expiredUnits.length})`}
+            </button>
+          )}
           <div className="flex gap-1 bg-secondary rounded-lg p-1">
             {types.map((t) => (
               <button
@@ -304,6 +349,11 @@ export function InventoryScreen() {
         />
       </div>
 
+      {archiveError && (
+        <div className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-lg px-3 py-2">
+          {archiveError}
+        </div>
+      )}
       {uploadError && (
         <div className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-lg px-3 py-2">
           {uploadError}

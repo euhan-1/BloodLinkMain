@@ -290,6 +290,12 @@ export function deleteInventoryUnit(din: string): Promise<{ deleted: true; din: 
   return apiDelete(`/inventory/${encodeURIComponent(din)}`, {});
 }
 
+// Bulk-clears the expired backlog for the logged-in facility — soft-delete
+// only (sets archived_at server-side), never removes historical rows.
+export function archiveExpiredInventory(): Promise<{ archived_count: number }> {
+  return apiPost<{ archived_count: number }>("/inventory/archive-expired", {});
+}
+
 export type CreateInventoryUnitBody = {
   din: string;
   blood_type: string;
