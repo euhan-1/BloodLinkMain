@@ -134,16 +134,29 @@ type ForecastView = {
   days_of_history: number;
   min_days_required: number;
   is_dengue_season: boolean;
-  forecast_source: "real_facility_history" | "synthetic_model_stand_in" | "none";
+  forecast_source: "sarimax_facility_history" | "linear_trend" | "synthetic_model_stand_in" | "none";
   synthetic_model_label?: string;
-  // Only present (non-null) on the real_facility_history path once at least
-  // one blood type has n >= 3 points of its own — see
-  // _prediction_interval_half_width in main.py. null on every other path
-  // (synthetic never has one; "none" has no series at all).
+  // Only present when forecast_source is "sarimax_facility_history" — see
+  // _fit_sarimax_facility_forecast in main.py.
+  sarimax_model_label?: string;
+  sarimax_fallback_types?: string[];
+  sarimax_min_days_required?: number;
+  // Present (non-null) on both the linear_trend and sarimax_facility_history
+  // paths once at least one blood type has an interval to report — see
+  // _prediction_interval_half_width / _fit_sarimax_facility_forecast in
+  // main.py. null on every other path (synthetic never has one; "none" has
+  // no series at all).
   interval_confidence: number | null;
   series: { day: string; units: number; lower: number | null; upper: number | null }[];
   alerts: ForecastAlert[];
 };
+
+// True once the forecast is derived from this facility's own real history —
+// via either method (SARIMAX once there's enough of it, a linear trend
+// before that) — as opposed to the synthetic stand-in or no data at all.
+function isRealForecastSource(source: ForecastView["forecast_source"]): boolean {
+  return source === "sarimax_facility_history" || source === "linear_trend";
+}
 
 // Hospital-type facilities: /forecast returns this instead — no forecast at
 // all, just current-stock-vs-minimum and an explicit, staff-confirmed action
@@ -547,12 +560,12 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                     <FlaskConical size={13} /> Synthetic Model
                   </span>
                 )}
-                {dashboardData.forecast_source === "real_facility_history" && dashboardData.alerts.length > 0 && (
+                {isRealForecastSource(dashboardData.forecast_source) && dashboardData.alerts.length > 0 && (
                   <span className="flex items-center gap-1 text-[13px] font-bold text-status-watch-text bg-status-watch-tint px-2 py-0.5 rounded-full border border-status-watch-border">
                     <AlertTriangle size={13} /> At Risk
                   </span>
                 )}
-                {dashboardData.forecast_source === "real_facility_history" && dashboardData.alerts.length === 0 && (
+                {isRealForecastSource(dashboardData.forecast_source) && dashboardData.alerts.length === 0 && (
                   <span className="flex items-center gap-1 text-[13px] font-bold text-status-safe-text bg-status-safe-tint px-2 py-0.5 rounded-full border border-status-safe-border">
                     <CheckCircle size={13} /> Stable
                   </span>
@@ -566,6 +579,8 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
               <p className="text-[15px] text-foreground mb-4">
                 Total units across every blood type combined
                 {dashboardData.forecast_source === "synthetic_model_stand_in" && " — synthetic, not this facility's real history — see banner below"}
+                {dashboardData.forecast_source === "sarimax_facility_history" && " — SARIMAX model fit to this facility's own history"}
+                {dashboardData.forecast_source === "linear_trend" && " — linear trend fit to this facility's own history"}
                 . A steady total doesn't mean every type is steady.
               </p>
 
@@ -723,7 +738,7 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                   a caveat and audit trail rather than the answer someone
                   came here for. */}
               <div className="mt-4 pt-4 border-t border-border">
-                {dashboardData.forecast_source !== "real_facility_history" ? (
+                {!isRealForecastSource(dashboardData.forecast_source) ? (
                   <div className="rounded-lg border border-role-accent-border bg-primary-tint p-3.5">
                     <div className="flex items-center gap-2.5 mb-3">
                       <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
@@ -767,7 +782,10 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                 ) : (
                   <div className="flex items-center justify-between gap-3 rounded-lg border border-status-safe-border bg-status-safe-tint px-3 py-2.5">
                     <div className="flex items-center gap-1.5 text-[13px] font-bold text-status-safe-text">
-                      <CheckCircle size={14} /> Real forecast active — {dashboardData.days_of_history} days of history on file
+                      <CheckCircle size={14} />
+                      {dashboardData.forecast_source === "sarimax_facility_history"
+                        ? `Real SARIMAX forecast active — ${dashboardData.days_of_history} days of history on file`
+                        : `Real forecast active — ${dashboardData.days_of_history} days of history on file`}
                     </div>
                     <button
                       onClick={() => historyFileInputRef.current?.click()}
