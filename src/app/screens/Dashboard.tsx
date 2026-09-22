@@ -127,6 +127,17 @@ type ForecastAlert = {
   days_until_threshold: number;
 };
 
+// Plain-language restock recommendation — the translated, staff-facing form
+// of whatever the forecast math already produced. See
+// _compute_restock_recommendation in main.py: this is a pure post-processing
+// step over the point forecast, not a second model.
+type RestockRecommendation = {
+  blood_type: string;
+  breach_date: string;
+  days_until_breach: number;
+  recommended_units: number;
+};
+
 // Blood-bank-type facilities: /forecast returns this shape (Steps 4 + SARIMAX work).
 type ForecastView = {
   view: "forecast";
@@ -147,6 +158,10 @@ type ForecastView = {
   // main.py. null on every other path (synthetic never has one; "none" has
   // no series at all).
   interval_confidence: number | null;
+  restock_recommendations: RestockRecommendation[];
+  // null only on the "none" (no forecast at all yet) source — every other
+  // source always says one or the other.
+  restock_status: "on_track" | "action_needed" | null;
   series: { day: string; units: number; lower: number | null; upper: number | null }[];
   alerts: ForecastAlert[];
 };
@@ -156,6 +171,25 @@ type ForecastView = {
 // before that) — as opposed to the synthetic stand-in or no data at all.
 function isRealForecastSource(source: ForecastView["forecast_source"]): boolean {
   return source === "sarimax_facility_history" || source === "linear_trend";
+}
+
+// breach_date is a date-only string ("2026-09-30") — parsed via its Y/M/D
+// components (not `new Date(isoString)`) so this always reads as the local
+// calendar date it names, the same UTC-vs-local pitfall already fixed for
+// expiry dates in inventoryTypes.ts's toInventoryUnit.
+function formatBreachDate(isoDate: string): string {
+  const [year, month, day] = isoDate.split("-").map(Number);
+  return new Date(year, month - 1, day).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// The one plain-language sentence a non-technical staff member needs per
+// at-risk type: what, how much, how soon, and why — no mention of the
+// model, checkpoints, or any other forecasting-internals vocabulary.
+function formatRecommendationSentence(rec: RestockRecommendation, minimumUnits: number | undefined): string {
+  const timing = rec.days_until_breach <= 0 ? "now" : `within ${rec.days_until_breach} day${rec.days_until_breach === 1 ? "" : "s"}`;
+  const minimumClause = minimumUnits !== undefined ? `its ${minimumUnits}-unit minimum` : "its minimum";
+  const whenClause = rec.days_until_breach <= 0 ? "today" : `around ${formatBreachDate(rec.breach_date)}`;
+  return `restock about ${rec.recommended_units} unit${rec.recommended_units === 1 ? "" : "s"} ${timing} (projected below ${minimumClause} ${whenClause})`;
 }
 
 // Hospital-type facilities: /forecast returns this instead — no forecast at
@@ -226,6 +260,13 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
   const [showAllActions, setShowAllActions] = useState(false);
   const [showAllExpiry, setShowAllExpiry] = useState(false);
 
+  // The forecast card leads with plain-language recommendations; the actual
+  // trend chart is real supporting detail, not the headline, so it starts
+  // collapsed. Likewise the "95% prediction interval" explanation stays
+  // tucked behind its own toggle rather than printed inline as jargon.
+  const [showTrendDetail, setShowTrendDetail] = useState(false);
+  const [showIntervalDetail, setShowIntervalDetail] = useState(false);
+
   // Named for what it actually is now — either a blood bank's forecast or a
   // hospital's threshold view, discriminated by "view" (see DashboardData).
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
@@ -246,13 +287,20 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
 
   useEffect(() => {
     let cancelled = false;
+    // latestRequestId guards against response reordering, not just unmount:
+    // this panel is, per the poll comment above, the one most exposed to
+    // Render's cold-start delay, so a slow initial request can resolve AFTER
+    // a later 25s-poll response already landed — without this check it would
+    // silently revert the grid back to stale numbers.
+    let latestRequestId = 0;
     // Silent background refresh (no loading flag on subsequent ticks) so
     // the Status by Type grid reflects changes made by other facilities —
     // and so a status that flips while this screen is open actually plays
     // the value-flash instead of only ever showing the state as of page load.
     function loadSummary(isFirstLoad: boolean) {
+      const requestId = ++latestRequestId;
       apiGet<InventorySummaryRow[]>("/inventory/summary")
-        .then((data) => { if (!cancelled) setSummary(data); })
+        .then((data) => { if (!cancelled && requestId === latestRequestId) setSummary(data); })
         .catch((err) => { if (!cancelled && isFirstLoad) setSummaryError(err instanceof Error ? err.message : "Failed to load"); })
         .finally(() => { if (!cancelled && isFirstLoad) setSummaryLoading(false); });
     }
@@ -270,17 +318,22 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
     return () => { cancelled = true; };
   }, []);
 
+  // Shared across every call site (initial mount, post-upload, and undo's
+  // onUndone) so a slow earlier request can never clobber a faster later one
+  // — e.g. a slow initial /forecast landing AFTER a post-upload reload
+  // already showed "Real forecast active" would otherwise silently revert
+  // the screen back to "Not enough history yet".
+  const forecastRequestIdRef = useRef(0);
   function loadForecast() {
-    let cancelled = false;
+    const requestId = ++forecastRequestIdRef.current;
     setForecastLoading(true);
     setForecastError(null);
     apiGet<DashboardData>("/forecast")
-      .then((data) => { if (!cancelled) setDashboardData(data); })
-      .catch((err) => { if (!cancelled) setForecastError(err instanceof Error ? err.message : "Failed to load"); })
-      .finally(() => { if (!cancelled) setForecastLoading(false); });
-    return () => { cancelled = true; };
+      .then((data) => { if (requestId === forecastRequestIdRef.current) setDashboardData(data); })
+      .catch((err) => { if (requestId === forecastRequestIdRef.current) setForecastError(err instanceof Error ? err.message : "Failed to load"); })
+      .finally(() => { if (requestId === forecastRequestIdRef.current) setForecastLoading(false); });
   }
-  useEffect(() => loadForecast(), []);
+  useEffect(() => { loadForecast(); }, []);
 
   async function handleHistoryFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -549,358 +602,387 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
 
       {/* Forecast/Threshold + Alert/Action + Expiry */}
       <div className="grid lg:grid-cols-3 gap-4">
-        {dashboardData?.view === "forecast" && (
-          <>
-            {/* 30-day forecast */}
-            <div className="lg:col-span-1 bg-card border border-border rounded-xl p-6">
-              <div className="flex items-center justify-between mb-1">
-                <h3 className="font-semibold text-foreground text-[19px]">30-Day Shortage Forecast</h3>
-                {dashboardData.forecast_source === "synthetic_model_stand_in" && (
-                  <span className="flex items-center gap-1 text-[13px] font-bold text-synthetic-text bg-synthetic-tint px-2 py-0.5 rounded-full border border-synthetic-border">
-                    <FlaskConical size={13} /> Synthetic Model
-                  </span>
-                )}
-                {isRealForecastSource(dashboardData.forecast_source) && dashboardData.alerts.length > 0 && (
-                  <span className="flex items-center gap-1 text-[13px] font-bold text-status-watch-text bg-status-watch-tint px-2 py-0.5 rounded-full border border-status-watch-border">
-                    <AlertTriangle size={13} /> At Risk
-                  </span>
-                )}
-                {isRealForecastSource(dashboardData.forecast_source) && dashboardData.alerts.length === 0 && (
-                  <span className="flex items-center gap-1 text-[13px] font-bold text-status-safe-text bg-status-safe-tint px-2 py-0.5 rounded-full border border-status-safe-border">
-                    <CheckCircle size={13} /> Stable
-                  </span>
-                )}
-                {dashboardData.forecast_source === "none" && (
-                  <span className="flex items-center gap-1 text-[13px] font-bold text-foreground bg-secondary px-2 py-0.5 rounded-full border border-border">
-                    <Clock size={13} /> Collecting Data
-                  </span>
-                )}
+        {dashboardData?.view === "forecast" && (() => {
+          const recommendationByType = new Map(
+            dashboardData.restock_recommendations.map((r) => [r.blood_type, r])
+          );
+          return (
+          <div className="lg:col-span-2 bg-card border border-border rounded-xl p-6 flex flex-col">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="font-semibold text-foreground text-[19px]">Restock Outlook</h3>
+              {dashboardData.forecast_source === "synthetic_model_stand_in" && (
+                <span className="flex items-center gap-1 text-[13px] font-bold text-synthetic-text bg-synthetic-tint px-2 py-0.5 rounded-full border border-synthetic-border">
+                  <FlaskConical size={13} /> Synthetic Model
+                </span>
+              )}
+              {isRealForecastSource(dashboardData.forecast_source) && dashboardData.restock_status === "action_needed" && (
+                <span className="flex items-center gap-1 text-[13px] font-bold text-status-watch-text bg-status-watch-tint px-2 py-0.5 rounded-full border border-status-watch-border">
+                  <AlertTriangle size={13} /> Action Needed
+                </span>
+              )}
+              {isRealForecastSource(dashboardData.forecast_source) && dashboardData.restock_status === "on_track" && (
+                <span className="flex items-center gap-1 text-[13px] font-bold text-status-safe-text bg-status-safe-tint px-2 py-0.5 rounded-full border border-status-safe-border">
+                  <CheckCircle size={13} /> On Track
+                </span>
+              )}
+              {dashboardData.forecast_source === "none" && (
+                <span className="flex items-center gap-1 text-[13px] font-bold text-foreground bg-secondary px-2 py-0.5 rounded-full border border-border">
+                  <Clock size={13} /> Collecting Data
+                </span>
+              )}
+            </div>
+            <p className="text-[15px] text-foreground mb-4">
+              {dashboardData.forecast_source === "none" &&
+                "What to restock and when — once enough daily stock records are on file."}
+              {dashboardData.forecast_source === "synthetic_model_stand_in" &&
+                "What to restock over the next 30 days — based on a reference model, not yet this facility's own history (see below)."}
+              {isRealForecastSource(dashboardData.forecast_source) &&
+                "What to restock over the next 30 days, based on this facility's own recent history. These are estimates, not guarantees."}
+            </p>
+
+            {/* Historical backfill — lets a facility with real past
+                records skip the days_of_history wait instead of it. */}
+            <input
+              ref={historyFileInputRef}
+              type="file"
+              accept=".csv"
+              onChange={handleHistoryFileSelected}
+              className="hidden"
+            />
+
+            {forecastLoading && (
+              <div className="py-8 text-center text-[15px] text-foreground">Loading forecast…</div>
+            )}
+            {!forecastLoading && forecastError && (
+              <div className="py-8 text-center text-[15px] text-status-critical-text">Failed to load: {forecastError}</div>
+            )}
+            {!forecastLoading && !forecastError && dashboardData.forecast_source === "none" && (
+              <div className="py-6 text-center text-[15px] text-foreground leading-relaxed">
+                Not enough history yet to forecast a trend.
+                <br />
+                Collecting daily snapshots: <strong className="text-foreground">{dashboardData.days_of_history}</strong> of{" "}
+                <strong className="text-foreground">{dashboardData.min_days_required}</strong> days needed.
               </div>
-              <p className="text-[15px] text-foreground mb-4">
-                Total units across every blood type combined
-                {dashboardData.forecast_source === "synthetic_model_stand_in" && " — synthetic, not this facility's real history — see banner below"}
-                {dashboardData.forecast_source === "sarimax_facility_history" && " — SARIMAX model fit to this facility's own history"}
-                {dashboardData.forecast_source === "linear_trend" && " — linear trend fit to this facility's own history"}
-                . A steady total doesn't mean every type is steady.
-              </p>
+            )}
 
-              {/* Historical backfill — lets a facility with real past
-                  records skip the days_of_history wait instead of it. */}
-              <input
-                ref={historyFileInputRef}
-                type="file"
-                accept=".csv"
-                onChange={handleHistoryFileSelected}
-                className="hidden"
-              />
-
-              {/* Lead with the answer: which type(s), how urgent — before any
-                  data-provenance housekeeping. See Predictive Shortage Alert
-                  (right) for the full per-type breakdown; this is just the
-                  pointer that sends someone there. */}
-              {dashboardData.forecast_source !== "none" && dashboardData.alerts.length > 0 && (
-                <div className="mb-4 rounded-lg border border-status-watch-border bg-status-watch-tint px-3.5 py-3 flex items-start gap-2.5">
-                  <AlertTriangle size={16} className="text-status-watch-text shrink-0 mt-0.5" />
-                  <p className="text-[14px] text-status-watch-text leading-snug">
-                    <strong className="font-bold">{dashboardData.alerts.map((a) => a.type).join(", ")}</strong>{" "}
-                    projected to fall below minimum within{" "}
-                    <strong className="font-bold">
-                      {Math.max(...dashboardData.alerts.map((a) => a.days_until_threshold))} days
-                    </strong>
-                    {" "}— see Predictive Shortage Alert for detail.
-                  </p>
-                </div>
-              )}
-
-              {forecastLoading && (
-                <div className="py-8 text-center text-[15px] text-foreground">Loading forecast…</div>
-              )}
-              {!forecastLoading && forecastError && (
-                <div className="py-8 text-center text-[15px] text-status-critical-text">Failed to load: {forecastError}</div>
-              )}
-              {!forecastLoading && !forecastError && dashboardData.forecast_source === "none" && (
-                <div className="py-6 text-center text-[15px] text-foreground leading-relaxed">
-                  Not enough history yet to forecast a trend.
-                  <br />
-                  Collecting daily snapshots: <strong className="text-foreground">{dashboardData.days_of_history}</strong> of{" "}
-                  <strong className="text-foreground">{dashboardData.min_days_required}</strong> days needed.
-                </div>
-              )}
-              {!forecastLoading && !forecastError && dashboardData.forecast_source !== "none" && (() => {
-                // The backend omits this key entirely (rather than sending
-                // null) on the synthetic path, so `!== null` alone lets
-                // `undefined` through and produces "NaN%" below — check the
-                // actual type instead of trusting the declared null-only union.
-                const hasInterval = typeof dashboardData.interval_confidence === "number";
-                return (
-                <>
-                  <ResponsiveContainer width="100%" height={200}>
-                    <ComposedChart
-                      data={dashboardData.series.map((d) => ({
-                        ...d,
-                        band: d.lower !== null && d.upper !== null ? d.upper - d.lower : 0,
-                      }))}
-                      margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.35} vertical={false} />
-                      <XAxis
-                        dataKey="day"
-                        // interval={0} forces every tick to render instead of
-                        // Recharts silently dropping whichever ones don't fit
-                        // (which is what produced the uneven "Day 20 ... Day
-                        // 30" gap with Day 25 missing) — the tickFormatter
-                        // shortens labels to "5"/"10"/etc. so all 7 fit
-                        // evenly spaced without overlapping.
-                        interval={0}
-                        tickFormatter={(value: string) => (value === "Today" ? "Today" : value.replace("Day ", ""))}
-                        tick={{ fontSize: 12, fill: "var(--foreground)", fontFamily: "Plus Jakarta Sans", fontWeight: 700 }}
-                        axisLine={false}
-                        tickLine={false}
-                      />
-                      <YAxis
-                        tick={{ fontSize: 11, fill: "var(--foreground)", fontFamily: "Plus Jakarta Sans", fontWeight: 700 }}
-                        axisLine={false}
-                        tickLine={false}
-                        width={34}
-                      />
-                      <Tooltip content={<ForecastTooltip />} cursor={{ stroke: "var(--border)", strokeDasharray: "3 3" }} />
-                      {totalMinimumUnits > 0 && (
-                        <ReferenceLine y={totalMinimumUnits} stroke="var(--gray-400)" strokeWidth={1.5} strokeDasharray="4 4" />
-                      )}
-                      {hasInterval && (
-                        <>
-                          {/* Stacked-area trick for a shaded confidence band:
-                              an invisible area up to `lower`, then a visible
-                              one for the `lower..upper` gap stacked on top —
-                              reads as "the range this could fall in," far
-                              more legible than the old whisker caps, and
-                              gets visibly wider further into the future. */}
-                          <Area dataKey="lower" stackId="ci" stroke="none" fill="transparent" isAnimationActive={false} />
-                          <Area
-                            dataKey="band"
-                            stackId="ci"
-                            stroke={dashboardData.forecast_source === "synthetic_model_stand_in" ? "var(--synthetic)" : "var(--role-accent)"}
-                            strokeWidth={1}
-                            strokeOpacity={0.35}
-                            fill={dashboardData.forecast_source === "synthetic_model_stand_in" ? "var(--synthetic)" : "var(--role-accent)"}
-                            fillOpacity={0.3}
-                            isAnimationActive={false}
+            {!forecastLoading && !forecastError && dashboardData.forecast_source !== "none" && (
+              <>
+                {/* Lead with the plain-language answer: what to restock and
+                    when, in staff-facing language — no model/checkpoint
+                    vocabulary. The chart and its jargon are demoted to the
+                    "Trend detail" disclosure further down. */}
+                {dashboardData.restock_status === "action_needed" ? (
+                  <div className="mb-4 space-y-2">
+                    {dashboardData.restock_recommendations.map((rec) => {
+                      const minimumUnits = summary.find((s) => s.blood_type === rec.blood_type)?.minimum_units;
+                      const urgent = rec.days_until_breach <= 14;
+                      return (
+                        <div
+                          key={rec.blood_type}
+                          className={`rounded-lg border px-3.5 py-3 flex items-start gap-2.5 ${
+                            urgent
+                              ? "border-status-critical-border bg-status-critical-tint"
+                              : "border-status-watch-border bg-status-watch-tint"
+                          }`}
+                        >
+                          <AlertTriangle
+                            size={16}
+                            className={`shrink-0 mt-0.5 ${urgent ? "text-status-critical-text" : "text-status-watch-text"}`}
                           />
-                        </>
-                      )}
-                      <Line
-                        type="monotone"
-                        dataKey="units"
-                        stroke={dashboardData.forecast_source === "synthetic_model_stand_in" ? "var(--synthetic)" : "var(--role-accent)"}
-                        strokeWidth={3}
-                        dot={{ r: 3.5, strokeWidth: 0, fill: dashboardData.forecast_source === "synthetic_model_stand_in" ? "var(--synthetic)" : "var(--role-accent)" }}
-                        activeDot={{ r: 5 }}
-                        isAnimationActive={false}
-                      />
-                    </ComposedChart>
-                  </ResponsiveContainer>
-                  {/* A small legend instead of labeling the reference line
-                      inline on the chart — this data tends to sit flat and
-                      close to its own minimum, so an inline label kept
-                      landing right on top of the last data point. */}
-                  <div className="flex items-center gap-4 text-[12px] font-semibold text-foreground -mt-1 mb-1">
-                    <span className="flex items-center gap-1.5">
-                      <span
-                        className="w-3 h-0.5 rounded-full inline-block"
-                        style={{ backgroundColor: dashboardData.forecast_source === "synthetic_model_stand_in" ? "var(--synthetic)" : "var(--role-accent)" }}
-                      />
-                      Projected total
-                    </span>
-                    {totalMinimumUnits > 0 && (
-                      <span className="flex items-center gap-1.5">
-                        <span className="w-3 h-0.5 rounded-full inline-block border-t-2 border-dashed border-gray-400" />
-                        Combined minimum ({totalMinimumUnits})
-                      </span>
+                          <p className={`text-[14px] leading-snug ${urgent ? "text-status-critical-text" : "text-status-watch-text"}`}>
+                            <strong className="font-bold">{rec.blood_type}</strong> —{" "}
+                            {formatRecommendationSentence(rec, minimumUnits)}
+                          </p>
+                        </div>
+                      );
+                    })}
+                    {dashboardData.is_dengue_season && (
+                      <p className="text-[12.5px] text-muted-foreground leading-snug">
+                        Coincides with dengue season, a period of historically elevated demand in this region.
+                      </p>
                     )}
                   </div>
-                  <p className="text-[12.5px] text-foreground leading-snug">
-                    {hasInterval
-                      ? `The shaded band is a ${Math.round((dashboardData.interval_confidence as number) * 100)}% prediction interval — wider with less history on file or further into the future, narrowing as more real days accumulate.`
-                      : "Line shows the projected trend for total units on file."}
-                  </p>
-                  {dashboardData.alerts.length === 0 && (
-                    <p className="mt-2 text-[14px] text-foreground">
-                      {dashboardData.forecast_source === "synthetic_model_stand_in"
-                        ? "No blood types currently trending toward shortage, based on the synthetic reference model."
-                        : `No blood types currently trending toward shortage, based on ${dashboardData.days_of_history} days of history.`}
-                    </p>
-                  )}
-                </>
-                );
-              })()}
-
-              {/* Data provenance — moved below the chart/alert, since it's
-                  a caveat and audit trail rather than the answer someone
-                  came here for. */}
-              <div className="mt-4 pt-4 border-t border-border">
-                {!isRealForecastSource(dashboardData.forecast_source) ? (
-                  <div className="rounded-lg border border-role-accent-border bg-primary-tint p-3.5">
-                    <div className="flex items-center gap-2.5 mb-3">
-                      <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                        <TrendingUp size={16} className="text-primary" />
-                      </div>
-                      <div>
-                        <div className="text-[14px] font-bold text-foreground leading-tight">Unlock your real forecast</div>
-                        <div className="text-[13px] text-muted-foreground leading-tight">
-                          Have past stock records? Upload them to switch off the synthetic model now.
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mb-3">
-                      <div className="flex items-center justify-between text-[12px] font-bold text-muted-foreground uppercase tracking-wide mb-1">
-                        <span>History on file</span>
-                        <span className="font-mono tabular-nums normal-case">
-                          {dashboardData.days_of_history} of {dashboardData.min_days_required} days
-                        </span>
-                      </div>
-                      <div className="h-2.5 rounded-full bg-card border border-border overflow-hidden">
-                        <div
-                          className="h-full bg-primary rounded-full transition-all duration-500"
-                          style={{ width: `${Math.min(100, (dashboardData.days_of_history / dashboardData.min_days_required) * 100)}%` }}
-                        />
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => historyFileInputRef.current?.click()}
-                      disabled={uploadingHistory}
-                      title="Columns: snapshot_date, blood_type, units. Dates must be before today — today's stock is recorded automatically."
-                      className="w-full h-9 bg-primary text-white text-[13.5px] font-bold rounded-lg hover:bg-primary-hover transition-colors disabled:opacity-60 flex items-center justify-center gap-1.5"
-                    >
-                      <Upload size={14} /> {uploadingHistory ? "Uploading…" : "Upload Historical Data"}
-                    </button>
-                    <p className="text-[11.5px] text-muted-foreground mt-1.5 leading-snug">
-                      CSV columns: snapshot_date, blood_type, units — one row per day per blood type, dated before today.
-                    </p>
-                  </div>
                 ) : (
-                  <div className="flex items-center justify-between gap-3 rounded-lg border border-status-safe-border bg-status-safe-tint px-3 py-2.5">
-                    <div className="flex items-center gap-1.5 text-[13px] font-bold text-status-safe-text">
-                      <CheckCircle size={14} />
-                      {dashboardData.forecast_source === "sarimax_facility_history"
-                        ? `Real SARIMAX forecast active — ${dashboardData.days_of_history} days of history on file`
-                        : `Real forecast active — ${dashboardData.days_of_history} days of history on file`}
-                    </div>
-                    <button
-                      onClick={() => historyFileInputRef.current?.click()}
-                      disabled={uploadingHistory}
-                      className="text-[12px] font-bold text-primary hover:underline hover:underline-offset-2 disabled:opacity-60 shrink-0"
-                    >
-                      {uploadingHistory ? "Uploading…" : "Add more history"}
-                    </button>
-                  </div>
-                )}
-
-                {historyUploadError && (
-                  <div className="mt-3 text-[12px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-lg px-2.5 py-2">
-                    {historyUploadError}
-                  </div>
-                )}
-                {historyUploadResult && (
-                  <div className="mt-3 text-[12px] bg-secondary rounded-lg px-2.5 py-2 space-y-1">
-                    <div className="font-semibold text-foreground">
-                      {historyUploadResult.rows_processed} day{historyUploadResult.rows_processed === 1 ? "" : "s"}-of-type
-                      record{historyUploadResult.rows_processed === 1 ? "" : "s"} processed
-                      {historyUploadResult.errors.length > 0 && `, ${historyUploadResult.errors.length} row${historyUploadResult.errors.length === 1 ? "" : "s"} skipped`}
-                    </div>
-                    <div className="text-muted-foreground">
-                      Now {historyUploadResult.days_of_history} of {historyUploadResult.min_days_required} days of history on file.
-                    </div>
-                    {historyUploadResult.errors.map((e, i) => (
-                      <div key={i} className="text-status-critical-text">
-                        Row {e.row}: {e.reason}
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div className="mt-3">
-                  <UploadHistoryPanel uploadType="historical_stock" refreshKey={backfillUploadHistoryKey} onUndone={loadForecast} />
-                </div>
-
-                {dashboardData.forecast_source === "synthetic_model_stand_in" && (
-                  <div className="mt-3 rounded-lg border border-synthetic-border bg-synthetic-tint px-3 py-2 text-[14px] text-synthetic-text leading-relaxed">
-                    <strong>SYNTHETIC — not real data.</strong> Only {dashboardData.days_of_history} of{" "}
-                    {dashboardData.min_days_required} days of this facility's own history have been collected, so this
-                    trajectory comes from {dashboardData.synthetic_model_label ?? "a synthetic reference model"} trained on
-                    generated data, rescaled to today's real stock. It will switch to a real facility-derived trend once
-                    enough history accumulates.
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Shortage Alert */}
-            <div className="lg:col-span-1 bg-card border border-border rounded-xl p-6 flex flex-col">
-              <div className="flex items-center gap-2 mb-4">
-                <div className="w-7 h-7 rounded-lg bg-status-critical-tint flex items-center justify-center">
-                  <Zap size={15} className="text-status-critical-text" />
-                </div>
-                <h3 className="font-semibold text-foreground text-[19px]">Predictive Shortage Alert</h3>
-              </div>
-
-              <div className="flex-1 flex flex-col">
-                {forecastLoading && (
-                  <div className="py-8 text-center text-[15px] text-foreground">Loading…</div>
-                )}
-                {!forecastLoading && forecastError && (
-                  <div className="py-8 text-center text-[15px] text-status-critical-text">Failed to load: {forecastError}</div>
-                )}
-                {!forecastLoading && !forecastError && dashboardData.forecast_source === "none" && (
-                  <div className="flex flex-col items-center text-center py-6">
-                    <div className="w-12 h-12 rounded-full bg-secondary flex items-center justify-center mb-3">
-                      <Clock size={22} className="text-muted-foreground" />
-                    </div>
-                    <div className="font-semibold text-foreground mb-1">Not enough data yet</div>
-                    <p className="text-[14px] text-foreground leading-relaxed max-w-[240px]">
-                      {dashboardData.days_of_history} of {dashboardData.min_days_required} days of history collected.
-                      Shortage predictions require a real trend, not a guess.
-                    </p>
-                  </div>
-                )}
-                {!forecastLoading && !forecastError && dashboardData.forecast_source !== "none" && dashboardData.alerts.length === 0 && (
-                  <div className="flex flex-col items-center text-center py-6">
-                    <div className="w-12 h-12 rounded-full bg-status-safe-tint flex items-center justify-center mb-3">
-                      <CheckCircle size={22} className="text-status-safe-text" />
-                    </div>
-                    <div className="font-semibold text-foreground mb-1">No shortages predicted</div>
-                    <p className="text-[14px] text-foreground leading-relaxed max-w-[240px]">
+                  <div className="mb-4 rounded-lg border border-status-safe-border bg-status-safe-tint px-3.5 py-3 flex items-center gap-2.5">
+                    <CheckCircle size={16} className="text-status-safe-text shrink-0" />
+                    <p className="text-[14px] font-semibold text-status-safe-text">
+                      All blood types on track for the next 30 days
                       {dashboardData.forecast_source === "synthetic_model_stand_in"
-                        ? "Based on the synthetic reference model."
-                        : `Based on a ${dashboardData.days_of_history}-day trend.`}
+                        ? " — based on the synthetic reference model."
+                        : ` — based on ${dashboardData.days_of_history} days of history.`}
                     </p>
                   </div>
                 )}
-                {!forecastLoading && !forecastError && dashboardData.forecast_source !== "none" && dashboardData.alerts.length > 0 && (
-                  <div className="space-y-3">
-                    {dashboardData.alerts.map((alert, i) => {
-                      const level: StatusLevel = alert.severity === "critical" ? "critical" : "watch";
+
+                {/* Compact per-type status list — every type at a glance,
+                    not just the ones needing action. */}
+                <div className="mb-4">
+                  <div className="text-[12px] font-bold text-muted-foreground uppercase tracking-wide mb-2">
+                    Per-type outlook
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-2">
+                    {summary.map((s) => {
+                      const rec = recommendationByType.get(s.blood_type);
                       return (
-                        <div key={i} className={`rounded-lg p-3 flex gap-3 ${STATUS_STYLES[level].panel}`}>
-                          <div className={`w-8 h-8 rounded-md font-display font-bold text-[15px] flex items-center justify-center shrink-0 ${STATUS_STYLES[level].solid}`}>
-                            {alert.type}
-                          </div>
-                          <div>
-                            <div className={`text-[15px] font-bold mb-0.5 ${STATUS_STYLES[level].text}`}>
-                              {alert.severity === "critical" ? "Critical shortage likely" : "Shortage warning"}
-                            </div>
-                            <div className="text-[14px] text-foreground leading-snug">{alert.reason}</div>
-                          </div>
+                        <div key={s.blood_type} className="flex items-center gap-1.5 text-[12.5px] min-w-0">
+                          <BloodTypeBadge type={s.blood_type} size="sm" />
+                          {rec ? (
+                            <span className="text-status-watch-text font-semibold truncate">
+                              ⚠ {rec.recommended_units} by {formatBreachDate(rec.breach_date)}
+                            </span>
+                          ) : (
+                            <span className="text-status-safe-text font-semibold">✓ On track</span>
+                          )}
                         </div>
                       );
                     })}
                   </div>
-                )}
+                </div>
+
+                {/* Trend detail — the chart, demoted to supporting detail
+                    behind a disclosure instead of leading the card. */}
+                <div className="border-t border-border pt-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowTrendDetail((v) => !v)}
+                    aria-expanded={showTrendDetail}
+                    className="flex items-center gap-1.5 text-[13px] font-bold text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <TrendingUp size={14} />
+                    {showTrendDetail ? "Hide trend detail" : "View trend detail"}
+                  </button>
+
+                  {showTrendDetail && (() => {
+                    // The backend omits this key entirely (rather than sending
+                    // null) on the synthetic path, so `!== null` alone lets
+                    // `undefined` through and produces "NaN%" below — check the
+                    // actual type instead of trusting the declared null-only union.
+                    const hasInterval = typeof dashboardData.interval_confidence === "number";
+                    return (
+                      <div className="mt-3">
+                        <p className="text-[13px] text-foreground mb-2">
+                          Total units across every blood type combined. A steady total doesn't mean every type is steady —
+                          see the per-type outlook above.
+                        </p>
+                        <ResponsiveContainer width="100%" height={200}>
+                          <ComposedChart
+                            data={dashboardData.series.map((d) => ({
+                              ...d,
+                              band: d.lower !== null && d.upper !== null ? d.upper - d.lower : 0,
+                            }))}
+                            margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.35} vertical={false} />
+                            <XAxis
+                              dataKey="day"
+                              // interval={0} forces every tick to render instead of
+                              // Recharts silently dropping whichever ones don't fit
+                              // (which is what produced the uneven "Day 20 ... Day
+                              // 30" gap with Day 25 missing) — the tickFormatter
+                              // shortens labels to "5"/"10"/etc. so all 7 fit
+                              // evenly spaced without overlapping.
+                              interval={0}
+                              tickFormatter={(value: string) => (value === "Today" ? "Today" : value.replace("Day ", ""))}
+                              tick={{ fontSize: 12, fill: "var(--foreground)", fontFamily: "Plus Jakarta Sans", fontWeight: 700 }}
+                              axisLine={false}
+                              tickLine={false}
+                            />
+                            <YAxis
+                              tick={{ fontSize: 11, fill: "var(--foreground)", fontFamily: "Plus Jakarta Sans", fontWeight: 700 }}
+                              axisLine={false}
+                              tickLine={false}
+                              width={34}
+                            />
+                            <Tooltip content={<ForecastTooltip />} cursor={{ stroke: "var(--border)", strokeDasharray: "3 3" }} />
+                            {totalMinimumUnits > 0 && (
+                              <ReferenceLine y={totalMinimumUnits} stroke="var(--gray-400)" strokeWidth={1.5} strokeDasharray="4 4" />
+                            )}
+                            {hasInterval && (
+                              <>
+                                {/* Stacked-area trick for a shaded confidence band:
+                                    an invisible area up to `lower`, then a visible
+                                    one for the `lower..upper` gap stacked on top —
+                                    reads as "the range this could fall in," far
+                                    more legible than the old whisker caps, and
+                                    gets visibly wider further into the future. */}
+                                <Area dataKey="lower" stackId="ci" stroke="none" fill="transparent" isAnimationActive={false} />
+                                <Area
+                                  dataKey="band"
+                                  stackId="ci"
+                                  stroke={dashboardData.forecast_source === "synthetic_model_stand_in" ? "var(--synthetic)" : "var(--role-accent)"}
+                                  strokeWidth={1}
+                                  strokeOpacity={0.35}
+                                  fill={dashboardData.forecast_source === "synthetic_model_stand_in" ? "var(--synthetic)" : "var(--role-accent)"}
+                                  fillOpacity={0.3}
+                                  isAnimationActive={false}
+                                />
+                              </>
+                            )}
+                            <Line
+                              type="monotone"
+                              dataKey="units"
+                              stroke={dashboardData.forecast_source === "synthetic_model_stand_in" ? "var(--synthetic)" : "var(--role-accent)"}
+                              strokeWidth={3}
+                              dot={{ r: 3.5, strokeWidth: 0, fill: dashboardData.forecast_source === "synthetic_model_stand_in" ? "var(--synthetic)" : "var(--role-accent)" }}
+                              activeDot={{ r: 5 }}
+                              isAnimationActive={false}
+                            />
+                          </ComposedChart>
+                        </ResponsiveContainer>
+                        {/* A small legend instead of labeling the reference line
+                            inline on the chart — this data tends to sit flat and
+                            close to its own minimum, so an inline label kept
+                            landing right on top of the last data point. */}
+                        <div className="flex items-center gap-4 text-[12px] font-semibold text-foreground -mt-1 mb-1">
+                          <span className="flex items-center gap-1.5">
+                            <span
+                              className="w-3 h-0.5 rounded-full inline-block"
+                              style={{ backgroundColor: dashboardData.forecast_source === "synthetic_model_stand_in" ? "var(--synthetic)" : "var(--role-accent)" }}
+                            />
+                            Projected total
+                          </span>
+                          {totalMinimumUnits > 0 && (
+                            <span className="flex items-center gap-1.5">
+                              <span className="w-3 h-0.5 rounded-full inline-block border-t-2 border-dashed border-gray-400" />
+                              Combined minimum ({totalMinimumUnits})
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[12.5px] text-foreground leading-snug flex items-start gap-1.5">
+                          <span>
+                            {hasInterval
+                              ? "The shaded band shows the range this could realistically fall in."
+                              : "Line shows the projected trend for total units on file."}
+                          </span>
+                          {hasInterval && (
+                            <button
+                              type="button"
+                              onClick={() => setShowIntervalDetail((v) => !v)}
+                              aria-expanded={showIntervalDetail}
+                              aria-label="What does the shaded band mean, technically?"
+                              title="What does the shaded band mean, technically?"
+                              className="shrink-0 w-4 h-4 rounded-full border border-border text-[10px] font-bold text-muted-foreground hover:text-foreground hover:border-foreground flex items-center justify-center leading-none"
+                            >
+                              ?
+                            </button>
+                          )}
+                        </p>
+                        {hasInterval && showIntervalDetail && (
+                          <p className="text-[11.5px] text-muted-foreground leading-snug mt-1">
+                            Technically, this is a {Math.round((dashboardData.interval_confidence as number) * 100)}% prediction
+                            interval — wider with less history on file or further into the future, narrowing as more real
+                            days accumulate.
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              </>
+            )}
+
+            {/* Data provenance — the honesty note on where these numbers
+                come from, kept regardless of trend-detail visibility. */}
+            <div className="mt-4 pt-4 border-t border-border">
+              {!isRealForecastSource(dashboardData.forecast_source) ? (
+                <div className="rounded-lg border border-role-accent-border bg-primary-tint p-3.5">
+                  <div className="flex items-center gap-2.5 mb-3">
+                    <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                      <TrendingUp size={16} className="text-primary" />
+                    </div>
+                    <div>
+                      <div className="text-[14px] font-bold text-foreground leading-tight">Unlock your real forecast</div>
+                      <div className="text-[13px] text-muted-foreground leading-tight">
+                        Have past stock records? Upload them to switch off the synthetic model now.
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mb-3">
+                    <div className="flex items-center justify-between text-[12px] font-bold text-muted-foreground uppercase tracking-wide mb-1">
+                      <span>History on file</span>
+                      <span className="font-mono tabular-nums normal-case">
+                        {dashboardData.days_of_history} of {dashboardData.min_days_required} days
+                      </span>
+                    </div>
+                    <div className="h-2.5 rounded-full bg-card border border-border overflow-hidden">
+                      <div
+                        className="h-full bg-primary rounded-full transition-all duration-500"
+                        style={{ width: `${Math.min(100, (dashboardData.days_of_history / dashboardData.min_days_required) * 100)}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => historyFileInputRef.current?.click()}
+                    disabled={uploadingHistory}
+                    title="Columns: snapshot_date, blood_type, units. Dates must be before today — today's stock is recorded automatically."
+                    className="w-full h-9 bg-primary text-white text-[13.5px] font-bold rounded-lg hover:bg-primary-hover transition-colors disabled:opacity-60 flex items-center justify-center gap-1.5"
+                  >
+                    <Upload size={14} /> {uploadingHistory ? "Uploading…" : "Upload Historical Data"}
+                  </button>
+                  <p className="text-[11.5px] text-muted-foreground mt-1.5 leading-snug">
+                    CSV columns: snapshot_date, blood_type, units — one row per day per blood type, dated before today.
+                  </p>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-status-safe-border bg-status-safe-tint px-3 py-2.5">
+                  <div className="flex items-center gap-1.5 text-[13px] font-bold text-status-safe-text">
+                    <CheckCircle size={14} />
+                    {dashboardData.forecast_source === "sarimax_facility_history"
+                      ? `Real SARIMAX forecast active — ${dashboardData.days_of_history} days of history on file`
+                      : `Real forecast active — ${dashboardData.days_of_history} days of history on file`}
+                  </div>
+                  <button
+                    onClick={() => historyFileInputRef.current?.click()}
+                    disabled={uploadingHistory}
+                    className="text-[12px] font-bold text-primary hover:underline hover:underline-offset-2 disabled:opacity-60 shrink-0"
+                  >
+                    {uploadingHistory ? "Uploading…" : "Add more history"}
+                  </button>
+                </div>
+              )}
+
+              {historyUploadError && (
+                <div className="mt-3 text-[12px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-lg px-2.5 py-2">
+                  {historyUploadError}
+                </div>
+              )}
+              {historyUploadResult && (
+                <div className="mt-3 text-[12px] bg-secondary rounded-lg px-2.5 py-2 space-y-1">
+                  <div className="font-semibold text-foreground">
+                    {historyUploadResult.rows_processed} day{historyUploadResult.rows_processed === 1 ? "" : "s"}-of-type
+                    record{historyUploadResult.rows_processed === 1 ? "" : "s"} processed
+                    {historyUploadResult.errors.length > 0 && `, ${historyUploadResult.errors.length} row${historyUploadResult.errors.length === 1 ? "" : "s"} skipped`}
+                  </div>
+                  <div className="text-muted-foreground">
+                    Now {historyUploadResult.days_of_history} of {historyUploadResult.min_days_required} days of history on file.
+                  </div>
+                  {historyUploadResult.errors.map((e, i) => (
+                    <div key={i} className="text-status-critical-text">
+                      Row {e.row}: {e.reason}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="mt-3">
+                <UploadHistoryPanel uploadType="historical_stock" refreshKey={backfillUploadHistoryKey} onUndone={loadForecast} />
               </div>
+
+              {dashboardData.forecast_source === "synthetic_model_stand_in" && (
+                <div className="mt-3 rounded-lg border border-synthetic-border bg-synthetic-tint px-3 py-2 text-[14px] text-synthetic-text leading-relaxed">
+                  <strong>SYNTHETIC — not real data.</strong> Only {dashboardData.days_of_history} of{" "}
+                  {dashboardData.min_days_required} days of this facility's own history have been collected, so this
+                  trajectory comes from {dashboardData.synthetic_model_label ?? "a synthetic reference model"} trained on
+                  generated data, rescaled to today's real stock. It will switch to a real facility-derived trend once
+                  enough history accumulates.
+                </div>
+              )}
             </div>
-          </>
-        )}
+          </div>
+          );
+        })()}
 
         {dashboardData?.view === "threshold_status" && (
           <div className="lg:col-span-2 self-start bg-card border border-border rounded-xl p-6 flex flex-col">

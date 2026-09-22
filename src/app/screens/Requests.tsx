@@ -7,6 +7,7 @@ import { BloodTypeBadge } from "../components/BloodTypeBadge";
 import { Modal } from "../components/Modal";
 import { FacilityNetworkMap, type Facility } from "../components/FacilityNetworkMap";
 import { useFlashOnChange } from "../lib/motion";
+import { ALL_BLOOD_TYPES } from "../lib/statusTokens";
 
 // Chat messages poll faster than notifications (App.tsx's NOTIFICATION_POLL_MS)
 // since a coordination chat is a live conversation, not a background alert.
@@ -208,12 +209,34 @@ export function RequestsScreen({
   const [tab, setTab] = useState<RequestTab>(initialHighlightRequestId ? "transfer" : "sourcing");
   const [searchType, setSearchType] = useState(initialSearchType ?? "O-");
   const [quantityNeeded, setQuantityNeeded] = useState(3);
+
+  // Acting facility now resolves the same way api.ts resolves it server-side:
+  // dev override (if ?dev=1 and the global DevFacilityBanner picked one) wins,
+  // else the real logged-in user's own facility. No local switcher here
+  // anymore — selection happens once, globally, in App().
+  const actingFacilityId = getDevFacilityId() ?? getCurrentUser()?.facility_id ?? null;
+
+  // Only fetched for display-name resolution when dev-overriding to a facility
+  // that isn't the logged-in user's own (whose name we already have via session).
+  const [facilities, setFacilities] = useState<ActingFacility[]>([]);
+  useEffect(() => {
+    if (!isDevModeEnabled()) return;
+    apiGet<ActingFacility[]>("/facilities").then(setFacilities);
+  }, []);
+
   // Blood banks have no patients, so trauma/scheduled_surgery (which grant
   // non-preemptive priority ahead of restock — see IMMEDIATE_USE_TYPES in
   // main.py) can never legitimately apply to a blood-bank-originated
   // request. The server enforces this regardless of what's sent here; this
   // just keeps the UI honest about the only value that will actually land.
-  const isBloodBankRequester = getCurrentUser()?.facility_type === "bloodbank";
+  // Derived from the ACTING facility (dev override aware), not always the
+  // real logged-in account — otherwise using ?dev=1 to act as a different
+  // facility type leaves this stuck on the real account's type, which used
+  // to hide the entire "Incoming Requests" panel for a dev-overridden
+  // blood-bank facility even though its data was being fetched correctly.
+  const isBloodBankRequester = isDevModeEnabled()
+    ? facilities.find((f) => f.id === actingFacilityId)?.facility_type === "bloodbank"
+    : getCurrentUser()?.facility_type === "bloodbank";
   const [emergencyType, setEmergencyType] = useState<EmergencyType>(isBloodBankRequester ? "restock" : "trauma");
   const [selectedBank, setSelectedBank] = useState<number | null>(null);
   const [chatInput, setChatInput] = useState("");
@@ -261,20 +284,6 @@ export function RequestsScreen({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [justSentBankId, setJustSentBankId] = useState<number | null>(null);
 
-  // Acting facility now resolves the same way api.ts resolves it server-side:
-  // dev override (if ?dev=1 and the global DevFacilityBanner picked one) wins,
-  // else the real logged-in user's own facility. No local switcher here
-  // anymore — selection happens once, globally, in App().
-  const actingFacilityId = getDevFacilityId() ?? getCurrentUser()?.facility_id ?? null;
-
-  // Only fetched for display-name resolution when dev-overriding to a facility
-  // that isn't the logged-in user's own (whose name we already have via session).
-  const [facilities, setFacilities] = useState<ActingFacility[]>([]);
-  useEffect(() => {
-    if (!isDevModeEnabled()) return;
-    apiGet<ActingFacility[]>("/facilities").then(setFacilities);
-  }, []);
-
   // /requests and /requests/incoming each only resolve the OTHER side's name
   // (the "us" side is implied) — this fills in "us" for the chat header,
   // whichever side of the transfer that happens to be.
@@ -298,27 +307,36 @@ export function RequestsScreen({
   // others don't.
   const [cancelConfirmId, setCancelConfirmId] = useState<number | null>(null);
 
+  // Sequence guards, not just mount-cleanup ones: both fetchers are also
+  // called directly from event handlers (performRequestAction, sendRequest)
+  // that can overlap with an in-flight effect-driven fetch, so a plain
+  // "cancelled on unmount" flag wouldn't stop a slower earlier response from
+  // landing after a faster later one and silently reverting the list.
+  const requestsRequestIdRef = useRef(0);
   function fetchRequests() {
+    const requestId = ++requestsRequestIdRef.current;
     setRequestsLoading(true);
     setRequestsError(null);
     apiGet<RequestRow[]>("/requests")
-      .then((data) => setRequests(data))
-      .catch((err) => setRequestsError(err instanceof Error ? err.message : "Failed to load"))
-      .finally(() => setRequestsLoading(false));
+      .then((data) => { if (requestId === requestsRequestIdRef.current) setRequests(data); })
+      .catch((err) => { if (requestId === requestsRequestIdRef.current) setRequestsError(err instanceof Error ? err.message : "Failed to load"); })
+      .finally(() => { if (requestId === requestsRequestIdRef.current) setRequestsLoading(false); });
   }
 
   useEffect(() => {
     fetchRequests();
   }, []);
 
+  const incomingRequestIdRef = useRef(0);
   function fetchIncoming() {
     if (actingFacilityId === null) return;
+    const requestId = ++incomingRequestIdRef.current;
     setIncomingLoading(true);
     setIncomingError(null);
     apiGet<RequestRow[]>("/requests/incoming")
-      .then((data) => setIncomingRequests(data))
-      .catch((err) => setIncomingError(err instanceof Error ? err.message : "Failed to load"))
-      .finally(() => setIncomingLoading(false));
+      .then((data) => { if (requestId === incomingRequestIdRef.current) setIncomingRequests(data); })
+      .catch((err) => { if (requestId === incomingRequestIdRef.current) setIncomingError(err instanceof Error ? err.message : "Failed to load"); })
+      .finally(() => { if (requestId === incomingRequestIdRef.current) setIncomingLoading(false); });
   }
 
   useEffect(() => {
@@ -438,7 +456,6 @@ export function RequestsScreen({
     }
   }
 
-  const bloodTypes = ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"];
   const pendingOnly = requests.filter((r) => r.status === "pending");
 
   return (
@@ -476,7 +493,7 @@ export function RequestsScreen({
                   Blood type needed
                 </label>
                 <div className="grid grid-cols-4 gap-1.5">
-                  {bloodTypes.map((bt) => (
+                  {ALL_BLOOD_TYPES.map((bt) => (
                     <button
                       key={bt}
                       onClick={() => setSearchType(bt)}

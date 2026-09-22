@@ -866,6 +866,63 @@ def _get_or_fit_cached_sarimax(
     return result
 
 
+def _compute_restock_recommendation(
+    blood_type: str,
+    point_by_checkpoint: dict[int, float],
+    minimum: Optional[int],
+    maximum: Optional[int],
+    today: date,
+) -> Optional[dict]:
+    """Pure translation of an already-computed point forecast into a restock
+    action — never touches how that forecast was produced (SARIMAX/
+    linear-trend/synthetic stand-in all feed it the same shape). Returns None
+    if this type has no threshold configured, or if its point forecast never
+    dips below `minimum` anywhere in the FORECAST_CHECKPOINTS window (0-30
+    days out) — i.e. "on track".
+
+    recommended_units targets bringing the worst point anywhere in that
+    30-day window back up to `maximum` (the facility's own target ceiling for
+    this type), not just the point at the moment it first breaches — a
+    non-monotonic trajectory (e.g. SARIMAX's seasonal structure) can dip
+    lower later before recovering, and a recommendation sized only to the
+    breach point wouldn't actually cover that.
+    """
+    if minimum is None or maximum is None:
+        return None
+
+    breach_checkpoint = next(
+        (c for c in FORECAST_CHECKPOINTS if point_by_checkpoint[c] < minimum), None
+    )
+    if breach_checkpoint is None:
+        return None
+
+    if breach_checkpoint == 0:
+        # Already below minimum today — nothing to interpolate.
+        days_until_breach = 0.0
+    else:
+        prev_checkpoint = FORECAST_CHECKPOINTS[FORECAST_CHECKPOINTS.index(breach_checkpoint) - 1]
+        prev_units, breach_units = point_by_checkpoint[prev_checkpoint], point_by_checkpoint[breach_checkpoint]
+        if breach_units == prev_units:
+            days_until_breach = float(breach_checkpoint)
+        else:
+            frac = (prev_units - minimum) / (prev_units - breach_units)
+            days_until_breach = prev_checkpoint + frac * (breach_checkpoint - prev_checkpoint)
+
+    projected_low_point = min(point_by_checkpoint[c] for c in FORECAST_CHECKPOINTS)
+    recommended_units = max(0, math.ceil(maximum - projected_low_point))
+
+    return {
+        "blood_type": blood_type,
+        "breach_date": (today + timedelta(days=round(days_until_breach))).isoformat(),
+        "days_until_breach": round(days_until_breach),
+        "recommended_units": recommended_units,
+    }
+
+
+def _restock_status(recommendations: list[dict]) -> str:
+    return "action_needed" if recommendations else "on_track"
+
+
 # SYNTHETIC — must match MODEL_LABEL in fit_and_cache_synthetic_forecast.py.
 # Validated on generated data only; see SYNTHETIC_SARIMAX_VALIDATION.md for the
 # full identification -> estimation -> diagnostic-checking -> cross-validation
@@ -876,7 +933,8 @@ SYNTHETIC_MODEL_LABEL = "SARIMAX(0,1,4)x(1,0,1,7)+dengue"
 
 
 def _build_synthetic_stand_in_forecast(
-    conn, today: date, current_units_by_type: dict[str, int], thresholds: dict[str, int], is_dengue_season: bool
+    conn, today: date, current_units_by_type: dict[str, int], thresholds: dict[str, int],
+    maximum_thresholds: dict[str, int], is_dengue_season: bool,
 ) -> Optional[dict]:
     """Stand-in for a real per-facility trend while real history is below
     MIN_DAYS_REQUIRED: reads the pre-fit synthetic SARIMAX forecast (see
@@ -908,6 +966,7 @@ def _build_synthetic_stand_in_forecast(
             return None
 
     alerts = []
+    restock_recommendations = []
     total_by_checkpoint = {c: 0 for c in FORECAST_CHECKPOINTS}
 
     for blood_type, current_units in current_units_by_type.items():
@@ -920,6 +979,12 @@ def _build_synthetic_stand_in_forecast(
             projected = max(0, round(type_cache[checkpoint_date] * scale_factor))
             scaled_by_checkpoint[checkpoint] = projected
             total_by_checkpoint[checkpoint] += projected
+
+        recommendation = _compute_restock_recommendation(
+            blood_type, scaled_by_checkpoint, thresholds.get(blood_type), maximum_thresholds.get(blood_type), today
+        )
+        if recommendation is not None:
+            restock_recommendations.append(recommendation)
 
         minimum = thresholds.get(blood_type)
         if minimum is None or current_units < minimum:
@@ -961,7 +1026,13 @@ def _build_synthetic_stand_in_forecast(
         {"day": "Today" if c == 0 else f"Day {c}", "units": total_by_checkpoint[c]}
         for c in FORECAST_CHECKPOINTS
     ]
-    return {"series": series, "alerts": alerts}
+    restock_recommendations.sort(key=lambda r: r["days_until_breach"])
+    return {
+        "series": series,
+        "alerts": alerts,
+        "restock_recommendations": restock_recommendations,
+        "restock_status": _restock_status(restock_recommendations),
+    }
 
 
 app = FastAPI()
@@ -1869,13 +1940,15 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
             {"facility_id": facility_id},
         ).mappings().all()
 
-        thresholds = {
-            row["blood_type"]: row["minimum_units"]
-            for row in conn.execute(
-                text("SELECT blood_type, minimum_units FROM blood_type_thresholds WHERE facility_id = :facility_id"),
-                {"facility_id": facility_id},
-            ).mappings().all()
-        }
+        threshold_rows = conn.execute(
+            text(
+                "SELECT blood_type, minimum_units, maximum_units FROM blood_type_thresholds "
+                "WHERE facility_id = :facility_id"
+            ),
+            {"facility_id": facility_id},
+        ).mappings().all()
+        thresholds = {row["blood_type"]: row["minimum_units"] for row in threshold_rows}
+        maximum_thresholds = {row["blood_type"]: row["maximum_units"] for row in threshold_rows}
 
         distinct_dates = sorted({row["snapshot_date"] for row in history_rows})
         days_of_history = len(distinct_dates)
@@ -1885,7 +1958,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
                 row["blood_type"]: row["units"] for row in history_rows if row["snapshot_date"] == today
             }
             stand_in = _build_synthetic_stand_in_forecast(
-                conn, today, current_units_by_type, thresholds, is_dengue_season
+                conn, today, current_units_by_type, thresholds, maximum_thresholds, is_dengue_season
             )
 
         if days_of_history < MIN_DAYS_REQUIRED:
@@ -1901,6 +1974,8 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
                     "synthetic_model_label": SYNTHETIC_MODEL_LABEL,
                     "series": stand_in["series"],
                     "alerts": stand_in["alerts"],
+                    "restock_recommendations": stand_in["restock_recommendations"],
+                    "restock_status": stand_in["restock_status"],
                 }
             return {
                 "view": "forecast",
@@ -1911,6 +1986,8 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
                 "forecast_source": "none",
                 "series": [],
                 "alerts": [],
+                "restock_recommendations": [],
+                "restock_status": None,
             }
 
     first_date = distinct_dates[0]
@@ -1926,6 +2003,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
     use_sarimax = days_of_history >= SARIMAX_MIN_DAYS_REQUIRED
     sarimax_fallback_types: list[str] = []
     alerts = []
+    restock_recommendations = []
     total_by_checkpoint = {c: 0 for c in FORECAST_CHECKPOINTS}
     # Lower/upper are summed across types the same way the point estimate is —
     # each type's own prediction interval, added up. That's a conservative
@@ -1986,6 +2064,16 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
                     lower_by_checkpoint[checkpoint] += projected
                     upper_by_checkpoint[checkpoint] += projected
 
+            recommendation = _compute_restock_recommendation(
+                blood_type,
+                {c: checkpoint_values[c][0] for c in FORECAST_CHECKPOINTS},
+                minimum,
+                maximum_thresholds.get(blood_type),
+                today,
+            )
+            if recommendation is not None:
+                restock_recommendations.append(recommendation)
+
             # Only flags types currently at/above minimum but trending toward
             # it — types already below minimum are already surfaced by
             # /inventory/summary. SARIMAX has no single slope, so the
@@ -2012,13 +2100,13 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
             severity = "critical" if days_until_threshold <= 14 else "warn"
             if method_used == "sarimax":
                 reason = (
-                    f"{FACILITY_SARIMAX_LABEL} fit on this facility's own {days_of_history}-day history; "
-                    f"projected to fall below minimum threshold ({minimum} units) in "
+                    f"{FACILITY_SARIMAX_LABEL} fit on this facility's own {len(daily_series)}-day history "
+                    f"for {blood_type}; projected to fall below minimum threshold ({minimum} units) in "
                     f"{round(days_until_threshold)} days"
                 )
             else:
                 reason = (
-                    f"{abs(slope):.1f} unit/day decline over a {days_of_history}-day trend; "
+                    f"{abs(slope):.1f} unit/day decline over a {len(points)}-day trend for {blood_type}; "
                     f"projected to fall below minimum threshold ({minimum} units) in "
                     f"{round(days_until_threshold)} days"
                 )
@@ -2047,6 +2135,8 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
     with engine.begin() as conn:
         _check_forecast_shortage_notifications(conn, facility_id, alerts)
 
+    restock_recommendations.sort(key=lambda r: r["days_until_breach"])
+
     forecast_source = "sarimax_facility_history" if use_sarimax else "linear_trend"
     response = {
         "view": "forecast",
@@ -2059,6 +2149,8 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
         "interval_confidence": FORECAST_INTERVAL_CONFIDENCE if band_available else None,
         "series": series,
         "alerts": alerts,
+        "restock_recommendations": restock_recommendations,
+        "restock_status": _restock_status(restock_recommendations),
     }
     if forecast_source == "sarimax_facility_history":
         response["sarimax_model_label"] = FACILITY_SARIMAX_LABEL
@@ -2395,6 +2487,20 @@ class CreateRequestBody(BaseModel):
     quantity: int
     emergency_type: str
 
+    @field_validator("quantity")
+    @classmethod
+    def _quantity_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("quantity must be at least 1")
+        return v
+
+    @field_validator("blood_type")
+    @classmethod
+    def _blood_type_valid(cls, v: str) -> str:
+        if v not in VALID_BLOOD_TYPES:
+            raise ValueError(f"blood_type must be one of {sorted(VALID_BLOOD_TYPES)}")
+        return v
+
 
 @app.post("/requests")
 def create_request(body: CreateRequestBody, requesting_facility_id: int = Depends(get_acting_facility_id)):
@@ -2550,7 +2656,12 @@ def accept_request(request_id: int, facility_id: int = Depends(get_acting_facili
             raise HTTPException(status_code=403, detail="only the supplying facility can accept this request")
         if req["status"] != "pending":
             raise HTTPException(status_code=400, detail=f"cannot accept a request with status {req['status']!r}")
-        conn.execute(text("UPDATE requests SET status = 'accepted' WHERE id = :id"), {"id": request_id})
+        result = conn.execute(
+            text("UPDATE requests SET status = 'accepted' WHERE id = :id AND status = 'pending'"),
+            {"id": request_id},
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=409, detail="request status changed concurrently; refresh and try again")
 
         requester = conn.execute(
             text("SELECT name FROM facilities WHERE id = :id"), {"id": req["requesting_facility_id"]}
@@ -2581,7 +2692,12 @@ def decline_request(request_id: int, facility_id: int = Depends(get_acting_facil
             raise HTTPException(status_code=403, detail="only the supplying facility can decline this request")
         if req["status"] != "pending":
             raise HTTPException(status_code=400, detail=f"cannot decline a request with status {req['status']!r}")
-        conn.execute(text("UPDATE requests SET status = 'declined' WHERE id = :id"), {"id": request_id})
+        result = conn.execute(
+            text("UPDATE requests SET status = 'declined' WHERE id = :id AND status = 'pending'"),
+            {"id": request_id},
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=409, detail="request status changed concurrently; refresh and try again")
 
         supplier = conn.execute(
             text("SELECT name FROM facilities WHERE id = :id"), {"id": req["supplying_facility_id"]}
@@ -2609,7 +2725,12 @@ def cancel_request(request_id: int, facility_id: int = Depends(get_acting_facili
             raise HTTPException(status_code=403, detail="only the requesting facility can cancel this request")
         if req["status"] != "pending":
             raise HTTPException(status_code=400, detail=f"cannot cancel a request with status {req['status']!r}")
-        conn.execute(text("UPDATE requests SET status = 'cancelled' WHERE id = :id"), {"id": request_id})
+        result = conn.execute(
+            text("UPDATE requests SET status = 'cancelled' WHERE id = :id AND status = 'pending'"),
+            {"id": request_id},
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=409, detail="request status changed concurrently; refresh and try again")
 
         requester = conn.execute(
             text("SELECT name FROM facilities WHERE id = :id"), {"id": req["requesting_facility_id"]}
@@ -2651,12 +2772,19 @@ def confirm_release(request_id: int, facility_id: int = Depends(get_acting_facil
         if req["supplier_confirmed_at"] is not None:
             raise HTTPException(status_code=400, detail="release already confirmed")
 
+        # FOR UPDATE locks the matching rows for the rest of this transaction:
+        # a concurrent confirm-release (e.g. for a different request on the
+        # same facility/blood_type) that tries to select overlapping rows
+        # blocks until we commit, then re-evaluates reserved_for_request_id
+        # IS NULL against our now-committed reservation — so it naturally
+        # excludes whatever we just claimed instead of racing to overwrite it.
         candidates = conn.execute(
             text(
                 """
                 SELECT id, expires_date FROM blood_units
                 WHERE facility_id = :facility_id AND blood_type = :blood_type
                   AND expires_date >= CURRENT_DATE AND reserved_for_request_id IS NULL
+                FOR UPDATE
                 """
             ),
             {"facility_id": facility_id, "blood_type": req["blood_type"]},
@@ -2668,10 +2796,21 @@ def confirm_release(request_id: int, facility_id: int = Depends(get_acting_facil
             raise HTTPException(status_code=400, detail=str(exc))
 
         conn.execute(
-            text("UPDATE blood_units SET reserved_for_request_id = :rid WHERE id = ANY(:uids)"),
+            text(
+                "UPDATE blood_units SET reserved_for_request_id = :rid "
+                "WHERE id = ANY(:uids) AND reserved_for_request_id IS NULL"
+            ),
             {"rid": request_id, "uids": [unit["id"] for unit in selected]},
         )
-        conn.execute(text("UPDATE requests SET supplier_confirmed_at = now() WHERE id = :id"), {"id": request_id})
+        result = conn.execute(
+            text(
+                "UPDATE requests SET supplier_confirmed_at = now() "
+                "WHERE id = :id AND status = 'accepted' AND supplier_confirmed_at IS NULL"
+            ),
+            {"id": request_id},
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=409, detail="release already confirmed or request status changed concurrently")
 
         supplier = conn.execute(
             text("SELECT name FROM facilities WHERE id = :id"), {"id": req["supplying_facility_id"]}
@@ -2706,16 +2845,35 @@ def confirm_receipt(request_id: int, facility_id: int = Depends(get_acting_facil
         result = conn.execute(
             text(
                 """
-                UPDATE blood_units SET facility_id = :requesting_facility_id
+                UPDATE blood_units
+                SET facility_id = :requesting_facility_id, reserved_for_request_id = NULL
                 WHERE reserved_for_request_id = :request_id
                 """
             ),
             {"requesting_facility_id": req["requesting_facility_id"], "request_id": request_id},
         )
-        conn.execute(
-            text("UPDATE requests SET requester_confirmed_at = now(), status = 'completed' WHERE id = :id"),
+        if result.rowcount != req["quantity"]:
+            # Reserved units went missing between confirm-release and confirm-receipt
+            # (shouldn't happen given the guards above, but never silently mark a
+            # transfer "completed" if the unit count doesn't match — raising here
+            # rolls back the facility_id reassignment too, since it's all one txn).
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"expected to transfer {req['quantity']} reserved units but found "
+                    f"{result.rowcount}; transfer aborted, nothing changed"
+                ),
+            )
+        completion = conn.execute(
+            text(
+                "UPDATE requests SET requester_confirmed_at = now(), status = 'completed' "
+                "WHERE id = :id AND status = 'accepted' AND supplier_confirmed_at IS NOT NULL "
+                "AND requester_confirmed_at IS NULL"
+            ),
             {"id": request_id},
         )
+        if completion.rowcount == 0:
+            raise HTTPException(status_code=409, detail="receipt already confirmed or request status changed concurrently")
 
         requester = conn.execute(
             text("SELECT name FROM facilities WHERE id = :id"), {"id": req["requesting_facility_id"]}
@@ -3060,18 +3218,26 @@ def change_password(body: ChangePasswordBody, reset_claims: dict = Depends(get_u
     and must_change_password=false, so they never get a reset_token."""
     user_id = int(reset_claims["sub"])
     with engine.begin() as conn:
+        # The JWT itself has no server-side revocation, so this WHERE clause is
+        # what makes it single-use in practice: must_change_password flips to
+        # false the first time this succeeds, so a replayed/leaked copy of the
+        # same still-unexpired token can't silently overwrite the password a
+        # second time (e.g. to undo what the legitimate user just set).
         row = conn.execute(
             text(
                 """
                 UPDATE users SET password_hash = :password_hash, must_change_password = false
-                WHERE id = :id
+                WHERE id = :id AND must_change_password = true
                 RETURNING id, email, facility_id, role
                 """
             ),
             {"password_hash": auth.hash_password(body.new_password), "id": user_id},
         ).mappings().first()
         if row is None:
-            raise HTTPException(status_code=404, detail="account not found")
+            exists = conn.execute(text("SELECT 1 FROM users WHERE id = :id"), {"id": user_id}).scalar()
+            if not exists:
+                raise HTTPException(status_code=404, detail="account not found")
+            raise HTTPException(status_code=400, detail="this password reset link has already been used")
 
         facility = None
         if row["facility_id"] is not None:

@@ -3,6 +3,13 @@
 // (Inventory's grouped view) so the app doesn't have two conventions.
 export const BLOOD_TYPE_ORDER = ["A-", "A+", "AB-", "AB+", "B-", "B+", "O-", "O+"];
 
+// A second, differently-ordered list of the same 8 types — used for dropdown/
+// filter options (Requests, Donors) where positive-before-negative-per-group
+// reads more naturally than BLOOD_TYPE_ORDER's grouping. Kept as its own
+// constant (not derived from BLOOD_TYPE_ORDER) rather than reordering either
+// list to match the other, since changing either changes visible UI order.
+export const ALL_BLOOD_TYPES = ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"];
+
 // Mirrors the backend's NOTIFY_EXPIRY_CRITICAL_DAYS / NOTIFY_EXPIRY_NEAR_DAYS
 // (server/main.py) — can't literally share a constant across languages, but
 // the two values must stay in sync: this is what decides "critical"/"near

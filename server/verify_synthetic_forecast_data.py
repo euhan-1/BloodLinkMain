@@ -23,10 +23,7 @@ from sqlalchemy import text
 from database import engine
 
 DENGUE_SEASON_MONTHS = {6, 7, 8, 9, 10}
-OUTPUT_JSON = Path(
-    r"C:\Users\euhan\AppData\Local\Temp\claude\d--BloodLink-Web-Application-Design"
-    r"\26edace0-4c1a-4c1f-bc8f-d8722d35ef99\scratchpad\synthetic_series.json"
-)
+OUTPUT_JSON = Path(__file__).parent / "tmp" / "synthetic_series.json"
 
 
 def main():

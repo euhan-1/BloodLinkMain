@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import "./lib/leafletSetup";
 import {
   apiGet, logout as apiLogout, refreshCurrentUser,
+  SESSION_EXPIRED_EVENT,
   type NotificationItem,
 } from "./lib/api";
 import { getCurrentUser, type SessionUser } from "./lib/session";
@@ -177,6 +178,19 @@ export default function App() {
       .then((user) => setCurrentUser(user))
       .catch(() => { apiLogout(); setCurrentUser(null); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Any authenticated call anywhere in the app (Dashboard's poll, an action on
+  // Requests, etc.) can come back 401 well after mount — api.ts already
+  // clears the stored session when that happens and fires this event so we
+  // drop back to the login screen instead of every screen being stuck
+  // rendering "Failed to load: 401 Unauthorized" with no way out.
+  useEffect(() => {
+    function handleSessionExpired() {
+      setCurrentUser(null);
+    }
+    window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
   }, []);
 
   // Drives --role-accent (theme.css): hospital gets navy, everything else

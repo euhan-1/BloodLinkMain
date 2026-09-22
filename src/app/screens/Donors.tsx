@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle, Clock, MessageSquare, Phone, Send, Upload }
 import { apiGet, apiPost, apiUploadFile } from "../lib/api";
 import { isDevModeEnabled } from "../lib/devMode";
 import { UploadHistoryPanel } from "../components/UploadHistoryPanel";
+import { ALL_BLOOD_TYPES } from "../lib/statusTokens";
 
 // ─── SMS Donor Blast ──────────────────────────────────────────────────────────
 
@@ -44,7 +45,6 @@ type ConfirmedResponse = {
 };
 
 export function ChatScreen() {
-  const bloodTypes = ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"];
   const isDevMode = isDevModeEnabled();
 
   // Donor roster upload
@@ -282,7 +282,7 @@ export function ChatScreen() {
               <div>
                 <label className="text-[13px] font-semibold text-foreground block mb-2">Blood Type</label>
                 <div className="grid grid-cols-4 gap-1.5">
-                  {bloodTypes.map((bt) => (
+                  {ALL_BLOOD_TYPES.map((bt) => (
                     <button
                       key={bt}
                       onClick={() => setSelectedType(bt)}

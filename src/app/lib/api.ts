@@ -34,10 +34,27 @@ async function extractErrorMessage(res: Response): Promise<string> {
   return `${res.status} ${res.statusText}`;
 }
 
+// Fired on window whenever an authenticated call comes back 401 — App.tsx
+// listens for this to drop back to the login screen instead of every screen
+// independently rendering "Failed to load: 401 Unauthorized" forever with no
+// way out but a manual logout. Only used by the authenticated helpers below;
+// login/changePassword/requestPasswordReset/resetPassword call fetch directly
+// and treat their own 401s as "wrong credentials", not session expiry.
+export const SESSION_EXPIRED_EVENT = "bloodlink:session-expired";
+
+async function throwForResponse(res: Response): Promise<never> {
+  if (res.status === 401) {
+    clearSession();
+    window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+    throw new Error("Your session has expired — please log in again.");
+  }
+  throw new Error(await extractErrorMessage(res));
+}
+
 export async function apiGet<T>(path: string, headers?: HeadersInit): Promise<T> {
   const res = await fetch(`${API_BASE_URL}${path}`, { headers: withAuthHeaders(headers) });
   if (!res.ok) {
-    throw new Error(await extractErrorMessage(res));
+    return throwForResponse(res);
   }
   return res.json();
 }
@@ -49,7 +66,7 @@ export async function apiPost<T>(path: string, body: unknown, headers?: HeadersI
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    throw new Error(await extractErrorMessage(res));
+    return throwForResponse(res);
   }
   return res.json();
 }
@@ -61,7 +78,7 @@ export async function apiPut<T>(path: string, body: unknown, headers?: HeadersIn
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    throw new Error(await extractErrorMessage(res));
+    return throwForResponse(res);
   }
   return res.json();
 }
@@ -73,7 +90,7 @@ export async function apiPatch<T>(path: string, body: unknown, headers?: Headers
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    throw new Error(await extractErrorMessage(res));
+    return throwForResponse(res);
   }
   return res.json();
 }
@@ -85,7 +102,7 @@ export async function apiDelete<T>(path: string, body: unknown, headers?: Header
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    throw new Error(await extractErrorMessage(res));
+    return throwForResponse(res);
   }
   return res.json();
 }
@@ -101,7 +118,7 @@ export async function apiUploadFile<T>(path: string, file: File): Promise<T> {
     body: formData,
   });
   if (!res.ok) {
-    throw new Error(await extractErrorMessage(res));
+    return throwForResponse(res);
   }
   return res.json();
 }
@@ -417,7 +434,7 @@ export function applyUploadUndo(uploadId: number): Promise<UndoApplyResult> {
 export async function downloadUploadHistoryFile(uploadId: number, fallbackFilename: string): Promise<void> {
   const res = await fetch(`${API_BASE_URL}/upload-history/${uploadId}/download`, { headers: withAuthHeaders() });
   if (!res.ok) {
-    throw new Error(await extractErrorMessage(res));
+    return throwForResponse(res);
   }
   const disposition = res.headers.get("Content-Disposition") ?? "";
   const match = disposition.match(/filename="([^"]+)"/);

@@ -8,3 +8,4 @@ dist/
 .impeccable/
 __pycache__/
 .pytest_cache/
+server/tmp/

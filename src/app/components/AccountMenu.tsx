@@ -290,6 +290,8 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
   // previous poll's set counts as a real arrival.
   const knownIdsRef = useRef<Set<number> | null>(null);
 
+  const pulseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   function loadNotifications() {
     listNotifications()
       .then((data) => {
@@ -297,7 +299,8 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
         const ids = new Set(data.map((n) => n.id));
         if (knownIdsRef.current !== null && data.some((n) => !knownIdsRef.current!.has(n.id))) {
           setJustArrived(true);
-          setTimeout(() => setJustArrived(false), 450);
+          if (pulseTimeoutRef.current !== null) clearTimeout(pulseTimeoutRef.current);
+          pulseTimeoutRef.current = setTimeout(() => setJustArrived(false), 450);
         }
         knownIdsRef.current = ids;
       })
@@ -310,7 +313,10 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
   useEffect(() => {
     loadNotifications();
     const interval = setInterval(loadNotifications, NOTIFICATION_POLL_MS);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      if (pulseTimeoutRef.current !== null) clearTimeout(pulseTimeoutRef.current);
+    };
   }, []);
 
   useEffect(() => {
