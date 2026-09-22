@@ -202,9 +202,16 @@ def best_candidate_index(
     endog: pd.Series, exog: pd.DataFrame, library=CANDIDATE_LIBRARY, maxiter: int = 100
 ) -> Optional[int]:
     """Fits every candidate in `library` and returns the index of the
-    best-AIC one — this IS the training-label rule ("best config = the
-    candidate with the best AIC from the Box-Jenkins fit") and is also
-    reused as the "full Box-Jenkins search" baseline at evaluation time.
+    best-AIC one. NOT used as the training-label rule as of the second
+    training attempt — a first attempt used this (best-AIC) as the label and
+    hit its own STOP condition: even the best-AIC oracle didn't beat the
+    fixed default on held-out forecast accuracy, i.e. AIC-best-fit-in-sample
+    isn't the same thing as best-out-of-sample-forecast, and training a
+    classifier to predict a label that itself doesn't track the metric that
+    actually matters can't produce something useful. Kept here as a general
+    utility (still a legitimate "which config fits this data best,
+    statistically" question) — see best_candidate_by_forecast_error below
+    for the rule actually used to generate labels now.
     None if every single candidate failed to fit."""
     best_idx, best_aic = None, None
     for i, (order, seasonal_order) in enumerate(library):
@@ -214,6 +221,98 @@ def best_candidate_index(
         if best_aic is None or result["aic"] < best_aic:
             best_aic, best_idx = result["aic"], i
     return best_idx
+
+
+def _forecast_errors(fit, test_endog: pd.Series, test_exog: pd.DataFrame) -> Optional[dict]:
+    """Scores one already-fitted model's forecast against real held-out
+    values. Returns None (never raises) if the forecast call itself fails or
+    produces any non-finite value — a candidate whose forecast blows up is
+    disqualified, not scored with a huge-but-finite number that could still
+    accidentally look competitive."""
+    horizon = len(test_endog)
+    try:
+        fc = fit.get_forecast(steps=horizon, exog=test_exog).predicted_mean.values
+    except Exception:
+        return None
+    if not np.all(np.isfinite(fc)):
+        return None
+    actual = test_endog.values
+    pct_err = np.abs((actual - fc) / np.where(actual == 0, np.nan, actual))
+    mape = float(np.nanmean(pct_err) * 100) if np.any(np.isfinite(pct_err)) else None
+    if mape is None:
+        return None
+    return {"rmse": float(np.sqrt(np.mean((actual - fc) ** 2))), "mape": mape}
+
+
+def rolling_origin_windows(n: int, horizon: int, n_origins: int, step: Optional[int] = None) -> list[int]:
+    """Up to `n_origins` split points (0-based indices) spaced `step` apart
+    (default: `horizon`), working backward from n - horizon, each requiring
+    at least `horizon` days of training history before it. Returns fewer
+    than n_origins — down to an empty list — if the series is too short;
+    never raises. Same rolling-origin design as
+    crossvalidate_synthetic_forecast_model.py, just parametrized instead of
+    hard-coded to that script's specific series length."""
+    step = step or horizon
+    origins = []
+    origin = n - horizon
+    while origin >= horizon and len(origins) < n_origins:
+        origins.append(origin)
+        origin -= step
+    return list(reversed(origins))
+
+
+def best_candidate_by_forecast_error(
+    endog: pd.Series, exog: pd.DataFrame, library=CANDIDATE_LIBRARY,
+    horizon: int = 14, n_origins: int = 2, maxiter: int = 60,
+) -> Optional[tuple[int, dict[int, float]]]:
+    """THE label/selection rule actually used now: rolling-origin
+    cross-validated forecast error (mean MAPE across up to `n_origins`
+    origins within `endog`), not AIC/BIC — this targets the metric a
+    forecast is actually judged on, not in-sample fit quality. Also reused
+    as the "full search" / oracle-ish reference at evaluation time (see
+    train_sarimax_selector.py) — expensive (fits every candidate at every
+    origin) but principled, and exactly what a human doing this by hand
+    with a spreadsheet of forecast errors would do.
+
+    A candidate that fails to fit or forecast at ANY attempted origin is
+    disqualified entirely for this series, not scored on however many
+    origins it did manage — an unreliable config is worse than a
+    consistently-average one.
+
+    Returns (best_index, {index: mean_mape}) for every surviving candidate,
+    or None if the series is too short to form even one origin, or every
+    candidate was disqualified.
+    """
+    n = len(endog)
+    origins = rolling_origin_windows(n, horizon, n_origins)
+    if not origins:
+        return None
+
+    disqualified: set[int] = set()
+    scores: dict[int, list[float]] = {i: [] for i in range(len(library))}
+
+    for origin in origins:
+        train_endog, train_exog = endog.iloc[:origin], exog.iloc[:origin]
+        test_endog, test_exog = endog.iloc[origin:origin + horizon], exog.iloc[origin:origin + horizon]
+        for i, (order, seasonal_order) in enumerate(library):
+            if i in disqualified:
+                continue
+            fit_result = fit_candidate(train_endog, train_exog, order, seasonal_order, maxiter=maxiter)
+            if fit_result is None:
+                disqualified.add(i)
+                continue
+            errors = _forecast_errors(fit_result["fit"], test_endog, test_exog)
+            if errors is None:
+                disqualified.add(i)
+                continue
+            scores[i].append(errors["mape"])
+
+    valid = {i: v for i, v in scores.items() if i not in disqualified and len(v) == len(origins)}
+    if not valid:
+        return None
+    mean_mape = {i: float(np.mean(v)) for i, v in valid.items()}
+    best_idx = min(mean_mape, key=mean_mape.get)
+    return best_idx, mean_mape
 
 
 DEFAULT_MODEL_PATH = Path(__file__).parent / "models" / "sarimax_selector.joblib"
