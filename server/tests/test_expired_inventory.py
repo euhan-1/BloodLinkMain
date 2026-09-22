@@ -44,14 +44,34 @@ YESTERDAY = TODAY - timedelta(days=1)
 TOMORROW = TODAY + timedelta(days=1)
 
 
+# Mirrors main.py's DEFAULT_THRESHOLDS — thresholds are per-facility (see
+# migrate_scope_thresholds_to_facility.py), and /inventory/summary's query
+# starts FROM blood_type_thresholds, so a facility with zero threshold rows
+# returns an empty summary regardless of its actual blood_units. A facility
+# created via POST /admin/facilities gets these seeded automatically; this
+# test helper isn't going through that endpoint, so it seeds them itself.
+_TEST_THRESHOLDS = [
+    ("A+", 80, 160), ("A-", 50, 100), ("B+", 60, 120), ("B-", 40, 80),
+    ("O+", 100, 200), ("O-", 80, 160), ("AB+", 30, 60), ("AB-", 25, 50),
+]
+
+
 def _make_facility(conn, name: str, facility_type: str = "bloodbank") -> int:
-    return conn.execute(
+    facility_id = conn.execute(
         text(
             "INSERT INTO facilities (name, facility_type, is_active, profile_completed, latitude, longitude) "
             "VALUES (:n, :t, true, true, 14.5995, 120.9842) RETURNING id"
         ),
         {"n": name, "t": facility_type},
     ).scalar()
+    conn.execute(
+        text(
+            "INSERT INTO blood_type_thresholds (facility_id, blood_type, minimum_units, maximum_units) "
+            "VALUES (:facility_id, :bt, :mn, :mx)"
+        ),
+        [{"facility_id": facility_id, "bt": bt, "mn": mn, "mx": mx} for bt, mn, mx in _TEST_THRESHOLDS],
+    )
+    return facility_id
 
 
 def _add_unit(conn, facility_id: int, expires_date: date, blood_type: str = "O+", din: str | None = None) -> str:
@@ -69,6 +89,7 @@ def _add_unit(conn, facility_id: int, expires_date: date, blood_type: str = "O+"
 
 
 def _cleanup_facility(conn, facility_id: int) -> None:
+    conn.execute(text("DELETE FROM blood_type_thresholds WHERE facility_id = :fid"), {"fid": facility_id})
     conn.execute(text("DELETE FROM blood_units WHERE facility_id = :fid"), {"fid": facility_id})
     conn.execute(text("DELETE FROM inventory_snapshots WHERE facility_id = :fid"), {"fid": facility_id})
     conn.execute(text("DELETE FROM forecast_alert_state WHERE facility_id = :fid"), {"fid": facility_id})

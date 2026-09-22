@@ -1322,13 +1322,14 @@ def archive_expired_inventory(facility_id: int = Depends(get_acting_facility_id)
 @app.get("/inventory/summary")
 def get_inventory_summary(facility_id: int = Depends(get_acting_facility_id)):
     """Per-type USABLE unit counts (the logged-in user's own facility)
-    against configured minimum thresholds.
+    against this facility's own configured minimum thresholds.
 
     A "unit" is one blood_units row (one bag/donation), not a volume
     measurement. Types with zero current stock still appear, with units=0,
-    so shortages are visible. Thresholds are still global across facilities,
-    not per-facility policy — a known simplification from Step 5, unchanged
-    here.
+    so shortages are visible. Thresholds are per-facility (see
+    blood_type_thresholds's schema comment) — every facility gets its own 8
+    rows seeded at creation time (admin_create_facility_account), so this
+    join should never miss a row for a real facility.
 
     expires_date >= CURRENT_DATE only: an expired unit was never usable, so
     it can't count toward "how much stock does this facility have" any more
@@ -1349,6 +1350,7 @@ def get_inventory_summary(facility_id: int = Depends(get_acting_facility_id)):
                     WHERE facility_id = :facility_id AND expires_date >= CURRENT_DATE
                     GROUP BY blood_type
                 ) c ON c.blood_type = t.blood_type
+                WHERE t.facility_id = :facility_id
                 ORDER BY t.blood_type
                 """
             ),
@@ -1366,14 +1368,16 @@ class UpdateThresholdBody(BaseModel):
 def update_threshold(
     blood_type: str, body: UpdateThresholdBody, facility_id: int = Depends(get_acting_facility_id)
 ):
-    """Edits the minimum/maximum safe-stock levels for one blood type.
+    """Edits the minimum/maximum safe-stock levels for one blood type, for
+    the logged-in user's own facility only.
 
-    Any logged-in facility can call this (matches the Inventory screen's
-    Thresholds button, available to every account type) — facility_id here
-    only proves a real session exists, same as every other authenticated
-    endpoint; it isn't used to scope the write, since the table itself is
-    still the global, not-per-facility one described on /inventory/summary
-    — editing here changes what every facility sees, same known simplification.
+    facility_id comes strictly from the verified JWT (get_acting_facility_id)
+    and scopes the UPDATE's WHERE clause — a facility can only ever edit its
+    own thresholds, exactly like every other facility-scoped mutating
+    endpoint (DELETE /inventory/{din}, POST /inventory/archive-expired, ...).
+    Was global across every facility until
+    migrate_scope_thresholds_to_facility.py — see that script for the
+    correctness bug this fixed and its backfill.
     """
     if body.minimum_units < 0 or body.maximum_units < 0:
         raise HTTPException(status_code=400, detail="thresholds cannot be negative")
@@ -1385,14 +1389,19 @@ def update_threshold(
                 """
                 UPDATE blood_type_thresholds
                 SET minimum_units = :minimum_units, maximum_units = :maximum_units
-                WHERE blood_type = :blood_type
+                WHERE facility_id = :facility_id AND blood_type = :blood_type
                 RETURNING blood_type, minimum_units, maximum_units
                 """
             ),
-            {"blood_type": blood_type, "minimum_units": body.minimum_units, "maximum_units": body.maximum_units},
+            {
+                "facility_id": facility_id,
+                "blood_type": blood_type,
+                "minimum_units": body.minimum_units,
+                "maximum_units": body.maximum_units,
+            },
         ).mappings().first()
         if row is None:
-            raise HTTPException(status_code=404, detail=f"no threshold row for blood type {blood_type!r}")
+            raise HTTPException(status_code=404, detail=f"no threshold row for blood type {blood_type!r} at this facility")
     return dict(row)
 
 
@@ -1593,6 +1602,7 @@ def _build_hospital_threshold_view(conn, facility_id: int, is_dengue_season: boo
                 WHERE facility_id = :facility_id AND expires_date >= CURRENT_DATE
                 GROUP BY blood_type
             ) c ON c.blood_type = t.blood_type
+            WHERE t.facility_id = :facility_id
             ORDER BY t.blood_type
             """
         ),
@@ -1862,7 +1872,8 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
         thresholds = {
             row["blood_type"]: row["minimum_units"]
             for row in conn.execute(
-                text("SELECT blood_type, minimum_units FROM blood_type_thresholds")
+                text("SELECT blood_type, minimum_units FROM blood_type_thresholds WHERE facility_id = :facility_id"),
+                {"facility_id": facility_id},
             ).mappings().all()
         }
 
@@ -2172,11 +2183,28 @@ BLOOD_COMPATIBILITY: dict[str, list[str]] = {
     "AB-": ["A-", "B-", "O-", "AB-"],
 }
 
+# Starting min/max safe-stock thresholds seeded for every newly-created
+# facility (admin_create_facility_account below) — a facility can edit its
+# own from here via PUT /thresholds/{blood_type}. Must match seed_thresholds.py
+# and migrate_scope_thresholds_to_facility.py's backfill values, so a
+# freshly-seeded facility and a migrated pre-existing one start identically.
+DEFAULT_THRESHOLDS: list[tuple[str, int, int]] = [
+    ("A+", 80, 160),
+    ("A-", 50, 100),
+    ("B+", 60, 120),
+    ("B-", 40, 80),
+    ("O+", 100, 200),
+    ("O-", 80, 160),
+    ("AB+", 30, 60),
+    ("AB-", 25, 50),
+]
+
 
 def _evaluate_facility_stock(stock_by_type: dict[str, int], thresholds: dict[str, int], blood_type: str, quantity: int) -> dict:
-    """Pure: given one facility's non-expired stock counts and the global safety
-    thresholds, compute exact-type availability plus any compatible-but-not-exact
-    donor types that themselves have enough usable stock to cover the request.
+    """Pure: given one facility's non-expired stock counts and that SAME
+    facility's own safety thresholds, compute exact-type availability plus
+    any compatible-but-not-exact donor types that themselves have enough
+    usable stock to cover the request.
 
     `available`/`usable_units` stay strictly about the exact type — compatible
     alternatives are surfaced separately, not blended into that signal.
@@ -2212,12 +2240,14 @@ def get_nearby_facilities(
     for the availability/alternatives check).
 
     Expired units are excluded on purpose — expired stock isn't usable, so it
-    can't count as available. Safety reserve is the same global per-type
-    threshold used on the Dashboard; there's no per-facility policy table yet,
-    which is a simplification. The acting facility is excluded from its own
-    results — matters now that any facility (including blood banks) can be
-    the origin, not just Riverside (which was never in the bloodbank-only
-    candidate list, so this never came up before).
+    can't count as available. Safety reserve is each CANDIDATE facility's own
+    per-type threshold, not the searching facility's — a candidate's
+    "available" stock is what it has above its own safety reserve, since
+    that's the policy it would actually be giving away against. The acting
+    facility is excluded from its own results — matters now that any
+    facility (including blood banks) can be the origin, not just Riverside
+    (which was never in the bloodbank-only candidate list, so this never
+    came up before).
     """
     with engine.connect() as conn:
         origin = conn.execute(
@@ -2229,12 +2259,12 @@ def get_nearby_facilities(
         if origin["latitude"] is None or origin["longitude"] is None:
             raise HTTPException(status_code=400, detail="complete your facility profile before searching the network")
 
-        thresholds = {
-            row["blood_type"]: row["minimum_units"]
-            for row in conn.execute(
-                text("SELECT blood_type, minimum_units FROM blood_type_thresholds")
-            ).mappings().all()
-        }
+        threshold_rows = conn.execute(
+            text("SELECT facility_id, blood_type, minimum_units FROM blood_type_thresholds")
+        ).mappings().all()
+        thresholds_by_facility: dict[int, dict[str, int]] = {}
+        for row in threshold_rows:
+            thresholds_by_facility.setdefault(row["facility_id"], {})[row["blood_type"]] = row["minimum_units"]
 
         stock_rows = conn.execute(
             text(
@@ -2268,7 +2298,8 @@ def get_nearby_facilities(
     results = []
     for facility in facility_rows:
         evaluation = _evaluate_facility_stock(
-            stock_by_facility.get(facility["id"], {}), thresholds, blood_type, quantity
+            stock_by_facility.get(facility["id"], {}), thresholds_by_facility.get(facility["id"], {}),
+            blood_type, quantity,
         )
         results.append({
             **dict(facility),
@@ -3224,6 +3255,19 @@ def admin_create_facility_account(body: CreateFacilityAccountBody):
             ),
             {"name": body.name, "facility_type": body.facility_type},
         ).mappings().first()
+
+        conn.execute(
+            text(
+                """
+                INSERT INTO blood_type_thresholds (facility_id, blood_type, minimum_units, maximum_units)
+                VALUES (:facility_id, :blood_type, :minimum_units, :maximum_units)
+                """
+            ),
+            [
+                {"facility_id": facility["id"], "blood_type": bt, "minimum_units": mn, "maximum_units": mx}
+                for bt, mn, mx in DEFAULT_THRESHOLDS
+            ],
+        )
 
         temp_password = auth.generate_temp_password()
         user = conn.execute(
