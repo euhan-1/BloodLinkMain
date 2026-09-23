@@ -2,7 +2,18 @@ import { getDevFacilityId } from "./devMode";
 import { clearSession, getToken, setSession, updateSessionUser, type SessionUser } from "./session";
 import { type InventoryApiRow } from "./inventoryTypes";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+// Production always calls same-origin, through Vercel's /api/:path* rewrite
+// (see vercel.json) to the real Render backend — not the Render URL
+// directly. PLDT (a major Philippine ISP) can't reach
+// bloodlink-backend-t688.onrender.com at all (browser requests fail with
+// ERR_CONNECTION after ~8s), but can reach Vercel fine, so the fix is
+// routing every API call through the domain that's actually reachable.
+// VITE_API_BASE_URL still drives local dev (see .env.local /
+// .env.example — defaults to the local backend on :8000) since there's no
+// Vercel rewrite in play there; import.meta.env.DEV is Vite's own
+// build-time flag (true under `vite dev`, false in a production build), so
+// this can't accidentally ship the dev value into a real deploy.
+const API_BASE_URL = import.meta.env.DEV ? import.meta.env.VITE_API_BASE_URL : "/api";
 
 // Every request auto-attaches the real bearer token (if logged in) and, only
 // when dev mode is active (?dev=1) and a facility has been picked in the dev

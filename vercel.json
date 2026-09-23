@@ -1,5 +1,6 @@
 {
   "rewrites": [
+    { "source": "/api/:path*", "destination": "https://bloodlink-backend-t688.onrender.com/:path*" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
