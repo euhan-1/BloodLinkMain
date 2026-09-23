@@ -645,6 +645,22 @@ def dengue_season_index(d: date) -> float:
     severity index is a reasonable future improvement, but belongs in the
     same step that revisits the order itself.
 
+    TRIED AND REVERTED (2026-09-23): a graded 0-1 monthly climatology,
+    derived from real Batangas DOH surveillance data (see
+    batangas_dengue_2016_2021_real.csv / derive_dengue_season_index.py /
+    DENGUE_INDEX_DERIVATION.md), was tested as a replacement — TWO candidate
+    versions, actually, since the first spec's year-exclusion window
+    conflicted with this repo's own prior precedent (see that doc). BOTH
+    failed live re-verification on facility 158's real history (152 days,
+    all 8 blood types): the dengue coefficient lost significance for every
+    type either way (p 0.40-0.97, vs. p<0.05 on 7/8 types with this binary
+    flag) and AIC got worse across the board. Likely cause: facility 158's
+    history spans only one partial season (Apr-Sep) with a single on/off
+    transition, which the binary flag can fit as a simple level-shift even
+    if it isn't capturing genuine repeatable seasonality — a graded shape no
+    longer aligns with that same confound. Revisit only against a facility
+    with real multi-season history and a fresh significance check.
+
     Because it's a pure calendar lookup, future exog values for the 30-day
     forecast horizon come for free — no forecasting of the exogenous
     variable itself is needed.
