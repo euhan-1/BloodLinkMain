@@ -1,5 +1,4 @@
-import { useState, useEffect } from "react";
-import "./lib/leafletSetup";
+import { useState, useEffect, lazy, Suspense } from "react";
 import {
   apiGet, logout as apiLogout, refreshCurrentUser,
   SESSION_EXPIRED_EVENT,
@@ -10,19 +9,40 @@ import { withViewTransition } from "./lib/motion";
 import { isDevModeEnabled, getDevFacilityId, setDevFacilityId } from "./lib/devMode";
 import { BloodDropLogo } from "./components/BloodTypeBadge";
 import { NotificationBell, AccountMenu } from "./components/AccountMenu";
-import { DashboardScreen } from "./screens/Dashboard";
-import { InventoryScreen } from "./screens/Inventory";
-import { RequestsScreen } from "./screens/Requests";
-import { ChatScreen } from "./screens/Donors";
-import { AdminDashboardScreen } from "./screens/Admin";
+// Everything below is lazy except LoginScreen — that's the one screen a
+// signed-out visitor actually needs, so it's the only screen bundled into
+// the initial/login chunk. Every other screen (and, transitively, whatever
+// heavy libraries only it needs — recharts for Dashboard, leaflet for
+// Requests/CompleteProfile) fetches its own chunk only once the user
+// actually navigates there. See ScreenFallback below for the Suspense UI.
+const DashboardScreen = lazy(() => import("./screens/Dashboard").then((m) => ({ default: m.DashboardScreen })));
+const InventoryScreen = lazy(() => import("./screens/Inventory").then((m) => ({ default: m.InventoryScreen })));
+const RequestsScreen = lazy(() => import("./screens/Requests").then((m) => ({ default: m.RequestsScreen })));
+const ChatScreen = lazy(() => import("./screens/Donors").then((m) => ({ default: m.ChatScreen })));
+const AdminDashboardScreen = lazy(() => import("./screens/Admin").then((m) => ({ default: m.AdminDashboardScreen })));
+const ResetPasswordScreen = lazy(() => import("./screens/ResetPassword").then((m) => ({ default: m.ResetPasswordScreen })));
+const CompleteProfileScreen = lazy(() => import("./screens/CompleteProfile").then((m) => ({ default: m.CompleteProfileScreen })));
 import { LoginScreen } from "./screens/Login";
-import { ResetPasswordScreen } from "./screens/ResetPassword";
-import { CompleteProfileScreen } from "./screens/CompleteProfile";
 import {
   AlertTriangle, MapPin,
   Phone,
   Activity, Package,
 } from "lucide-react";
+
+// Suspense fallback shown while a lazy screen's chunk is fetching — a plain
+// centered spinner rather than a skeleton of that specific screen, since
+// this covers seven very different screens and a generic "loading" state is
+// honest about what's actually happening (downloading code, not data).
+function ScreenFallback() {
+  return (
+    <div className="min-h-[60vh] flex items-center justify-center">
+      <div className="flex items-center gap-2.5 text-muted-foreground">
+        <BloodDropLogo size={22} />
+        <span className="text-[14px] font-medium">Loading…</span>
+      </div>
+    </div>
+  );
+}
 
 type Screen = "login" | "dashboard" | "inventory" | "requests" | "chat";
 
@@ -222,7 +242,9 @@ export default function App() {
   if (window.location.pathname === "/reset-password") {
     return (
       <div style={{ fontFamily: "var(--font-body)" }} className="animate-page-enter">
-        <ResetPasswordScreen />
+        <Suspense fallback={<ScreenFallback />}>
+          <ResetPasswordScreen />
+        </Suspense>
       </div>
     );
   }
@@ -238,7 +260,9 @@ export default function App() {
   if (currentUser.role === "admin") {
     return (
       <div style={{ fontFamily: "var(--font-body)" }} className="animate-page-enter">
-        <AdminDashboardScreen user={currentUser} onLogout={handleLogout} />
+        <Suspense fallback={<ScreenFallback />}>
+          <AdminDashboardScreen user={currentUser} onLogout={handleLogout} />
+        </Suspense>
       </div>
     );
   }
@@ -246,7 +270,9 @@ export default function App() {
   if (!currentUser.profile_completed) {
     return (
       <div style={{ fontFamily: "var(--font-body)" }} className="animate-page-enter">
-        <CompleteProfileScreen user={currentUser} onComplete={() => withViewTransition(() => setCurrentUser(getCurrentUser()))} />
+        <Suspense fallback={<ScreenFallback />}>
+          <CompleteProfileScreen user={currentUser} onComplete={() => withViewTransition(() => setCurrentUser(getCurrentUser()))} />
+        </Suspense>
       </div>
     );
   }
@@ -256,24 +282,26 @@ export default function App() {
       <TopNav screen={screen} setScreen={setScreen} onLogout={handleLogout} user={currentUser} onNotificationNavigate={handleNotificationNavigate} />
       {isDevModeEnabled() && <DevFacilityBanner />}
       <main className="animate-content-rise-in">
-        {screen === "dashboard" && (
-          <DashboardScreen
-            onRequestBloodType={(bloodType) => {
-              setSourcingPrefillType(bloodType);
-              setScreen("requests");
-            }}
-          />
-        )}
-        {screen === "inventory" && <InventoryScreen />}
-        {screen === "requests" && (
-          <RequestsScreen
-            initialSearchType={sourcingPrefillType}
-            onConsumedSourcingPrefill={() => setSourcingPrefillType(null)}
-            initialHighlightRequestId={requestsHighlightId}
-            onConsumedHighlight={() => setRequestsHighlightId(null)}
-          />
-        )}
-        {screen === "chat" && <ChatScreen />}
+        <Suspense fallback={<ScreenFallback />}>
+          {screen === "dashboard" && (
+            <DashboardScreen
+              onRequestBloodType={(bloodType) => {
+                setSourcingPrefillType(bloodType);
+                setScreen("requests");
+              }}
+            />
+          )}
+          {screen === "inventory" && <InventoryScreen />}
+          {screen === "requests" && (
+            <RequestsScreen
+              initialSearchType={sourcingPrefillType}
+              onConsumedSourcingPrefill={() => setSourcingPrefillType(null)}
+              initialHighlightRequestId={requestsHighlightId}
+              onConsumedHighlight={() => setRequestsHighlightId(null)}
+            />
+          )}
+          {screen === "chat" && <ChatScreen />}
+        </Suspense>
       </main>
     </div>
   );

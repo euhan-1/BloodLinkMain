@@ -1,6 +1,13 @@
 import { useEffect } from "react";
 import { MapContainer, TileLayer, Marker, Tooltip as LeafletTooltip, useMap } from "react-leaflet";
 import L from "leaflet";
+// Side-effect import (marker-icon path fix) — belongs here, not App.tsx, so
+// leaflet's ~176KB (JS + CSS) only loads when a screen that actually renders
+// a map is reached, instead of on every page load including the login
+// screen. See leafletSetup.ts. FacilityLocationPicker.tsx carries the same
+// import for the same reason, since it's the other (only other) Leaflet
+// consumer and isn't guaranteed to load after this module.
+import "../lib/leafletSetup";
 import { DEFAULT_MAP_CENTER } from "../lib/mapConstants";
 
 // Leaflet measures its container's pixel size once, at construction, to

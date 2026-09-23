@@ -1,6 +1,10 @@
 import { useState, useEffect } from "react";
 import { MapContainer, TileLayer, Marker, useMap } from "react-leaflet";
 import L from "leaflet";
+// See the same import in FacilityNetworkMap.tsx — kept in both Leaflet
+// consumers (not App.tsx) so leaflet's marker-icon fix and CSS only ship to
+// whichever screen actually renders a map.
+import "../lib/leafletSetup";
 import { Search } from "lucide-react";
 import { DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, PIN_PLACED_ZOOM } from "../lib/mapConstants";
 
