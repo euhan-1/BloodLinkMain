@@ -11,10 +11,12 @@
       <style>html, body { height: 100%; margin: 0; } #root { height: 100%; }</style>
       <script>
         (function () {
+          // Light is the default for a first-time visitor with nothing
+          // stored yet — deliberately not a prefers-color-scheme mirror.
+          // Must match getStoredTheme()'s fallback in src/app/lib/theme.ts.
           try {
             var stored = localStorage.getItem("bloodlink-theme");
-            var dark = stored === "dark" || (stored !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
-            if (dark) document.documentElement.classList.add("dark");
+            if (stored === "dark") document.documentElement.classList.add("dark");
           } catch (e) {}
         })();
       </script>

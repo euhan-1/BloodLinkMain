@@ -1,9 +1,12 @@
-// Light/dark preference — a real user choice (AccountMenu's toggle), not
-// just a system-preference mirror. The .dark class this applies to <html>
-// is what every color token in theme.css branches on (see the .dark block
-// there). index.html carries a matching inline script that applies the
-// same stored choice before React ever mounts, so there's no flash of the
-// wrong theme on load — STORAGE_KEY must stay in sync with that script.
+// Light/dark preference — a real user choice (AccountMenu's toggle), not a
+// system-preference mirror: a first-time visitor with nothing stored gets
+// light, regardless of their OS setting, and only an explicit toggle click
+// (setTheme, persisted below) ever moves them to dark. The .dark class this
+// applies to <html> is what every color token in theme.css branches on (see
+// the .dark block there). index.html carries a matching inline script that
+// applies the same stored choice before React ever mounts, so there's no
+// flash of the wrong theme on load — STORAGE_KEY and the light default must
+// stay in sync with that script.
 
 export type Theme = "light" | "dark";
 
@@ -16,7 +19,7 @@ export function getStoredTheme(): Theme {
   } catch {
     // localStorage unavailable (private browsing, etc.) — fall through
   }
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return "light";
 }
 
 function applyTheme(theme: Theme): void {
