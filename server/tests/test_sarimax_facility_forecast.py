@@ -162,7 +162,13 @@ class FitSarimaxFacilityForecastTests(unittest.TestCase):
         # GET /forecast's per-blood-type fallback depends on to never 500.
         today = date(2026, 3, 1)
         series = _build_realistic_series(45, today)
-        with patch("main.SARIMAX", side_effect=RuntimeError("simulated statsmodels failure")):
+        # Patched at its defining module, not "main.SARIMAX" — main.py imports
+        # SARIMAX lazily (inside _fit_sarimax_facility_forecast, for startup
+        # time — see the import comment near the top of main.py), so there's
+        # no longer a module-level main.SARIMAX attribute to intercept. The
+        # local `from ... import SARIMAX` re-resolves this attribute off the
+        # real module on every call, so patching it here still works.
+        with patch("statsmodels.tsa.statespace.sarimax.SARIMAX", side_effect=RuntimeError("simulated statsmodels failure")):
             result = _fit_sarimax_facility_forecast(series, today)
         self.assertIsNone(result)
 
@@ -177,7 +183,7 @@ class FitSarimaxFacilityForecastTests(unittest.TestCase):
             def fit(self, *args, **kwargs):
                 return _FakeFitResult()
 
-        with patch("main.SARIMAX", return_value=_FakeModel()):
+        with patch("statsmodels.tsa.statespace.sarimax.SARIMAX", return_value=_FakeModel()):
             result = _fit_sarimax_facility_forecast(series, today)
         self.assertIsNone(result)
 

@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Building2, CheckCircle, FlaskConical, RefreshCw, ShieldCheck, Zap } from "lucide-react";
 import {
-  login as apiLogin, changePassword as apiChangePassword, requestPasswordReset,
+  login as apiLogin, changePassword as apiChangePassword, requestPasswordReset, warmBackend,
 } from "../lib/api";
 import { type SessionUser } from "../lib/session";
 import { BloodDropLogo } from "../components/BloodTypeBadge";
@@ -42,6 +42,28 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
   // ("if an account exists...") on purpose, matching the backend's own
   // refusal to reveal whether the email matched anything.
   const [forgotSent, setForgotSent] = useState(false);
+
+  // Fires the moment this screen mounts, not on submit — so a Render
+  // free-tier cold backend is already waking up while someone's still
+  // typing their email/password, instead of only starting once they click
+  // Sign in. Purely a warm-up: the response is never read.
+  useEffect(() => {
+    warmBackend();
+  }, []);
+
+  // True once the in-flight login request has been pending long enough that
+  // it's almost certainly a cold start, not a normal round trip — so the
+  // button can say so instead of leaving a spinner that reads as "broken"
+  // for however long Render takes to wake up.
+  const [slowLogin, setSlowLogin] = useState(false);
+  useEffect(() => {
+    if (!loading) {
+      setSlowLogin(false);
+      return;
+    }
+    const timer = setTimeout(() => setSlowLogin(true), 3000);
+    return () => clearTimeout(timer);
+  }, [loading]);
 
   function handleSelectDemo(type: DemoAccountType) {
     setSelectedDemo(type);
@@ -279,7 +301,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                   className="w-full h-10 bg-primary text-white text-sm font-semibold rounded-md hover:bg-primary-hover transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
                 >
                   {loading ? (
-                    <><RefreshCw size={15} className="animate-spin" /> Signing in…</>
+                    <><RefreshCw size={15} className="animate-spin" /> {slowLogin ? "Starting up the server, this may take a moment…" : "Signing in…"}</>
                   ) : (
                     "Sign in"
                   )}

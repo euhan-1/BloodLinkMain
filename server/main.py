@@ -11,15 +11,22 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 import jwt
-import pandas as pd
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, field_validator
-from scipy import stats as scipy_stats
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
-from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+# pandas, scipy, and statsmodels are NOT imported here, deliberately — they're
+# a multi-second import cost (numpy/scipy/pandas/statsmodels's C extensions)
+# paid at process startup if imported at module level, and every request
+# other than forecasting (login, inventory, requests, ...) never touches
+# them. Each is imported lazily, right where it's used, inside
+# _prediction_interval_half_width and _fit_sarimax_facility_forecast below —
+# see those functions for why. This keeps `uvicorn main:app` reaching
+# "Application startup complete" in ~1-2s instead of ~35s, which matters a
+# lot on Render's free tier where a cold start already costs real time.
 
 import auth
 import email_service
@@ -624,6 +631,7 @@ def _prediction_interval_half_width(
     rss = sum((y - (intercept + slope * x)) ** 2 for x, y in points)
     mse = rss / df
     se_pred = math.sqrt(mse * (1 + 1 / n + (x0 - x_bar) ** 2 / ss_xx))
+    from scipy import stats as scipy_stats  # lazy — see the import comment near the top of this file
     t_crit = scipy_stats.t.ppf(1 - (1 - confidence) / 2, df)
     return t_crit * se_pred
 
@@ -749,6 +757,9 @@ def _fit_sarimax_facility_forecast(daily_series: list[tuple[date, int]], today: 
     """
     if len(daily_series) < SARIMAX_MIN_DAYS_REQUIRED or daily_series[-1][0] != today:
         return None
+
+    import pandas as pd  # lazy — see the import comment near the top of this file
+    from statsmodels.tsa.statespace.sarimax import SARIMAX
 
     dates = [d for d, _ in daily_series]
     values = [v for _, v in daily_series]

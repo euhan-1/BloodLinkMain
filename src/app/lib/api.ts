@@ -123,6 +123,16 @@ export async function apiUploadFile<T>(path: string, file: File): Promise<T> {
   return res.json();
 }
 
+// Fire-and-forget ping to wake a cold Render free-tier backend while someone
+// is still typing their credentials on the login screen — see Login.tsx's
+// mount effect. Deliberately swallows every failure/rejection: nothing
+// reads this response, and a warm-up that fails (offline, backend still
+// booting) must never surface as an error anywhere. Not routed through
+// apiGet, since this must work with no token and must never throw.
+export function warmBackend(): void {
+  fetch(`${API_BASE_URL}/health`).catch(() => {});
+}
+
 // Discriminated on must_change_password: an admin-onboarded account (or any
 // account an admin has reset) logs in successfully but gets no access_token
 // at all — just a narrowly-scoped reset_token, good for exactly one call to
