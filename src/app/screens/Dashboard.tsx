@@ -15,6 +15,7 @@ import { StatusDot, BloodTypeBadge } from "../components/BloodTypeBadge";
 import { Skeleton } from "../components/Skeleton";
 import { UploadHistoryPanel } from "../components/UploadHistoryPanel";
 import { useFlashOnChange } from "../lib/motion";
+import { getCurrentUser } from "../lib/session";
 import { type InventoryUnit, type InventoryApiRow, toInventoryUnit } from "../lib/inventoryTypes";
 
 // Narrowed to just the fields this screen actually reads — the full request
@@ -161,7 +162,14 @@ type ForecastView = {
   restock_recommendations: RestockRecommendation[];
   // null only on the "none" (no forecast at all yet) source — every other
   // source always says one or the other.
-  restock_status: "on_track" | "action_needed" | null;
+  // "pending" = some blood types are still being calculated and none of the ready
+  // ones needs action yet, so "on_track" would be a claim the server can't make.
+  restock_status: "on_track" | "action_needed" | "pending" | null;
+  // Blood types the server hasn't fitted yet (it fits a couple per request); the
+  // dashboard re-asks until this is empty. `series` (the facility-wide total) is
+  // empty while any are pending. Absent on the non-SARIMAX paths.
+  pending_types?: string[];
+  types_total?: number;
   series: { day: string; units: number; lower: number | null; upper: number | null }[];
   alerts: ForecastAlert[];
 };
@@ -244,6 +252,47 @@ function StatusTypeTile({ bloodType, units, minimumUnits }: { bloodType: string;
   );
 }
 
+// The forecast panels only exist once /forecast has answered, so before that
+// (first load, or a first load that failed) the whole panel used to be absent:
+// no loading text, and on a timeout nothing at all. This stands in for it. It
+// is deliberately separate from the "Collecting Data" / reference-model states,
+// which are real answers from the server, not the absence of one.
+function ForecastPendingCard({ title, error, onRetry, progress }: { title: string; error: string | null; onRetry: () => void; progress?: string }) {
+  return (
+    <div className="lg:col-span-2 self-start bg-card border border-border rounded-xl p-6 flex flex-col">
+      <h3 className="font-semibold text-foreground text-[19px] mb-1">{title}</h3>
+      {error === null ? (
+        <div role="status" className="py-8 text-center text-[15px] text-foreground leading-relaxed">
+          {progress ?? "Loading forecast…"}
+          <br />
+          <span className="text-[13.5px] text-muted-foreground">
+            {progress
+              ? "This page updates by itself as each blood type finishes. It can take a couple of minutes after new data is added."
+              : "The first load after new data is added can take a moment."}
+          </span>
+        </div>
+      ) : (
+        <div role="alert" className="py-8 text-center text-[15px] text-foreground leading-relaxed">
+          <span className="text-status-critical-text font-semibold">The forecast didn't load.</span>
+          <br />
+          <span className="text-[13.5px] text-muted-foreground">
+            Your stock and the rest of the dashboard are unaffected. If the server is still working on it, a retry in a
+            moment will usually succeed. ({error})
+          </span>
+          <div className="mt-3">
+            <button
+              onClick={onRetry}
+              className="h-8 px-3 bg-primary text-white rounded-lg text-[13px] font-semibold hover:bg-primary-hover transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (bloodType: string) => void }) {
   const [summary, setSummary] = useState<InventorySummaryRow[]>([]);
   const [summaryLoading, setSummaryLoading] = useState(true);
@@ -257,6 +306,7 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
   // expiring units doesn't force its card (and, since these two cards sit in
   // the same grid row, its sibling too) to grow arbitrarily tall.
   const VISIBLE_ITEM_LIMIT = 3;
+  const FORECAST_PENDING_POLL_MS = 2000;
   const [showAllActions, setShowAllActions] = useState(false);
   const [showAllExpiry, setShowAllExpiry] = useState(false);
 
@@ -324,9 +374,11 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
   // already showed "Real forecast active" would otherwise silently revert
   // the screen back to "Not enough history yet".
   const forecastRequestIdRef = useRef(0);
-  function loadForecast() {
+  // silent = a follow-up poll for still-pending blood types: keep showing what we
+  // have instead of flipping the panel back to "Loading…".
+  function loadForecast(silent = false) {
     const requestId = ++forecastRequestIdRef.current;
-    setForecastLoading(true);
+    if (!silent) setForecastLoading(true);
     setForecastError(null);
     apiGet<DashboardData>("/forecast")
       .then((data) => { if (requestId === forecastRequestIdRef.current) setDashboardData(data); })
@@ -334,6 +386,17 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
       .finally(() => { if (requestId === forecastRequestIdRef.current) setForecastLoading(false); });
   }
   useEffect(() => { loadForecast(); }, []);
+
+  // The server fits only a couple of blood types per request and lists the rest
+  // as pending; ask again (after the previous answer, never overlapping) until none are.
+  const pendingCount = dashboardData?.view === "forecast" ? (dashboardData.pending_types?.length ?? 0) : 0;
+  const nothingReadyYet =
+    dashboardData?.view === "forecast" && pendingCount > 0 && pendingCount === dashboardData.types_total;
+  useEffect(() => {
+    if (pendingCount === 0 || forecastLoading || forecastError) return;
+    const timer = setTimeout(() => loadForecast(true), FORECAST_PENDING_POLL_MS);
+    return () => clearTimeout(timer);
+  }, [dashboardData, forecastLoading, forecastError]);
 
   async function handleHistoryFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -602,7 +665,16 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
 
       {/* Forecast/Threshold + Alert/Action + Expiry */}
       <div className="grid lg:grid-cols-3 gap-4">
-        {dashboardData?.view === "forecast" && (() => {
+        {(!dashboardData || nothingReadyYet) && (
+          <ForecastPendingCard
+            title={getCurrentUser()?.facility_type === "hospital" ? "Action Required" : "Restock Outlook"}
+            error={forecastLoading ? null : (forecastError ?? (nothingReadyYet ? null : "no response"))}
+            onRetry={() => loadForecast()}
+            progress={nothingReadyYet ? `Calculating your forecast: 0 of ${dashboardData.types_total} blood types ready…` : undefined}
+          />
+        )}
+
+        {dashboardData?.view === "forecast" && !nothingReadyYet && (() => {
           const recommendationByType = new Map(
             dashboardData.restock_recommendations.map((r) => [r.blood_type, r])
           );
@@ -618,6 +690,11 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
               {isRealForecastSource(dashboardData.forecast_source) && dashboardData.restock_status === "action_needed" && (
                 <span className="flex items-center gap-1 text-[13px] font-bold text-status-watch-text bg-status-watch-tint px-2 py-0.5 rounded-full border border-status-watch-border">
                   <AlertTriangle size={13} /> Action Needed
+                </span>
+              )}
+              {isRealForecastSource(dashboardData.forecast_source) && dashboardData.restock_status === "pending" && (
+                <span className="flex items-center gap-1 text-[13px] font-bold text-foreground bg-secondary px-2 py-0.5 rounded-full border border-border">
+                  <Clock size={13} /> Calculating…
                 </span>
               )}
               {isRealForecastSource(dashboardData.forecast_source) && dashboardData.restock_status === "on_track" && (
@@ -654,7 +731,14 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
               <div className="py-8 text-center text-[15px] text-foreground">Loading forecast…</div>
             )}
             {!forecastLoading && forecastError && (
-              <div className="py-8 text-center text-[15px] text-status-critical-text">Failed to load: {forecastError}</div>
+              <div className="py-8 text-center text-[15px] text-status-critical-text">
+                Failed to load: {forecastError}
+                <div className="mt-3">
+                  <button onClick={() => loadForecast()} className="h-8 px-3 bg-primary text-white rounded-lg text-[13px] font-semibold hover:bg-primary-hover transition-colors">
+                    Retry
+                  </button>
+                </div>
+              </div>
             )}
             {!forecastLoading && !forecastError && dashboardData.forecast_source === "none" && (
               <div className="py-6 text-center text-[15px] text-foreground leading-relaxed">
@@ -671,6 +755,13 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                     when, in staff-facing language — no model/checkpoint
                     vocabulary. The chart and its jargon are demoted to the
                     "Trend detail" disclosure further down. */}
+                {pendingCount > 0 && (
+                  <div role="status" className="mb-3 rounded-lg border border-border bg-secondary px-3.5 py-2.5 text-[13.5px] text-foreground leading-snug">
+                    Still calculating {pendingCount} of {dashboardData.types_total} blood types
+                    ({(dashboardData.pending_types ?? []).join(", ")}). This updates by itself.
+                    {dashboardData.restock_status === "action_needed" && " The items below are for the types that are ready."}
+                  </div>
+                )}
                 {dashboardData.restock_status === "action_needed" ? (
                   <div className="mb-4 space-y-2">
                     {dashboardData.restock_recommendations.map((rec) => {
@@ -702,7 +793,7 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                       </p>
                     )}
                   </div>
-                ) : (
+                ) : dashboardData.restock_status === "pending" ? null : (
                   <div className="mb-4 rounded-lg border border-status-safe-border bg-status-safe-tint px-3.5 py-3 flex items-center gap-2.5">
                     <CheckCircle size={16} className="text-status-safe-text shrink-0" />
                     <p className="text-[14px] font-semibold text-status-safe-text">
@@ -726,7 +817,9 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                       return (
                         <div key={s.blood_type} className="flex items-center gap-1.5 text-[12.5px] min-w-0">
                           <BloodTypeBadge type={s.blood_type} size="sm" />
-                          {rec ? (
+                          {(dashboardData.pending_types ?? []).includes(s.blood_type) ? (
+                            <span className="text-muted-foreground font-semibold">Calculating…</span>
+                          ) : rec ? (
                             <span className="text-status-watch-text font-semibold truncate">
                               ⚠ {rec.recommended_units} by {formatBreachDate(rec.breach_date)}
                             </span>
@@ -746,13 +839,16 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                     type="button"
                     onClick={() => setShowTrendDetail((v) => !v)}
                     aria-expanded={showTrendDetail}
-                    className="flex items-center gap-1.5 text-[13px] font-bold text-muted-foreground hover:text-foreground transition-colors"
+                    disabled={dashboardData.series.length === 0}
+                    className="flex items-center gap-1.5 text-[13px] font-bold text-muted-foreground hover:text-foreground transition-colors disabled:opacity-60 disabled:cursor-default"
                   >
                     <TrendingUp size={14} />
-                    {showTrendDetail ? "Hide trend detail" : "View trend detail"}
+                    {dashboardData.series.length === 0
+                      ? "Trend detail appears once every blood type is calculated"
+                      : showTrendDetail ? "Hide trend detail" : "View trend detail"}
                   </button>
 
-                  {showTrendDetail && (() => {
+                  {showTrendDetail && dashboardData.series.length > 0 && (() => {
                     // The backend omits this key entirely (rather than sending
                     // null) on the synthetic path, so `!== null` alone lets
                     // `undefined` through and produces "NaN%" below — check the
@@ -967,7 +1063,7 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
               )}
 
               <div className="mt-3">
-                <UploadHistoryPanel uploadType="historical_stock" refreshKey={backfillUploadHistoryKey} onUndone={loadForecast} />
+                <UploadHistoryPanel uploadType="historical_stock" refreshKey={backfillUploadHistoryKey} onUndone={() => loadForecast()} />
               </div>
 
               {dashboardData.forecast_source === "synthetic_model_stand_in" && (
@@ -1022,7 +1118,14 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                 <div className="py-8 text-center text-[15px] text-foreground">Loading…</div>
               )}
               {!forecastLoading && forecastError && (
-                <div className="py-8 text-center text-[15px] text-status-critical-text">Failed to load: {forecastError}</div>
+                <div className="py-8 text-center text-[15px] text-status-critical-text">
+                Failed to load: {forecastError}
+                <div className="mt-3">
+                  <button onClick={() => loadForecast()} className="h-8 px-3 bg-primary text-white rounded-lg text-[13px] font-semibold hover:bg-primary-hover transition-colors">
+                    Retry
+                  </button>
+                </div>
+              </div>
               )}
               {!forecastLoading && !forecastError && dashboardData.action_prompts.length === 0 && (
                 <div className="flex flex-col items-center text-center py-6">
