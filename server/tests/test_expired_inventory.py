@@ -7,7 +7,7 @@ explicitly archives them.
 Unlike this project's other tests (test_historical_upload.py,
 test_inventory_upload.py, test_prediction_interval.py, and last turn's
 test_sarimax_facility_forecast.py), these ARE DB-backed — deliberately, not
-by accident. The behavior under test (expires_date >= CURRENT_DATE filtering,
+by accident. The behavior under test (expires_date >= today filtering,
 archived_at bulk-updates) lives in raw SQL predicates inside the route
 handlers, not in an extractable pure function the way _linear_trend or
 dengue_season_index are; a Python-side re-implementation of "is this unit
@@ -39,7 +39,9 @@ from sqlalchemy import text
 import main
 from database import engine
 
-TODAY = date.today()
+# The system's calendar day is the Manila business date (main.business_today), NOT this machine's
+# local date or the database's CURRENT_DATE; using it here keeps these tests correct at any hour.
+TODAY = main.business_today()
 YESTERDAY = TODAY - timedelta(days=1)
 TOMORROW = TODAY + timedelta(days=1)
 
@@ -176,7 +178,7 @@ class ShortageDetectionUsesUsableOnlyStockTests(unittest.TestCase):
 
     def test_below_minimum_despite_raw_count_exceeding_it(self):
         with engine.connect() as conn:
-            view = main._build_hospital_threshold_view(conn, self.facility_id, is_dengue_season=False)
+            view = main._build_hospital_threshold_view(conn, self.facility_id, is_dengue_season=False, today=TODAY)
         o_pos = next(t for t in view["thresholds"] if t["blood_type"] == "O+")
         self.assertEqual(o_pos["units"], 0)
         self.assertEqual(o_pos["status"], "below_minimum")

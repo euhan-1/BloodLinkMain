@@ -10,3 +10,4 @@ python-multipart==0.0.32
 statsmodels==0.15.0
 scipy==1.18.1
 pandas==3.0.5
+tzdata==2026.3

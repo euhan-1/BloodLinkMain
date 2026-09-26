@@ -20,6 +20,8 @@ import unittest
 
 from sqlalchemy import text
 
+from datetime import timedelta
+
 import main
 from database import engine
 
@@ -137,8 +139,8 @@ class HospitalThresholdViewScopingTests(unittest.TestCase):
         main.update_threshold("B+", UpdateThresholdBody(minimum_units=5, maximum_units=15), facility_id=self.facility_a)
 
         with engine.connect() as conn:
-            view_a = main._build_hospital_threshold_view(conn, self.facility_a, is_dengue_season=False)
-            view_b = main._build_hospital_threshold_view(conn, self.facility_b, is_dengue_season=False)
+            view_a = main._build_hospital_threshold_view(conn, self.facility_a, is_dengue_season=False, today=main.business_today())
+            view_b = main._build_hospital_threshold_view(conn, self.facility_b, is_dengue_season=False, today=main.business_today())
 
         a_bplus = next(t for t in view_a["thresholds"] if t["blood_type"] == "B+")
         b_bplus = next(t for t in view_b["thresholds"] if t["blood_type"] == "B+")
@@ -163,9 +165,10 @@ class NearbyFacilitiesUsesEachCandidatesOwnThresholdTests(unittest.TestCase):
                     conn.execute(
                         text(
                             "INSERT INTO blood_units (din, blood_type, component, location, volume_ml, collected_date, expires_date, facility_id) "
-                            "VALUES (:din, 'O+', 'Packed RBC', 'Fridge A', 280, CURRENT_DATE - 10, CURRENT_DATE + 20, :fid)"
+                            "VALUES (:din, 'O+', 'Packed RBC', 'Fridge A', 280, :collected, :expires, :fid)"
                         ),
-                        {"din": f"TEST-NEARBY-{facility_id}-{i}", "fid": facility_id},
+                        {"din": f"TEST-NEARBY-{facility_id}-{i}", "fid": facility_id,
+                         "collected": main.business_today() - timedelta(days=10), "expires": main.business_today() + timedelta(days=20)},
                     )
             # Strict candidate's own O+ minimum is high (60) — 50 units on
             # hand is BELOW its own reserve, so it should NOT be available.

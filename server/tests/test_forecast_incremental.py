@@ -16,7 +16,7 @@ import main as app
 from database import engine
 from tests.test_bulk_upload import q, upload
 
-TODAY = date.today()
+TODAY = app.business_today()
 TYPES = ["O+", "O-", "A+", "A-", "B+"]
 
 

@@ -72,7 +72,7 @@ class BulkUploadTests(unittest.TestCase):
                 c.execute(text("DELETE FROM facilities WHERE id = :f"), {"f": f})
 
     def test_historical_1440_rows(self):
-        start = date.today() - timedelta(days=180)
+        start = app.business_today() - timedelta(days=180)
         lines = ["snapshot_date,blood_type,units"]
         lines += [f"{start + timedelta(days=d)},{t},{50 + d % 30}" for d in range(180) for t in TYPES]
         lines.insert(5, "not-a-date,O+,10")  # bad row on file line 6
@@ -95,14 +95,14 @@ class BulkUploadTests(unittest.TestCase):
         self.assertEqual(q("SELECT count(*), min(units), max(units) FROM inventory_snapshots WHERE facility_id=:f", f=self.fid)[0], (1440, 7, 7))
 
     def test_historical_duplicate_key_in_file_last_wins(self):
-        d = date.today() - timedelta(days=1)
+        d = app.business_today() - timedelta(days=1)
         body, _, _ = upload(app.upload_historical_inventory_snapshots, self.other, f"snapshot_date,blood_type,units\n{d},O+,10\n{d},O+,99")
         self.assertEqual(body["errors"], [])
         self.assertEqual(q("SELECT units FROM inventory_snapshots WHERE facility_id=:f AND blood_type='O+'", f=self.other), [(99,)])
 
     def test_inventory_1200_rows_errors_ownership_and_undo(self):
-        exp = date.today() + timedelta(days=30)
-        col = date.today() - timedelta(days=5)
+        exp = app.business_today() + timedelta(days=30)
+        col = app.business_today() - timedelta(days=5)
         lines = ["din,blood_type,component,location,volume_ml,collected_date,expires_date"]
         lines += [f"BT{self.tag}-{i},{TYPES[i % 8]},Packed RBC,Bay 1,280,{col},{exp}" for i in range(1200)]
         lines.insert(3, f"BT{self.tag}-BAD,XX,Packed RBC,Bay 1,280,{col},{exp}")  # invalid type, file line 4

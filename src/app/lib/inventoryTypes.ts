@@ -23,17 +23,14 @@ export type InventoryApiRow = {
 
 export function toInventoryUnit(row: InventoryApiRow): InventoryUnit {
   const msPerDay = 1000 * 60 * 60 * 24;
-  // expires_date is a date-only string ("2026-09-25"), which `new Date(...)`
-  // parses as UTC midnight — diffing that against Date.now() (the current
-  // instant) under-counts by a day for roughly the second half of each local
-  // day at any positive UTC offset (e.g. the Philippines, UTC+8). Comparing
-  // local-calendar midnights on both sides instead makes "days left" match
-  // what a local user would count on a calendar.
+  // The system's business day is Asia/Manila (see business_today() in server/main.py),
+  // so "today" is the Manila calendar date whatever timezone this browser is set to.
+  // Both sides are calendar dates compared as UTC midnights, so there is no DST or
+  // offset arithmetic in the difference.
   const [expiresYear, expiresMonth, expiresDay] = row.expires_date.split("-").map(Number);
-  const expiresLocalMidnight = new Date(expiresYear, expiresMonth - 1, expiresDay).getTime();
-  const now = new Date();
-  const todayLocalMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const daysLeft = Math.round((expiresLocalMidnight - todayLocalMidnight) / msPerDay);
+  const [todayYear, todayMonth, todayDay] = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Manila" })
+    .format(new Date()).split("-").map(Number);
+  const daysLeft = Math.round((Date.UTC(expiresYear, expiresMonth - 1, expiresDay) - Date.UTC(todayYear, todayMonth - 1, todayDay)) / msPerDay);
   return {
     din: row.din,
     type: row.blood_type,

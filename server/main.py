@@ -15,6 +15,7 @@ import math
 import secrets
 import warnings
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Optional
 
 import jwt
@@ -44,6 +45,27 @@ load_dotenv()
 # Placeholder calendar rule — should become regionally configurable rather than
 # a hardcoded constant once there's a real settings mechanism.
 DENGUE_SEASON_MONTHS = {6, 7, 8, 9, 10}
+
+# Every calendar-day decision (is this unit expired, which day does today's snapshot
+# belong to, is the forecast cache fresh, ...) is made on the Manila calendar: that is
+# the day the facility's staff and their expiry dates are in. Instants (now(),
+# datetime.now(timezone.utc), *_at columns, JWT/reset expiry) stay UTC and are unaffected.
+# Compute it ONCE per request and pass it down (as a SQL parameter too, never CURRENT_DATE):
+# a forecast request can run ~40 s, so a second lookup mid-request could straddle midnight.
+try:
+    BUSINESS_TZ = ZoneInfo("Asia/Manila")  # resolved once, at import; tzdata is a pinned requirement
+except ZoneInfoNotFoundError as exc:  # fail the deploy loudly, not every request later
+    raise RuntimeError("Time zone data for Asia/Manila is missing: install the pinned 'tzdata' package "
+                       "(server/requirements.txt) - every calendar-day decision depends on it") from exc
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def business_today() -> date:
+    return _utc_now().astimezone(BUSINESS_TZ).date()
+
 
 # The real mathematical floor for _linear_trend's prediction interval to be
 # defined at all, not an arbitrary round number — see
@@ -581,7 +603,7 @@ UPLOAD_UNDO_HANDLERS = {
 }
 
 
-def _check_expiry_notifications(conn, facility_id: int, rows: list) -> None:
+def _check_expiry_notifications(conn, facility_id: int, rows: list, today: date) -> None:
     """Runs as a side effect of GET /inventory, reusing that endpoint's own
     query result instead of re-scanning blood_units a second time (rows may
     include already-expired units, since the caller doesn't filter those out
@@ -589,7 +611,6 @@ def _check_expiry_notifications(conn, facility_id: int, rows: list) -> None:
     it reaches a given tier — last_notified_expiry_status is what makes this
     idempotent across repeated loads instead of spamming a notification every
     time the screen is opened while a unit sits at the same status."""
-    today = date.today()
     for row in rows:
         if row["expires_date"] < today:
             continue
@@ -1529,6 +1550,7 @@ def get_inventory(facility_id: int = Depends(get_acting_facility_id)):
     POST /inventory/archive-expired. Only excludes units already archived,
     so the working list declutters once that backlog is cleared without
     losing the rows (archived_at IS NULL, never a DELETE)."""
+    today = business_today()
     with engine.begin() as conn:
         rows = conn.execute(
             text(
@@ -1545,7 +1567,7 @@ def get_inventory(facility_id: int = Depends(get_acting_facility_id)):
         # Side effect: notifies once per unit the first time it crosses into
         # near-expiry/critical — reuses the rows just fetched above instead
         # of re-querying blood_units a second time (see _check_expiry_notifications).
-        _check_expiry_notifications(conn, facility_id, rows)
+        _check_expiry_notifications(conn, facility_id, rows, today)
     return [
         {
             "din": r["din"], "blood_type": r["blood_type"], "component": r["component"],
@@ -1594,15 +1616,16 @@ def archive_expired_inventory(facility_id: int = Depends(get_acting_facility_id)
     /inventory/summary, GET /forecast, /facilities/nearby) by expires_date
     alone. This only changes what GET /inventory shows by default.
     """
+    today = business_today()
     with engine.begin() as conn:
         result = conn.execute(
             text(
                 """
                 UPDATE blood_units SET archived_at = now()
-                WHERE facility_id = :facility_id AND expires_date < CURRENT_DATE AND archived_at IS NULL
+                WHERE facility_id = :facility_id AND expires_date < :today AND archived_at IS NULL
                 """
             ),
-            {"facility_id": facility_id},
+            {"facility_id": facility_id, "today": today},
         )
     return {"archived_count": result.rowcount}
 
@@ -1619,7 +1642,7 @@ def get_inventory_summary(facility_id: int = Depends(get_acting_facility_id)):
     rows seeded at creation time (admin_create_facility_account), so this
     join should never miss a row for a real facility.
 
-    expires_date >= CURRENT_DATE only: an expired unit was never usable, so
+    expires_date >= today (the Manila business date) only: an expired unit was never usable, so
     it can't count toward "how much stock does this facility have" any more
     than it can count as available to fulfill another facility's request
     (see GET /facilities/nearby, which has always filtered this way) — a
@@ -1635,14 +1658,14 @@ def get_inventory_summary(facility_id: int = Depends(get_acting_facility_id)):
                 LEFT JOIN (
                     SELECT blood_type, count(*) AS unit_count
                     FROM blood_units
-                    WHERE facility_id = :facility_id AND expires_date >= CURRENT_DATE
+                    WHERE facility_id = :facility_id AND expires_date >= :today
                     GROUP BY blood_type
                 ) c ON c.blood_type = t.blood_type
                 WHERE t.facility_id = :facility_id
                 ORDER BY t.blood_type
                 """
             ),
-            {"facility_id": facility_id},
+            {"facility_id": facility_id, "today": business_today()},
         ).mappings().all()
     return [dict(row) for row in rows]
 
@@ -1869,7 +1892,7 @@ async def upload_inventory(
     return {"rows_processed": rows_processed, "errors": errors}
 
 
-def _build_hospital_threshold_view(conn, facility_id: int, is_dengue_season: bool) -> dict:
+def _build_hospital_threshold_view(conn, facility_id: int, is_dengue_season: bool, today: date) -> dict:
     """Hospital-type facilities don't get a forecast at all — per the thesis's
     core design split, a hospital's job is to notice and act on a shortage,
     not to project its own draw-down trend (that's the blood bank side's
@@ -1891,14 +1914,14 @@ def _build_hospital_threshold_view(conn, facility_id: int, is_dengue_season: boo
             LEFT JOIN (
                 SELECT blood_type, count(*) AS unit_count
                 FROM blood_units
-                WHERE facility_id = :facility_id AND expires_date >= CURRENT_DATE
+                WHERE facility_id = :facility_id AND expires_date >= :today
                 GROUP BY blood_type
             ) c ON c.blood_type = t.blood_type
             WHERE t.facility_id = :facility_id
             ORDER BY t.blood_type
             """
         ),
-        {"facility_id": facility_id},
+        {"facility_id": facility_id, "today": today},
     ).mappings().all()
 
     thresholds = []
@@ -2048,7 +2071,7 @@ async def upload_historical_inventory_snapshots(
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="file must be UTF-8 encoded")
 
-    valid_rows, errors = _parse_historical_snapshot_csv(csv_text, date.today())
+    valid_rows, errors = _parse_historical_snapshot_csv(csv_text, business_today())
 
     rows_processed = len(valid_rows)
     with engine.begin() as conn:
@@ -2123,7 +2146,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
     view, regardless of what the frontend asks for.
 
     Blood banks: every call records today's real total-per-type USABLE stock
-    (expires_date >= CURRENT_DATE only — an expired unit is never counted,
+    (expires_date >= today (the Manila business date) only — an expired unit is never counted,
     here or anywhere else stock is treated as available) as a snapshot
     (idempotent per day, per facility). Three tiers, gated purely on
     how many distinct days of this facility's own real history exist so far:
@@ -2148,7 +2171,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
 
     Hospitals: see _build_hospital_threshold_view.
     """
-    today = date.today()
+    today = business_today()
     is_dengue_season = today.month in DENGUE_SEASON_MONTHS
 
     with engine.begin() as conn:
@@ -2159,7 +2182,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
             raise HTTPException(status_code=500, detail="acting facility not found")
 
         if facility_type == "hospital":
-            return _build_hospital_threshold_view(conn, facility_id, is_dengue_season)
+            return _build_hospital_threshold_view(conn, facility_id, is_dengue_season, today)
 
         conn.execute(
             text(
@@ -2167,7 +2190,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
                 INSERT INTO inventory_snapshots (snapshot_date, blood_type, units, facility_id)
                 SELECT :today, blood_type, count(*), :facility_id
                 FROM blood_units
-                WHERE facility_id = :facility_id AND expires_date >= CURRENT_DATE
+                WHERE facility_id = :facility_id AND expires_date >= :today
                 GROUP BY blood_type
                 ON CONFLICT (snapshot_date, blood_type, facility_id)
                 DO UPDATE SET units = EXCLUDED.units
@@ -2631,10 +2654,11 @@ def get_nearby_facilities(
                 """
                 SELECT facility_id, blood_type, count(*) AS unit_count
                 FROM blood_units
-                WHERE expires_date >= CURRENT_DATE
+                WHERE expires_date >= :today
                 GROUP BY facility_id, blood_type
                 """
-            )
+            ),
+            {"today": business_today()},
         ).mappings().all()
 
         # profile_completed facilities only — an admin-onboarded blood bank
@@ -2709,7 +2733,7 @@ def notify_nearby_hospitals_of_expiring_unit(din: str, acting_facility_id: int =
         if unit is None:
             raise HTTPException(status_code=404, detail="unit not found at your facility")
 
-        days_left = (unit["expires_date"] - date.today()).days
+        days_left = (unit["expires_date"] - business_today()).days
         if days_left < 0:
             raise HTTPException(status_code=400, detail="this unit has already expired")
         if days_left > 7:
@@ -3051,11 +3075,11 @@ def confirm_release(request_id: int, facility_id: int = Depends(get_acting_facil
                 """
                 SELECT id, expires_date FROM blood_units
                 WHERE facility_id = :facility_id AND blood_type = :blood_type
-                  AND expires_date >= CURRENT_DATE AND reserved_for_request_id IS NULL
+                  AND expires_date >= :today AND reserved_for_request_id IS NULL
                 FOR UPDATE
                 """
             ),
-            {"facility_id": facility_id, "blood_type": req["blood_type"]},
+            {"facility_id": facility_id, "blood_type": req["blood_type"], "today": business_today()},
         ).mappings().all()
 
         try:
