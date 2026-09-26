@@ -6,18 +6,18 @@ deployed; example values are real values from actual rows, with the exceptions d
 
 ## Summary
 
-* **18 tables** in the `public` schema, 131 columns in all, 24 foreign keys. Views: none.
+* **19 tables** in the `public` schema, 138 columns in all, 26 foreign keys. Views: none.
 * **No unexpected tables.** Every table maps to a feature: identity (`facilities`, `users`, `password_reset_requests`), inventory
-  (`blood_units`, `blood_type_thresholds`, `upload_history`), transfers (`requests`, `request_messages`), notification
+  (`blood_units`, `blood_type_thresholds`, `upload_history`, `inventory_snapshot_write_log`), transfers (`requests`, `request_messages`), notification
   (`notifications`), donor outreach (`donors`, `blasts`, `blast_messages`, `blast_replies`) and forecasting (`inventory_snapshots`,
   `facility_forecast_cache`, `forecast_alert_state`, `synthetic_inventory_snapshots`, `synthetic_forecast_cache`). The ones easiest to
-  overlook are `forecast_alert_state` (alert de-duplication), `upload_history` (audit; holds the raw CSV text and drives undo) and the
+  overlook are `forecast_alert_state` (alert de-duplication), `upload_history` (audit; holds the raw CSV text and drives undo), `inventory_snapshot_write_log` (lets undo restore overwritten snapshots) and the
   two `synthetic_*` research tables.
 * **Donor outreach tables:** `blasts` (the campaign), `blast_messages` (one row per donor messaged) and `blast_replies` (donor yes/no
   answers). Full column lists below.
 * **`facilities` carries more than name, type, address, coordinates and `is_active`.** The onboarding migration also added
   `department`, `doh_license_number` and `profile_completed`, so the table has 10 columns.
-* **Referential integrity:** every foreign key is `NO ACTION` on delete (a parent row cannot be deleted while children exist).
+* **Referential integrity:** every foreign key is `NO ACTION` on delete (a parent row cannot be deleted while children exist), except the two on `inventory_snapshot_write_log`, which `CASCADE` because it is a pure log.
   The only CHECK constraint in the schema is `upload_history.upload_type`; enumerations such as `users.role`, `requests.status`
   and `facilities.facility_type` are free text validated in application code only.
 
@@ -147,7 +147,7 @@ Every organisation on the platform (hospitals and blood banks). It is the tenant
 
 ## facility_forecast_cache
 
-Cached per-facility SARIMAX forecast checkpoints, refit at most once a day per facility and blood type, so the dashboard does not refit on every load. Derived cache; forecasting. (56 rows, 10 columns in the live database.)
+Cached per-facility SARIMAX forecast checkpoints, refit at most once a day per facility and blood type, so the dashboard does not refit on every load. Derived cache; forecasting. (112 rows, 10 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
@@ -176,6 +176,20 @@ Remembers whether a facility and blood type is currently in a forecast-shortage 
 | updated_at | timestamp with time zone | — |  | When the flag last changed. | 2026-09-22 06:16:01.229912+00:00 |
 
 Composite primary key (facility_id, blood_type).
+
+## inventory_snapshot_write_log
+
+Append-only log of every value a historical-stock upload wrote into inventory_snapshots, plus the original organic value the first time an upload overwrote one. It exists so undoing an upload can restore what was overwritten and handle overlapping uploads correctly. Operational (audit). (0 rows, 7 columns in the live database.)
+
+| Field_Name | Data_Type | Length | Key | Description | Example |
+|---|---|---|---|---|---|
+| id | bigint | 64-bit | PK | Unique identifier of the log entry; higher means written later. | (table is empty) |
+| facility_id | bigint | 64-bit | FK | The facility whose snapshot was written. Log entries are deleted with the facility (FK to facilities.id). | (table is empty) |
+| snapshot_date | date | — |  | The day of the snapshot that was written. | (table is empty) |
+| blood_type | text | — |  | Blood type of the snapshot that was written. | (table is empty) |
+| units | integer | 32-bit |  | The unit count that was written for that day and type. | (table is empty) |
+| upload_history_id | bigint | 64-bit | FK | The upload that wrote this value; NULL marks the original organic value saved before an upload overwrote it. Log entries are deleted with the upload (FK to upload_history.id). Nullable. | (table is empty) |
+| created_at | timestamp with time zone | — |  | When the entry was logged. | (table is empty) |
 
 ## inventory_snapshots
 
@@ -280,7 +294,7 @@ Composite unique key (snapshot_date, blood_type); `UK*` marks a column that is p
 
 ## upload_history
 
-An audit record of each CSV upload (inventory, donors or historical stock), including the raw file and any per-row errors, so an upload can be undone. Operational (audit). (3 rows, 11 columns in the live database.)
+An audit record of each CSV upload (inventory, donors or historical stock), including the raw file and any per-row errors, so an upload can be undone. Operational (audit). (6 rows, 11 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
@@ -294,7 +308,7 @@ An audit record of each CSV upload (inventory, donors or historical stock), incl
 | rows_failed | integer | 32-bit |  | How many CSV rows were rejected. | 0 |
 | error_details | jsonb | — |  | JSON list of per-row rejection reasons; an empty list when every row was accepted. | [] |
 | raw_content | text | — |  | The uploaded CSV text, kept so an upload can be audited or undone. Shown here as its header line only. Nullable. | din,blood_type,component,location,volume_ml,collected_date,e… |
-| undone_at | timestamp with time zone | — |  | When the upload was reversed; NULL if it stands. Nullable. | NULL (no row has a value) |
+| undone_at | timestamp with time zone | — |  | When the upload was reversed; NULL if it stands. Nullable. | 2026-09-26 14:52:15.293942+00:00 |
 
 CHECK: `CHECK ((upload_type = ANY (ARRAY['inventory'::text, 'donors'::text, 'historical_stock'::text])))`.
 
@@ -315,7 +329,7 @@ Login accounts. Each staff account belongs to one facility; the single admin acc
 ## Foreign key map
 
 Every foreign key constraint in the deployed schema. `requests` joins `facilities` twice (requesting and supplying);
-`blood_units.reserved_for_request_id` is nullable. All are `ON DELETE NO ACTION`. Cardinality reads child : parent.
+`blood_units.reserved_for_request_id` is nullable. All are `ON DELETE NO ACTION` except `inventory_snapshot_write_log.facility_id` and `.upload_history_id`, which are `ON DELETE CASCADE`. Cardinality reads child : parent.
 
 | Child column | Parent column | Cardinality | Nullable |
 |---|---|---|---|
@@ -332,6 +346,8 @@ Every foreign key constraint in the deployed schema. `requests` joins `facilitie
 | donors.upload_history_id | upload_history.id | many : 0..1 | yes |
 | facility_forecast_cache.facility_id | facilities.id | many : 1 | no |
 | forecast_alert_state.facility_id | facilities.id | many : 1 | no |
+| inventory_snapshot_write_log.facility_id | facilities.id | many : 1 | no |
+| inventory_snapshot_write_log.upload_history_id | upload_history.id | many : 0..1 | yes |
 | inventory_snapshots.facility_id | facilities.id | many : 1 | no |
 | inventory_snapshots.upload_history_id | upload_history.id | many : 0..1 | yes |
 | notifications.facility_id | facilities.id | many : 1 | no |
@@ -356,7 +372,7 @@ Which tables exist to support the forecasting research rather than day-to-day bl
 | forecast_alert_state | Derived (forecasting) | De-duplication flag for forecast-shortage notifications. It has an operational effect (raises a notification) but exists only because of the forecast. |
 | inventory_snapshots | Mixed | Operational counts, but also the series the forecast is fitted on. At the time of generation, 1,200 of its 1,320 rows came from one historical-stock CSV upload of a generated demonstration file; the rest are the app's own daily snapshots. It should not be described as a record of real supply. |
 
-Every other table (`facilities`, `users`, `password_reset_requests`, `blood_units`, `blood_type_thresholds`, `requests`,
+Every other table (`inventory_snapshot_write_log`, `facilities`, `users`, `password_reset_requests`, `blood_units`, `blood_type_thresholds`, `requests`,
 `request_messages`, `notifications`, `upload_history`, `donors`, `blasts`, `blast_messages`, `blast_replies`) is operational. In the
 paper, `blood_units` is the system's record of physical inventory; the `synthetic_*` tables are a research and demonstration
 apparatus and should not be presented as equivalent to it. The current database also holds demo and test operational rows

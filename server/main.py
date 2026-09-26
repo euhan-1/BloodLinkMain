@@ -305,6 +305,27 @@ def _last_wins(rows: list[dict], key) -> list[dict]:
     return list({key(r): r for r in rows}.values())
 
 
+def _invalidate_facility_forecast_cache(conn, facility_id: int, blood_types: Optional[list[str]] = None) -> None:
+    """Drops cached SARIMAX forecasts (all types, or just `blood_types`) so the
+    next GET /forecast refits on the data as it now is. Freshness in
+    _get_or_fit_cached_sarimax is only "trained_through_date == today", which
+    can't notice that the snapshots behind a cache changed. Every path that
+    writes or removes a facility's inventory_snapshots calls this on the SAME
+    connection as the data change, so a rolled-back change can't leave the
+    cache cleared. Clearing is enough because a missing cache just triggers a
+    fresh fit, and the cache is only read at all while the facility still has
+    >= SARIMAX_MIN_DAYS_REQUIRED days of history."""
+    if blood_types is not None and not blood_types:
+        return
+    if blood_types is None:
+        conn.execute(text("DELETE FROM facility_forecast_cache WHERE facility_id = :facility_id"), {"facility_id": facility_id})
+    else:
+        conn.execute(
+            text("DELETE FROM facility_forecast_cache WHERE facility_id = :facility_id AND blood_type = ANY(:blood_types)"),
+            {"facility_id": facility_id, "blood_types": blood_types},
+        )
+
+
 # ─── Upload undo ────────────────────────────────────────────────────────────
 # One preview/apply pair per upload_type, sharing the same eligibility logic
 # so what the confirmation screen shows is exactly what the undo itself acts
@@ -313,11 +334,18 @@ def _last_wins(rows: list[dict], key) -> list[dict]:
 # change between when staff opens the confirmation and when they click through.
 
 def _preview_historical_undo(conn, upload_id: int, facility_id: int) -> tuple[list[dict], list[dict]]:
-    """Historical snapshot rows have no downstream state to conflict with —
-    always a full undo."""
+    """Every (date, blood type) this upload wrote. Undo reverts each one: the
+    row is deleted if the upload inserted it, or put back to the newest
+    surviving value (another upload's, else the original organic one) if the
+    upload overwrote something. Uploads made before inventory_snapshot_write_log
+    existed have no log rows; for those the rows still tagged with the upload
+    are listed instead (and deleted, as before)."""
     rows = conn.execute(
         text(
             """
+            SELECT snapshot_date, blood_type, units FROM inventory_snapshot_write_log
+            WHERE upload_history_id = :upload_id AND facility_id = :facility_id
+            UNION
             SELECT snapshot_date, blood_type, units FROM inventory_snapshots
             WHERE upload_history_id = :upload_id AND facility_id = :facility_id
             ORDER BY snapshot_date, blood_type
@@ -329,12 +357,57 @@ def _preview_historical_undo(conn, upload_id: int, facility_id: int) -> tuple[li
 
 
 def _apply_historical_undo(conn, upload_id: int, facility_id: int) -> tuple[int, list[dict]]:
-    eligible, blocked = _preview_historical_undo(conn, upload_id, facility_id)
-    result = conn.execute(
+    """Reverts exactly what this upload did to inventory_snapshots, using
+    inventory_snapshot_write_log (see schema_snapshot_write_log.sql). For each
+    (date, type) the upload wrote, the winner is the newest write-log entry
+    from an upload that has NOT been undone (excluding this one), falling back
+    to the original organic value; with no winner the upload inserted the row
+    and it is deleted. Returns rows reverted (deleted + restored)."""
+    reverted = conn.execute(
+        text(
+            """
+            WITH keys AS (
+                SELECT snapshot_date, blood_type FROM inventory_snapshot_write_log
+                WHERE upload_history_id = :upload_id AND facility_id = :facility_id
+            ),
+            winner AS (
+                SELECT DISTINCT ON (h.snapshot_date, h.blood_type)
+                       h.snapshot_date, h.blood_type, h.units, h.upload_history_id
+                FROM inventory_snapshot_write_log h
+                JOIN keys k ON k.snapshot_date = h.snapshot_date AND k.blood_type = h.blood_type
+                LEFT JOIN upload_history u ON u.id = h.upload_history_id
+                WHERE h.facility_id = :facility_id
+                  AND h.upload_history_id IS DISTINCT FROM :upload_id
+                  AND (h.upload_history_id IS NULL OR u.undone_at IS NULL)
+                ORDER BY h.snapshot_date, h.blood_type, (h.upload_history_id IS NULL), h.id DESC
+            ),
+            restored AS (
+                UPDATE inventory_snapshots s
+                SET units = w.units, upload_history_id = w.upload_history_id
+                FROM winner w
+                WHERE s.facility_id = :facility_id AND s.snapshot_date = w.snapshot_date AND s.blood_type = w.blood_type
+                RETURNING 1
+            ),
+            deleted AS (
+                DELETE FROM inventory_snapshots s
+                USING keys k
+                WHERE s.facility_id = :facility_id AND s.snapshot_date = k.snapshot_date AND s.blood_type = k.blood_type
+                  AND NOT EXISTS (SELECT 1 FROM winner w WHERE w.snapshot_date = k.snapshot_date AND w.blood_type = k.blood_type)
+                RETURNING 1
+            )
+            SELECT (SELECT count(*) FROM restored) + (SELECT count(*) FROM deleted)
+            """
+        ),
+        {"upload_id": upload_id, "facility_id": facility_id},
+    ).scalar_one()
+    # Legacy uploads (made before the write log existed) left no log rows:
+    # whatever is still tagged with this upload is deleted, as undo always did.
+    legacy = conn.execute(
         text("DELETE FROM inventory_snapshots WHERE upload_history_id = :upload_id AND facility_id = :facility_id"),
         {"upload_id": upload_id, "facility_id": facility_id},
-    )
-    return result.rowcount, blocked
+    ).rowcount
+    _invalidate_facility_forecast_cache(conn, facility_id)
+    return reverted + legacy, []
 
 
 def _classify_inventory_undo_rows(rows: list, facility_id: int) -> tuple[list[dict], list[dict]]:
@@ -522,6 +595,9 @@ def _check_expiry_notifications(conn, facility_id: int, rows: list) -> None:
             )
 
 
+_SHORTAGE_MSG_TAIL = "forecast now predicts a shortage within"  # shared by the create and the resolve below
+
+
 def _check_forecast_shortage_notifications(conn, facility_id: int, alerts: list[dict]) -> None:
     """Runs as a side effect of GET /forecast, blood-bank branches only —
     called with whatever `alerts` that call already computed, so this never
@@ -559,7 +635,7 @@ def _check_forecast_shortage_notifications(conn, facility_id: int, alerts: list[
         if flipped is not None:
             _create_notification(
                 conn, facility_id, "forecast_shortage",
-                f"{blood_type} forecast now predicts a shortage within {alert['days_until_threshold']} days",
+                f"{blood_type} {_SHORTAGE_MSG_TAIL} {alert['days_until_threshold']} days",
                 "dashboard",
             )
 
@@ -579,6 +655,20 @@ def _check_forecast_shortage_notifications(conn, facility_id: int, alerts: list[
                 """
             ),
             {"facility_id": facility_id, "blood_type": blood_type},
+        )
+        # Notifications have no archive/delete column; "read_at" is how they are
+        # resolved everywhere else, so the now-obsolete shortage notice is marked
+        # read (it stays in history, just stops counting as unread). The blood
+        # type is only recoverable from the message text.
+        conn.execute(
+            text(
+                """
+                UPDATE notifications SET read_at = now()
+                WHERE facility_id = :facility_id AND type = 'forecast_shortage' AND read_at IS NULL
+                  AND message LIKE :prefix
+                """
+            ),
+            {"facility_id": facility_id, "prefix": f"{blood_type} {_SHORTAGE_MSG_TAIL}%"},
         )
 
 
@@ -835,7 +925,8 @@ def _get_or_fit_cached_sarimax(
     facility+type at most once per day, this bounds a real refit to at most
     once per day per facility+type — same request that writes today's
     snapshot is the same request that (at most) triggers one refit, not a
-    refit on every dashboard poll.
+    refit on every dashboard poll. A cache hit still reports day 0 from the
+    live series (see below), so intra-day stock changes need no refit.
     """
     checkpoint_dates = [today + timedelta(days=c) for c in FORECAST_CHECKPOINTS]
     cached_rows = conn.execute(
@@ -854,18 +945,22 @@ def _get_or_fit_cached_sarimax(
         row["trained_through_date"] == today for row in cached_rows
     )
     if fresh:
-        return {
-            "checkpoints": {
-                c: {
-                    "units": int(by_date[cd]["forecast_units"]),
-                    "lower": int(by_date[cd]["lower_units"]),
-                    "upper": int(by_date[cd]["upper_units"]),
-                }
-                for c, cd in zip(FORECAST_CHECKPOINTS, checkpoint_dates)
-            },
-            "exog_included": True,
-            "model_order": FACILITY_SARIMAX_LABEL,
+        checkpoints = {
+            c: {
+                "units": int(by_date[cd]["forecast_units"]),
+                "lower": int(by_date[cd]["lower_units"]),
+                "upper": int(by_date[cd]["upper_units"]),
+            }
+            for c, cd in zip(FORECAST_CHECKPOINTS, checkpoint_dates)
         }
+        # Day 0 is just today's stock (the same value a fresh fit stores there),
+        # so it is taken live from the series instead of from the cache: stock
+        # that changed since the fit shows up immediately, and the restock
+        # recommendation and alert logic start from the real current level,
+        # with no refit. Days 1-30 stay as fitted this morning.
+        live_today = int(daily_series[-1][1])
+        checkpoints[0] = {"units": live_today, "lower": live_today, "upper": live_today}
+        return {"checkpoints": checkpoints, "exog_included": True, "model_order": FACILITY_SARIMAX_LABEL}
 
     result = _fit_sarimax_facility_forecast(daily_series, today)
     if result is None:
@@ -1872,23 +1967,52 @@ async def upload_historical_inventory_snapshots(
     with engine.begin() as conn:
         upload_id = _start_upload_record(conn, facility_id, "historical_stock", uploaded_by, file.filename, csv_text)
 
-        # One statement for the whole file instead of one round trip per row.
+        # A few statements for the whole file instead of one round trip per row.
         batch = _last_wins(valid_rows, lambda r: (r["snapshot_date"], r["blood_type"]))
         if batch:
+            arrays = {c: [r[c] for r in batch] for c in ("snapshot_date", "blood_type", "units")}
+            unnest = "unnest(CAST(:snapshot_date AS date[]), CAST(:blood_type AS text[]), CAST(:units AS int[])) AS t(snapshot_date, blood_type, units)"
+            # 1. Save the organic value of any row this upload is about to overwrite
+            #    (once: skipped if a base entry is already logged) so undo can restore it.
             conn.execute(
                 text(
+                    f"""
+                    INSERT INTO inventory_snapshot_write_log (facility_id, snapshot_date, blood_type, units, upload_history_id)
+                    SELECT s.facility_id, s.snapshot_date, s.blood_type, s.units, NULL
+                    FROM inventory_snapshots s
+                    WHERE s.facility_id = :facility_id AND s.upload_history_id IS NULL
+                      AND (s.snapshot_date, s.blood_type) IN (SELECT t.snapshot_date, t.blood_type FROM {unnest})
+                      AND NOT EXISTS (
+                          SELECT 1 FROM inventory_snapshot_write_log l
+                          WHERE l.facility_id = s.facility_id AND l.snapshot_date = s.snapshot_date
+                            AND l.blood_type = s.blood_type AND l.upload_history_id IS NULL)
                     """
+                ),
+                {**arrays, "facility_id": facility_id},
+            )
+            # 2. Log what this upload writes.
+            conn.execute(
+                text(
+                    f"""
+                    INSERT INTO inventory_snapshot_write_log (facility_id, snapshot_date, blood_type, units, upload_history_id)
+                    SELECT :facility_id, t.snapshot_date, t.blood_type, t.units, :upload_id FROM {unnest}
+                    """
+                ),
+                {**arrays, "facility_id": facility_id, "upload_id": upload_id},
+            )
+            # 3. The upsert itself.
+            conn.execute(
+                text(
+                    f"""
                     INSERT INTO inventory_snapshots (snapshot_date, blood_type, units, facility_id, upload_history_id)
-                    SELECT t.snapshot_date, t.blood_type, t.units, :facility_id, :upload_id
-                    FROM unnest(CAST(:snapshot_date AS date[]), CAST(:blood_type AS text[]), CAST(:units AS int[]))
-                        AS t(snapshot_date, blood_type, units)
+                    SELECT t.snapshot_date, t.blood_type, t.units, :facility_id, :upload_id FROM {unnest}
                     ON CONFLICT (snapshot_date, blood_type, facility_id)
                     DO UPDATE SET units = EXCLUDED.units, upload_history_id = EXCLUDED.upload_history_id
                     """
                 ),
-                {**{c: [r[c] for r in batch] for c in ("snapshot_date", "blood_type", "units")},
-                 "facility_id": facility_id, "upload_id": upload_id},
+                {**arrays, "facility_id": facility_id, "upload_id": upload_id},
             )
+            _invalidate_facility_forecast_cache(conn, facility_id)
 
         _finish_upload_record(conn, upload_id, rows_processed, errors)
 
@@ -2014,6 +2138,9 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
                     "restock_recommendations": stand_in["restock_recommendations"],
                     "restock_status": stand_in["restock_status"],
                 }
+            # No forecast at all means no type can be alerting; without this, a
+            # facility that fell back to "none" kept its old alerting=TRUE forever.
+            _check_forecast_shortage_notifications(conn, facility_id, [])
             return {
                 "view": "forecast",
                 "has_sufficient_history": False,

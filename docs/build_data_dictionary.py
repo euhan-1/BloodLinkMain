@@ -30,6 +30,7 @@ TABLE_DOC = {
     "blast_replies": "A donor's reply (yes/no) to a blast; at most one reply per donor per blast. Operational (donor outreach, part 3 of 3).",
     "inventory_snapshots": "The daily count of usable units per facility and blood type. Written by the app's own daily snapshot and by historical-stock CSV uploads; it is the time series the per-facility forecast is fitted on. Operational data that also serves as forecasting input.",
     "facility_forecast_cache": "Cached per-facility SARIMAX forecast checkpoints, refit at most once a day per facility and blood type, so the dashboard does not refit on every load. Derived cache; forecasting.",
+    "inventory_snapshot_write_log": "Append-only log of every value a historical-stock upload wrote into inventory_snapshots, plus the original organic value the first time an upload overwrote one. It exists so undoing an upload can restore what was overwritten and handle overlapping uploads correctly. Operational (audit).",
     "forecast_alert_state": "Remembers whether a facility and blood type is currently in a forecast-shortage alert, so a notification is raised once when it starts rather than on every refresh. Derived state; forecasting.",
     "synthetic_inventory_snapshots": "A generated two-year daily stock series per blood type (no facility). It is demonstration data used to fit the shared stand-in model; it is not real blood bank records. Research.",
     "synthetic_forecast_cache": "The stand-in forecast produced from the synthetic series, served to facilities that have fewer than 3 days of their own history. Research.",
@@ -169,6 +170,15 @@ D = {
         "facility_id": "The facility counted.",
         "upload_history_id": "The historical-stock upload that supplied this row; NULL for the app's own daily snapshot.",
     },
+    "inventory_snapshot_write_log": {
+        "id": "Unique identifier of the log entry; higher means written later.",
+        "facility_id": "The facility whose snapshot was written. Log entries are deleted with the facility.",
+        "snapshot_date": "The day of the snapshot that was written.",
+        "blood_type": "Blood type of the snapshot that was written.",
+        "units": "The unit count that was written for that day and type.",
+        "upload_history_id": "The upload that wrote this value; NULL marks the original organic value saved before an upload overwrote it. Log entries are deleted with the upload.",
+        "created_at": "When the entry was logged.",
+    },
     "facility_forecast_cache": {
         "id": "Unique identifier of the cached point.",
         "facility_id": "The facility the forecast is for.",
@@ -278,7 +288,9 @@ def main():
                     desc = desc.rstrip(".") + f" (FK to {fk[(t, name)][0]}.{fk[(t, name)][1]})."
                 if col["is_nullable"] == "YES":
                     desc += " Nullable."
-                if (t, name) in MASK:
+                if n == 0:
+                    ex = "(table is empty)"
+                elif (t, name) in MASK:
                     ex = MASK[(t, name)]
                 elif t == "upload_history" and name == "raw_content":
                     ex = show((row[name] or "").split("\n")[0])
@@ -308,7 +320,8 @@ def main():
             card = "1:1" if (ct, cc) in uniq_single else ("many : 0..1" if nullable[(ct, cc)] else "many : 1")
             fkmd.append(f"| {ct}.{cc} | {pt}.{pc} | {card} | {'yes' if nullable[(ct, cc)] else 'no'} |")
         delrules = {k["confdeltype"] for k in cons if k["contype"] == "f"}
-        assert delrules == {"a"}, f"delete rules changed: {delrules}; update the prose"
+        cascades = sorted({k["t"] for k in cons if k["contype"] == "f" and k["confdeltype"] == "c"})
+        assert delrules == {"a", "c"} and cascades == ["inventory_snapshot_write_log"], f"delete rules changed: {delrules} {cascades}; update the prose"
     total = len(tabs)
     head = f"""# BloodLink Data Dictionary and Schema Reference
 
@@ -320,16 +333,16 @@ deployed; example values are real values from actual rows, with the exceptions d
 
 * **{total} tables** in the `public` schema, {sum(v[1] for v in totals.values())} columns in all, {len(fkrows)} foreign keys. Views: {', '.join(views) or 'none'}.
 * **No unexpected tables.** Every table maps to a feature: identity (`facilities`, `users`, `password_reset_requests`), inventory
-  (`blood_units`, `blood_type_thresholds`, `upload_history`), transfers (`requests`, `request_messages`), notification
+  (`blood_units`, `blood_type_thresholds`, `upload_history`, `inventory_snapshot_write_log`), transfers (`requests`, `request_messages`), notification
   (`notifications`), donor outreach (`donors`, `blasts`, `blast_messages`, `blast_replies`) and forecasting (`inventory_snapshots`,
   `facility_forecast_cache`, `forecast_alert_state`, `synthetic_inventory_snapshots`, `synthetic_forecast_cache`). The ones easiest to
-  overlook are `forecast_alert_state` (alert de-duplication), `upload_history` (audit; holds the raw CSV text and drives undo) and the
+  overlook are `forecast_alert_state` (alert de-duplication), `upload_history` (audit; holds the raw CSV text and drives undo), `inventory_snapshot_write_log` (lets undo restore overwritten snapshots) and the
   two `synthetic_*` research tables.
 * **Donor outreach tables:** `blasts` (the campaign), `blast_messages` (one row per donor messaged) and `blast_replies` (donor yes/no
   answers). Full column lists below.
 * **`facilities` carries more than name, type, address, coordinates and `is_active`.** The onboarding migration also added
   `department`, `doh_license_number` and `profile_completed`, so the table has 10 columns.
-* **Referential integrity:** every foreign key is `NO ACTION` on delete (a parent row cannot be deleted while children exist).
+* **Referential integrity:** every foreign key is `NO ACTION` on delete (a parent row cannot be deleted while children exist), except the two on `inventory_snapshot_write_log`, which `CASCADE` because it is a pure log.
   The only CHECK constraint in the schema is `upload_history.upload_type`; enumerations such as `users.role`, `requests.status`
   and `facilities.facility_type` are free text validated in application code only.
 
@@ -354,7 +367,7 @@ deployed; example values are real values from actual rows, with the exceptions d
 ## Foreign key map
 
 Every foreign key constraint in the deployed schema. `requests` joins `facilities` twice (requesting and supplying);
-`blood_units.reserved_for_request_id` is nullable. All are `ON DELETE NO ACTION`. Cardinality reads child : parent.
+`blood_units.reserved_for_request_id` is nullable. All are `ON DELETE NO ACTION` except `inventory_snapshot_write_log.facility_id` and `.upload_history_id`, which are `ON DELETE CASCADE`. Cardinality reads child : parent.
 
 """ + "\n".join(fkmd) + """
 
@@ -370,7 +383,7 @@ Which tables exist to support the forecasting research rather than day-to-day bl
 | forecast_alert_state | Derived (forecasting) | De-duplication flag for forecast-shortage notifications. It has an operational effect (raises a notification) but exists only because of the forecast. |
 | inventory_snapshots | Mixed | Operational counts, but also the series the forecast is fitted on. At the time of generation, 1,200 of its 1,320 rows came from one historical-stock CSV upload of a generated demonstration file; the rest are the app's own daily snapshots. It should not be described as a record of real supply. |
 
-Every other table (`facilities`, `users`, `password_reset_requests`, `blood_units`, `blood_type_thresholds`, `requests`,
+Every other table (`inventory_snapshot_write_log`, `facilities`, `users`, `password_reset_requests`, `blood_units`, `blood_type_thresholds`, `requests`,
 `request_messages`, `notifications`, `upload_history`, `donors`, `blasts`, `blast_messages`, `blast_replies`) is operational. In the
 paper, `blood_units` is the system's record of physical inventory; the `synthetic_*` tables are a research and demonstration
 apparatus and should not be presented as equivalent to it. The current database also holds demo and test operational rows
