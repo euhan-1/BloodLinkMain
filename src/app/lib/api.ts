@@ -310,6 +310,14 @@ export function adminResetAccountPassword(userId: number): Promise<AdminPassword
   return apiPost<AdminPasswordResetResult>(`/admin/accounts/${userId}/reset-password`, {});
 }
 
+// For a facility that already exists but has zero accounts — POST
+// /admin/facilities (above) always creates a brand new facility alongside
+// its first account, so it can't close this gap. Server 409s if the
+// facility already has an account (one account per facility, by design).
+export function adminCreateAccountForFacility(facilityId: number, email: string): Promise<CreateFacilityAccountResult> {
+  return apiPost<CreateFacilityAccountResult>(`/admin/facilities/${facilityId}/accounts`, { email });
+}
+
 // ─── Historical inventory-snapshot backfill (blood banks only — the server
 // rejects this for hospitals regardless of what the frontend shows) ────────
 

@@ -3348,10 +3348,53 @@ def get_me(user: dict = Depends(get_current_user)):
 
 
 # ─── Admin (Step 10A) ───────────────────────────────────────────────────────
-# All three endpoints below require role='admin' on a real access token (see
+# Every endpoint below requires role='admin' on a real access token (see
 # require_admin_role) — no shared secret, no header-based bypass. role='admin'
 # can only ever be set by seed_admin_user.py, run by hand once; there is no
 # endpoint anywhere that lets a request create or promote itself to admin.
+
+def _create_staff_account(conn, facility_id: int, email: str) -> dict:
+    """Shared temp-password issuance path — used by POST /admin/facilities
+    (brand new facility + its first account) and
+    POST /admin/facilities/{facility_id}/accounts (an account for a facility
+    that already exists but has none). Same shape either way: a random temp
+    password, must_change_password=true, role is always 'staff' — there is no
+    way to pass a role here, which is what keeps admin creation confined to
+    seed_admin_user.py.
+
+    Email uniqueness is checked globally (WHERE email = :email, not scoped to
+    a facility) because that's what the users table actually enforces
+    everywhere else in this app — one email, one account, regardless of which
+    facility it's tied to.
+
+    The temporary password is returned once, here, and nowhere else — same
+    out-of-band-relay caveat as everywhere this pattern is used: there's no
+    email/SMS provider wired up to deliver it automatically, so whoever calls
+    this is responsible for relaying it.
+    """
+    existing = conn.execute(
+        text("SELECT id FROM users WHERE email = :email"), {"email": email}
+    ).mappings().first()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="an account with this email already exists")
+
+    temp_password = auth.generate_temp_password()
+    user = conn.execute(
+        text(
+            """
+            INSERT INTO users (email, password_hash, facility_id, role, must_change_password)
+            VALUES (:email, :password_hash, :facility_id, 'staff', true)
+            RETURNING id, email, facility_id, role, created_at
+            """
+        ),
+        {
+            "email": email,
+            "password_hash": auth.hash_password(temp_password),
+            "facility_id": facility_id,
+        },
+    ).mappings().first()
+    return {"user": dict(user), "temporary_password": temp_password}
+
 
 class CreateFacilityAccountBody(BaseModel):
     name: str
@@ -3432,6 +3475,12 @@ def admin_create_facility_account(body: CreateFacilityAccountBody):
     endpoint is responsible for relaying it to the facility out of band.
     """
     with engine.begin() as conn:
+        # Checked here too, before creating the facility row, purely so a
+        # duplicate-email request fails fast rather than after allocating a
+        # facility + thresholds it's about to roll back anyway — engine.begin()
+        # rolls back the whole transaction on the HTTPException either helper
+        # call would raise, so this pre-check is a nicety, not a correctness
+        # requirement.
         existing = conn.execute(
             text("SELECT id FROM users WHERE email = :email"), {"email": body.email}
         ).mappings().first()
@@ -3462,26 +3511,59 @@ def admin_create_facility_account(body: CreateFacilityAccountBody):
             ],
         )
 
-        temp_password = auth.generate_temp_password()
-        user = conn.execute(
-            text(
-                """
-                INSERT INTO users (email, password_hash, facility_id, role, must_change_password)
-                VALUES (:email, :password_hash, :facility_id, 'staff', true)
-                RETURNING id, email, facility_id, role, created_at
-                """
-            ),
-            {
-                "email": body.email,
-                "password_hash": auth.hash_password(temp_password),
-                "facility_id": facility["id"],
-            },
-        ).mappings().first()
+        account = _create_staff_account(conn, facility["id"], body.email)
 
     return {
         "facility": dict(facility),
-        "user": dict(user),
-        "temporary_password": temp_password,
+        "user": account["user"],
+        "temporary_password": account["temporary_password"],
+    }
+
+
+class CreateAccountForFacilityBody(BaseModel):
+    email: EmailStr
+
+
+@app.post("/admin/facilities/{facility_id}/accounts", dependencies=[Depends(require_admin_role)])
+def admin_create_account_for_facility(facility_id: int, body: CreateAccountForFacilityBody):
+    """Provisions a login for a facility that already exists but has none —
+    the gap POST /admin/facilities above can't close, since that endpoint
+    always creates a brand new facility alongside its account. A facility
+    onboarded some other way (an early seed script, a migration, admin-side
+    data entry before this endpoint existed) had no way to ever get a login
+    until now.
+
+    One account per facility, deliberately, not multiple-accounts-per-facility:
+    every facility-scoped permission in this app (get_acting_facility_id)
+    already treats "logged in as X" as synonymous with "acting as facility
+    X", and there's no per-user audit trail beyond upload_history.uploaded_by
+    — a second login for the same facility would just be a second person
+    with identical access and no way to tell their actions apart after the
+    fact. If that ever becomes a real need, it wants real per-user
+    permissions, not a bigger version of this endpoint. Refuses with 409 if
+    the facility already has one, rather than silently allowing a second.
+    """
+    with engine.begin() as conn:
+        facility = conn.execute(
+            text("SELECT id, name, facility_type FROM facilities WHERE id = :id"),
+            {"id": facility_id},
+        ).mappings().first()
+        if facility is None:
+            raise HTTPException(status_code=404, detail="facility not found")
+
+        existing_account = conn.execute(
+            text("SELECT id FROM users WHERE facility_id = :facility_id"),
+            {"facility_id": facility_id},
+        ).mappings().first()
+        if existing_account is not None:
+            raise HTTPException(status_code=409, detail="this facility already has an account")
+
+        account = _create_staff_account(conn, facility_id, body.email)
+
+    return {
+        "facility": dict(facility),
+        "user": account["user"],
+        "temporary_password": account["temporary_password"],
     }
 
 

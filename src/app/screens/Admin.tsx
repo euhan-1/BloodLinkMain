@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
-import { KeyRound, Plus, X, ChevronDown } from "lucide-react";
+import { KeyRound, Plus, UserPlus, X, ChevronDown } from "lucide-react";
 import {
   adminListFacilities, adminCreateFacility, adminSetFacilityActive, adminResetAccountPassword,
+  adminCreateAccountForFacility,
   type AdminFacility, type AdminFacilityAccount, type CreateFacilityAccountResult, type AdminPasswordResetResult,
 } from "../lib/api";
 import { type SessionUser } from "../lib/session";
@@ -16,13 +17,15 @@ import { AccountMenu } from "../components/AccountMenu";
 // versions. Still archive-only under the hood — is_active toggle, no
 // permanent delete path exists anywhere in the app.
 function FacilityTable({
-  facilities, statusBusyId, resetBusyId, onToggleActive, onResetPassword,
+  facilities, statusBusyId, resetBusyId, addAccountBusyId, onToggleActive, onResetPassword, onAddAccount,
 }: {
   facilities: AdminFacility[];
   statusBusyId: number | null;
   resetBusyId: number | null;
+  addAccountBusyId: number | null;
   onToggleActive: (facility: AdminFacility) => void;
   onResetPassword: (account: AdminFacilityAccount) => void;
+  onAddAccount: (facility: AdminFacility) => void;
 }) {
   return (
     <table className="w-full text-[14px]">
@@ -42,7 +45,14 @@ function FacilityTable({
             <td className="py-3 px-4 text-muted-foreground capitalize">{f.facility_type}</td>
             <td className="py-3 px-4">
               {f.accounts.length === 0 ? (
-                <span className="text-muted-foreground">—</span>
+                <button
+                  onClick={() => onAddAccount(f)}
+                  disabled={addAccountBusyId === f.id}
+                  title="Add account"
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-semibold text-muted-foreground hover:text-primary hover:bg-primary-tint transition-colors disabled:opacity-60"
+                >
+                  <UserPlus size={11} /> {addAccountBusyId === f.id ? "…" : "Add account"}
+                </button>
               ) : (
                 f.accounts.map((a) => (
                   <div key={a.id} className="flex items-center gap-1.5 py-0.5">
@@ -125,6 +135,10 @@ export function AdminDashboardScreen({ user, onLogout }: { user: SessionUser; on
   const [resetError, setResetError] = useState<string | null>(null);
   const [resetResult, setResetResult] = useState<AdminPasswordResetResult | null>(null);
 
+  const [addAccountBusyId, setAddAccountBusyId] = useState<number | null>(null);
+  const [addAccountError, setAddAccountError] = useState<string | null>(null);
+  const [addAccountResult, setAddAccountResult] = useState<CreateFacilityAccountResult | null>(null);
+
   const [showArchived, setShowArchived] = useState(false);
 
   const activeFacilities = facilities.filter((f) => f.is_active);
@@ -186,6 +200,29 @@ export function AdminDashboardScreen({ user, onLogout }: { user: SessionUser; on
       setResetError(err instanceof Error ? err.message : "Failed to reset password");
     } finally {
       setResetBusyId(null);
+    }
+  }
+
+  // For a facility that already exists but has zero accounts (see
+  // adminCreateAccountForFacility) — the create-facility form above only
+  // ever makes a brand new facility, so this is the only path for one that's
+  // already on file. Same one-shot native-prompt pattern as the reset-
+  // password confirm() above, not a full modal, since this is a low-
+  // frequency admin utility action.
+  async function handleAddAccount(facility: AdminFacility) {
+    const email = window.prompt(`Email address for ${facility.name}'s new account:`);
+    if (!email || !email.trim()) return;
+    setAddAccountBusyId(facility.id);
+    setAddAccountError(null);
+    setAddAccountResult(null);
+    try {
+      const result = await adminCreateAccountForFacility(facility.id, email.trim());
+      setAddAccountResult(result);
+      loadFacilities();
+    } catch (err) {
+      setAddAccountError(err instanceof Error ? err.message : "Failed to create account");
+    } finally {
+      setAddAccountBusyId(null);
     }
   }
 
@@ -289,6 +326,11 @@ export function AdminDashboardScreen({ user, onLogout }: { user: SessionUser; on
                   {resetError}
                 </div>
               )}
+              {addAccountError && (
+                <div className="mx-5 mt-4 text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
+                  {addAccountError}
+                </div>
+              )}
               {resetResult && (
                 <div className="mx-5 mt-4 text-[13px] bg-secondary rounded-md px-3 py-2.5 flex items-start justify-between gap-3">
                   <div className="space-y-1">
@@ -306,6 +348,25 @@ export function AdminDashboardScreen({ user, onLogout }: { user: SessionUser; on
                   </button>
                 </div>
               )}
+              {addAccountResult && (
+                <div className="mx-5 mt-4 text-[13px] bg-secondary rounded-md px-3 py-2.5 flex items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="font-semibold text-foreground">
+                      Account created for {addAccountResult.facility.name} — {addAccountResult.user.email}
+                    </div>
+                    <div className="text-muted-foreground">
+                      Temporary password (shown once — relay this to the facility; there's no email delivery yet):{" "}
+                      <span className="font-mono font-semibold text-foreground">{addAccountResult.temporary_password}</span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setAddAccountResult(null)}
+                    className="w-6 h-6 shrink-0 flex items-center justify-center rounded hover:bg-card text-muted-foreground transition-colors"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
               {activeFacilities.length === 0 ? (
                 <div className="p-8 text-center text-[14px] text-muted-foreground">No active facilities.</div>
               ) : (
@@ -313,8 +374,10 @@ export function AdminDashboardScreen({ user, onLogout }: { user: SessionUser; on
                   facilities={activeFacilities}
                   statusBusyId={statusBusyId}
                   resetBusyId={resetBusyId}
+                  addAccountBusyId={addAccountBusyId}
                   onToggleActive={handleToggleActive}
                   onResetPassword={handleResetPassword}
+                  onAddAccount={handleAddAccount}
                 />
               )}
             </>
@@ -344,8 +407,10 @@ export function AdminDashboardScreen({ user, onLogout }: { user: SessionUser; on
                     facilities={archivedFacilities}
                     statusBusyId={statusBusyId}
                     resetBusyId={resetBusyId}
+                    addAccountBusyId={addAccountBusyId}
                     onToggleActive={handleToggleActive}
                     onResetPassword={handleResetPassword}
+                    onAddAccount={handleAddAccount}
                   />
                 </div>
               )
