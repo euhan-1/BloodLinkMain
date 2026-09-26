@@ -1,0 +1,166 @@
+{
+ "weekday": {
+  "A+": {
+   "F": 9.211780419658902,
+   "p": 1.0284954972588766e-08,
+   "weekday_mean_dev": {
+    "Mon": 1.61,
+    "Tue": 2.29,
+    "Wed": -0.64,
+    "Thu": -2.59,
+    "Fri": -1.76,
+    "Sat": -1.55,
+    "Sun": 2.52
+   },
+   "range": 5.11,
+   "series_mean": 83.4
+  },
+  "A-": {
+   "F": 8.1043435774277,
+   "p": 1.0768367254866357e-07,
+   "weekday_mean_dev": {
+    "Mon": 0.75,
+    "Tue": 0.07,
+    "Wed": -0.44,
+    "Thu": -0.36,
+    "Fri": -0.53,
+    "Sat": -0.04,
+    "Sun": 0.55
+   },
+   "range": 1.28,
+   "series_mean": 19.9
+  },
+  "AB+": {
+   "F": 12.591943594275188,
+   "p": 1.079063643271522e-11,
+   "weekday_mean_dev": {
+    "Mon": 1.03,
+    "Tue": 0.63,
+    "Wed": -0.65,
+    "Thu": -0.4,
+    "Fri": -0.87,
+    "Sat": -0.45,
+    "Sun": 0.65
+   },
+   "range": 1.9,
+   "series_mean": 27.1
+  },
+  "AB-": {
+   "F": 8.72350168893101,
+   "p": 2.8794534544666492e-08,
+   "weekday_mean_dev": {
+    "Mon": 0.3,
+    "Tue": 0.12,
+    "Wed": -0.17,
+    "Thu": -0.18,
+    "Fri": -0.32,
+    "Sat": -0.14,
+    "Sun": 0.36
+   },
+   "range": 0.68,
+   "series_mean": 9.6
+  },
+  "B+": {
+   "F": 9.8186748484756,
+   "p": 2.899448335878341e-09,
+   "weekday_mean_dev": {
+    "Mon": 2.2,
+    "Tue": 1.94,
+    "Wed": -0.75,
+    "Thu": -2.34,
+    "Fri": -4.05,
+    "Sat": 0.35,
+    "Sun": 2.63
+   },
+   "range": 6.68,
+   "series_mean": 93.9
+  },
+  "B-": {
+   "F": 7.3319888656293335,
+   "p": 5.696228135904386e-07,
+   "weekday_mean_dev": {
+    "Mon": 0.87,
+    "Tue": -0.12,
+    "Wed": -0.21,
+    "Thu": -0.65,
+    "Fri": -0.48,
+    "Sat": -0.03,
+    "Sun": 0.62
+   },
+   "range": 1.52,
+   "series_mean": 22.7
+  },
+  "O+": {
+   "F": 10.61561576204888,
+   "p": 5.625771433739083e-10,
+   "weekday_mean_dev": {
+    "Mon": 6.73,
+    "Tue": 2.65,
+    "Wed": -3.32,
+    "Thu": -5.62,
+    "Fri": -5.57,
+    "Sat": 0.2,
+    "Sun": 4.88
+   },
+   "range": 12.35,
+   "series_mean": 130.7
+  },
+  "O-": {
+   "F": 5.681281747427506,
+   "p": 2.140815662036402e-05,
+   "weekday_mean_dev": {
+    "Mon": 1.06,
+    "Tue": 0.6,
+    "Wed": -0.45,
+    "Thu": -0.73,
+    "Fri": -1.26,
+    "Sat": -0.12,
+    "Sun": 0.84
+   },
+   "range": 2.32,
+   "series_mean": 29.2
+  }
+ },
+ "continuity": {
+  "A+": {
+   "csv_last_day": 58,
+   "db_usable_today": 58,
+   "minimum_threshold": 80
+  },
+  "A-": {
+   "csv_last_day": 15,
+   "db_usable_today": 15,
+   "minimum_threshold": 25
+  },
+  "AB+": {
+   "csv_last_day": 21,
+   "db_usable_today": 21,
+   "minimum_threshold": 30
+  },
+  "AB-": {
+   "csv_last_day": 7,
+   "db_usable_today": 7,
+   "minimum_threshold": 25
+  },
+  "B+": {
+   "csv_last_day": 65,
+   "db_usable_today": 65,
+   "minimum_threshold": 60
+  },
+  "B-": {
+   "csv_last_day": 18,
+   "db_usable_today": 18,
+   "minimum_threshold": 40
+  },
+  "O+": {
+   "csv_last_day": 103,
+   "db_usable_today": 103,
+   "minimum_threshold": 100
+  },
+  "O-": {
+   "csv_last_day": 24,
+   "db_usable_today": 24,
+   "minimum_threshold": 80
+  }
+ }
+}

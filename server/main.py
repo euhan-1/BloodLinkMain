@@ -12,7 +12,7 @@ from typing import Optional
 
 import jwt
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy import text
@@ -295,6 +295,14 @@ def _finish_upload_record(conn, upload_id: int, rows_processed: int, errors: lis
             "error_details": json.dumps(errors, default=str),
         },
     )
+
+
+def _last_wins(rows: list[dict], key) -> list[dict]:
+    """One row per key, the later CSV line winning. A single multi-row INSERT ...
+    ON CONFLICT DO UPDATE errors if two rows hit the same key ("cannot affect
+    row a second time"), whereas the old row-by-row loop simply let the later
+    line overwrite the earlier one; this keeps that outcome."""
+    return list({key(r): r for r in rows}.values())
 
 
 # ─── Upload undo ────────────────────────────────────────────────────────────
@@ -1632,43 +1640,47 @@ async def upload_inventory(
     with engine.begin() as conn:
         upload_id = _start_upload_record(conn, facility_id, "inventory", uploaded_by, file.filename, csv_text)
 
-        for row in valid_rows:
-            result = conn.execute(
-                text(
-                    """
-                    INSERT INTO blood_units
-                        (din, blood_type, component, location, volume_ml, collected_date, expires_date, facility_id, upload_history_id)
-                    VALUES
-                        (:din, :blood_type, :component, :location, :volume_ml, :collected_date, :expires_date, :facility_id, :upload_id)
-                    ON CONFLICT (din) DO UPDATE SET
-                        blood_type = EXCLUDED.blood_type,
-                        component = EXCLUDED.component,
-                        location = EXCLUDED.location,
-                        volume_ml = EXCLUDED.volume_ml,
-                        collected_date = EXCLUDED.collected_date,
-                        expires_date = EXCLUDED.expires_date,
-                        upload_history_id = EXCLUDED.upload_history_id
-                    WHERE blood_units.facility_id = :facility_id
-                    RETURNING id
-                    """
-                ),
-                {
-                    "din": row["din"],
-                    "blood_type": row["blood_type"],
-                    "component": row["component"],
-                    "location": row["location"],
-                    "volume_ml": row["volume_ml"],
-                    "collected_date": row["collected_date"],
-                    "expires_date": row["expires_date"],
-                    "facility_id": facility_id,
-                    "upload_id": upload_id,
-                },
-            ).mappings().first()
+        # One statement for the whole file (a round trip per row cost ~75 ms each
+        # against the remote DB). RETURNING din tells us which rows the ownership
+        # WHERE let through; the rest belong to another facility.
+        applied: set[str] = set()
+        batch = _last_wins(valid_rows, lambda r: r["din"])
+        if batch:
+            cols = ("din", "blood_type", "component", "location", "volume_ml", "collected_date", "expires_date")
+            applied = {
+                r[0] for r in conn.execute(
+                    text(
+                        """
+                        INSERT INTO blood_units
+                            (din, blood_type, component, location, volume_ml, collected_date, expires_date, facility_id, upload_history_id)
+                        SELECT t.din, t.blood_type, t.component, t.location, t.volume_ml, t.collected_date, t.expires_date,
+                               :facility_id, :upload_id
+                        FROM unnest(
+                            CAST(:din AS text[]), CAST(:blood_type AS text[]), CAST(:component AS text[]),
+                            CAST(:location AS text[]), CAST(:volume_ml AS int[]),
+                            CAST(:collected_date AS date[]), CAST(:expires_date AS date[])
+                        ) AS t(din, blood_type, component, location, volume_ml, collected_date, expires_date)
+                        ON CONFLICT (din) DO UPDATE SET
+                            blood_type = EXCLUDED.blood_type,
+                            component = EXCLUDED.component,
+                            location = EXCLUDED.location,
+                            volume_ml = EXCLUDED.volume_ml,
+                            collected_date = EXCLUDED.collected_date,
+                            expires_date = EXCLUDED.expires_date,
+                            upload_history_id = EXCLUDED.upload_history_id
+                        WHERE blood_units.facility_id = :facility_id
+                        RETURNING din
+                        """
+                    ),
+                    {**{c: [r[c] for r in batch] for c in cols}, "facility_id": facility_id, "upload_id": upload_id},
+                )
+            }
 
-            if result is None:
-                errors.append({"row": row["row"], "reason": f"DIN {row['din']!r} is already registered to a different facility"})
-            else:
+        for row in valid_rows:
+            if row["din"] in applied:
                 rows_processed += 1
+            else:
+                errors.append({"row": row["row"], "reason": f"DIN {row['din']!r} is already registered to a different facility"})
 
         _finish_upload_record(conn, upload_id, rows_processed, errors)
 
@@ -1856,29 +1868,27 @@ async def upload_historical_inventory_snapshots(
 
     valid_rows, errors = _parse_historical_snapshot_csv(csv_text, date.today())
 
-    rows_processed = 0
+    rows_processed = len(valid_rows)
     with engine.begin() as conn:
         upload_id = _start_upload_record(conn, facility_id, "historical_stock", uploaded_by, file.filename, csv_text)
 
-        for row in valid_rows:
+        # One statement for the whole file instead of one round trip per row.
+        batch = _last_wins(valid_rows, lambda r: (r["snapshot_date"], r["blood_type"]))
+        if batch:
             conn.execute(
                 text(
                     """
                     INSERT INTO inventory_snapshots (snapshot_date, blood_type, units, facility_id, upload_history_id)
-                    VALUES (:snapshot_date, :blood_type, :units, :facility_id, :upload_id)
+                    SELECT t.snapshot_date, t.blood_type, t.units, :facility_id, :upload_id
+                    FROM unnest(CAST(:snapshot_date AS date[]), CAST(:blood_type AS text[]), CAST(:units AS int[]))
+                        AS t(snapshot_date, blood_type, units)
                     ON CONFLICT (snapshot_date, blood_type, facility_id)
                     DO UPDATE SET units = EXCLUDED.units, upload_history_id = EXCLUDED.upload_history_id
                     """
                 ),
-                {
-                    "snapshot_date": row["snapshot_date"],
-                    "blood_type": row["blood_type"],
-                    "units": row["units"],
-                    "facility_id": facility_id,
-                    "upload_id": upload_id,
-                },
+                {**{c: [r[c] for r in batch] for c in ("snapshot_date", "blood_type", "units")},
+                 "facility_id": facility_id, "upload_id": upload_id},
             )
-            rows_processed += 1
 
         _finish_upload_record(conn, upload_id, rows_processed, errors)
 
@@ -3036,8 +3046,38 @@ def _user_response(user: dict, facility: Optional[dict]) -> dict:
     }
 
 
+# Brute-force limits for exactly two endpoints — /auth/login and
+# /auth/forgot-password — and nothing else (no global middleware, so /health and
+# normal API traffic are never throttled). Keyed on client IP + email, not IP
+# alone: behind Vercel/Render the IP can be a shared edge address, and an
+# IP-only key would let one person's typos lock out everyone.
+#   login: only FAILED attempts count, 5 per 60s; a success clears the count.
+#   forgot-password: every request counts (the response is identical either
+#   way), 5 per 10 min.
+_LOGIN_LIMITER = auth.AttemptLimiter(limit=5, window=60)
+_FORGOT_LIMITER = auth.AttemptLimiter(limit=5, window=600)
+
+
+def _attempt_key(request: Request, email: str) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    ip = forwarded.split(",")[0].strip() or (request.client.host if request.client else "unknown")
+    return f"{ip}|{email.strip().lower()}"
+
+
+def _raise_if_limited(limiter: "auth.AttemptLimiter", key: str) -> None:
+    wait = limiter.retry_after(key)
+    if wait:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many sign-in attempts. Please wait a moment and try again.",
+            headers={"Retry-After": str(wait)},
+        )
+
+
 @app.post("/auth/login")
-def login(body: LoginBody):
+def login(body: LoginBody, request: Request):
+    key = _attempt_key(request, body.email)
+    _raise_if_limited(_LOGIN_LIMITER, key)
     with engine.connect() as conn:
         user = conn.execute(
             text(
@@ -3054,7 +3094,9 @@ def login(body: LoginBody):
     # Same error for "no such user" and "wrong password" — don't leak which
     # emails are registered.
     if user is None or not auth.verify_password(body.password, user["password_hash"]):
+        _LOGIN_LIMITER.record(key)
         raise HTTPException(status_code=401, detail="invalid email or password")
+    _LOGIN_LIMITER.clear(key)
 
     # Only ever false for a facility-linked account (facility_is_active is
     # NULL, not False, for admins — who have no facility row to deactivate).
@@ -3124,7 +3166,7 @@ def _send_password_reset_email(to_email: str, facility_name: Optional[str], rese
 
 
 @app.post("/auth/forgot-password")
-def forgot_password(body: ForgotPasswordBody):
+def forgot_password(body: ForgotPasswordBody, request: Request):
     """Self-service reset for an existing, already-verified facility account
     that simply forgot its password — distinct from admin-provisioned
     onboarding's forced first-login reset (POST /admin/facilities), which
@@ -3142,6 +3184,10 @@ def forgot_password(body: ForgotPasswordBody):
     seen again by this process — only its SHA-256 hash is stored, so a
     database read alone can never be used to complete a reset.
     """
+    key = _attempt_key(request, body.email)
+    _raise_if_limited(_FORGOT_LIMITER, key)
+    _FORGOT_LIMITER.record(key)
+
     with engine.connect() as conn:
         user = conn.execute(
             text(
@@ -3705,17 +3751,21 @@ async def upload_donors(
     with engine.begin() as conn:
         upload_id = _start_upload_record(conn, facility_id, "donors", uploaded_by, file.filename, None)
 
-        for row in valid_rows:
+        batch = _last_wins(valid_rows, lambda r: r["phone"])
+        if batch:
             conn.execute(
                 text(
                     """
                     INSERT INTO donors (name, blood_type, phone, facility_id, upload_history_id)
-                    VALUES (:name, :blood_type, :phone, :facility_id, :upload_id)
+                    SELECT t.name, t.blood_type, t.phone, :facility_id, :upload_id
+                    FROM unnest(CAST(:name AS text[]), CAST(:blood_type AS text[]), CAST(:phone AS text[]))
+                        AS t(name, blood_type, phone)
                     ON CONFLICT (facility_id, phone)
                     DO UPDATE SET name = EXCLUDED.name, blood_type = EXCLUDED.blood_type, upload_history_id = EXCLUDED.upload_history_id
                     """
                 ),
-                {**row, "facility_id": facility_id, "upload_id": upload_id},
+                {**{c: [r[c] for r in batch] for c in ("name", "blood_type", "phone")},
+                 "facility_id": facility_id, "upload_id": upload_id},
             )
 
         _finish_upload_record(conn, upload_id, len(valid_rows), errors)

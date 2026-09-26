@@ -1,5 +1,8 @@
+import math
 import os
 import secrets
+import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -85,3 +88,43 @@ def decode_password_reset_token(token: str) -> dict:
     if payload.get("purpose") != "password_reset":
         raise ValueError("not a password-reset token")
     return payload
+
+
+class AttemptLimiter:
+    """Sliding-window counter: at most `limit` recorded events per `window`
+    seconds per key. Callers decide what counts — login records only FAILED
+    attempts and clears the key on success, so a legitimate user is never
+    slowed down by their own successful sign-ins.
+
+    ponytail: per-process memory — resets on restart and isn't shared across
+    instances; move to Redis/DB if Render ever runs more than one."""
+
+    def __init__(self, limit: int, window: float, clock=time.monotonic):
+        self.limit, self.window, self.clock = limit, window, clock
+        self._events: dict[str, deque] = {}
+
+    def _live(self, key: str) -> Optional[deque]:
+        q = self._events.get(key)
+        now = self.clock()
+        while q and now - q[0] >= self.window:
+            q.popleft()
+        if q is not None and not q:
+            del self._events[key]
+            return None
+        return q
+
+    def retry_after(self, key: str) -> int:
+        """0 = allowed; otherwise whole seconds until the oldest event ages out."""
+        q = self._live(key)
+        if q is None or len(q) < self.limit:
+            return 0
+        return max(1, math.ceil(self.window - (self.clock() - q[0])))
+
+    def record(self, key: str) -> None:
+        if len(self._events) > 10_000:  # cheap sweep so abandoned keys can't pile up
+            for k in list(self._events):
+                self._live(k)
+        self._events.setdefault(key, deque()).append(self.clock())
+
+    def clear(self, key: str) -> None:
+        self._events.pop(key, None)

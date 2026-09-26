@@ -1,0 +1,194 @@
+{
+ "facility_id": 464,
+ "before": {
+  "forecast_source": "synthetic_model_stand_in",
+  "d": 1,
+  "lo": "2026-09-26",
+  "hi": "2026-09-26"
+ },
+ "upload": {
+  "body": {
+   "rows_processed": 1440,
+   "errors": [],
+   "days_of_history": 180,
+   "min_days_required": 3
+  },
+  "secs": 107.0
+ },
+ "after_upload": {
+  "d": 180,
+  "lo": "2026-03-30",
+  "hi": "2026-09-25"
+ },
+ "first_get": {
+  "secs": 11.75
+ },
+ "second_get": {
+  "secs": 1.77,
+  "identical_body": true
+ },
+ "response": {
+  "forecast_source": "sarimax_facility_history",
+  "has_sufficient_history": true,
+  "days_of_history": 181,
+  "sarimax_model_label": "SARIMAX(0,1,4)x(1,0,1,7)+dengue",
+  "sarimax_fallback_types": [],
+  "interval_confidence": 0.95,
+  "restock_status": "action_needed",
+  "restock_recommendations": [
+   {
+    "blood_type": "A-",
+    "breach_date": "2026-09-26",
+    "days_until_breach": 0,
+    "recommended_units": 86
+   },
+   {
+    "blood_type": "A+",
+    "breach_date": "2026-09-26",
+    "days_until_breach": 0,
+    "recommended_units": 102
+   },
+   {
+    "blood_type": "AB-",
+    "breach_date": "2026-09-26",
+    "days_until_breach": 0,
+    "recommended_units": 43
+   },
+   {
+    "blood_type": "AB+",
+    "breach_date": "2026-09-26",
+    "days_until_breach": 0,
+    "recommended_units": 40
+   },
+   {
+    "blood_type": "B-",
+    "breach_date": "2026-09-26",
+    "days_until_breach": 0,
+    "recommended_units": 63
+   },
+   {
+    "blood_type": "O-",
+    "breach_date": "2026-09-26",
+    "days_until_breach": 0,
+    "recommended_units": 137
+   }
+  ]
+ },
+ "series": [
+  {
+   "day": "Today",
+   "units": 311,
+   "lower": 311,
+   "upper": 311
+  },
+  {
+   "day": "Day 5",
+   "units": 314,
+   "lower": 266,
+   "upper": 362
+  },
+  {
+   "day": "Day 10",
+   "units": 320,
+   "lower": 268,
+   "upper": 371
+  },
+  {
+   "day": "Day 15",
+   "units": 321,
+   "lower": 267,
+   "upper": 376
+  },
+  {
+   "day": "Day 20",
+   "units": 307,
+   "lower": 250,
+   "upper": 365
+  },
+  {
+   "day": "Day 25",
+   "units": 308,
+   "lower": 249,
+   "upper": 370
+  },
+  {
+   "day": "Day 30",
+   "units": 316,
+   "lower": 252,
+   "upper": 378
+  }
+ ],
+ "alerts": [],
+ "cache": [
+  {
+   "blood_type": "A-",
+   "n": 7,
+   "lo": "2026-09-26",
+   "hi": "2026-10-26",
+   "trained": "2026-09-26",
+   "model": "SARIMAX(0,1,4)x(1,0,1,7)+dengue"
+  },
+  {
+   "blood_type": "A+",
+   "n": 7,
+   "lo": "2026-09-26",
+   "hi": "2026-10-26",
+   "trained": "2026-09-26",
+   "model": "SARIMAX(0,1,4)x(1,0,1,7)+dengue"
+  },
+  {
+   "blood_type": "AB-",
+   "n": 7,
+   "lo": "2026-09-26",
+   "hi": "2026-10-26",
+   "trained": "2026-09-26",
+   "model": "SARIMAX(0,1,4)x(1,0,1,7)+dengue"
+  },
+  {
+   "blood_type": "AB+",
+   "n": 7,
+   "lo": "2026-09-26",
+   "hi": "2026-10-26",
+   "trained": "2026-09-26",
+   "model": "SARIMAX(0,1,4)x(1,0,1,7)+dengue"
+  },
+  {
+   "blood_type": "B-",
+   "n": 7,
+   "lo": "2026-09-26",
+   "hi": "2026-10-26",
+   "trained": "2026-09-26",
+   "model": "SARIMAX(0,1,4)x(1,0,1,7)+dengue"
+  },
+  {
+   "blood_type": "B+",
+   "n": 7,
+   "lo": "2026-09-26",
+   "hi": "2026-10-26",
+   "trained": "2026-09-26",
+   "model": "SARIMAX(0,1,4)x(1,0,1,7)+dengue"
+  },
+  {
+   "blood_type": "O-",
+   "n": 7,
+   "lo": "2026-09-26",
+   "hi": "2026-10-26",
+   "trained": "2026-09-26",
+   "model": "SARIMAX(0,1,4)x(1,0,1,7)+dengue"
+  },
+  {
+   "blood_type": "O+",
+   "n": 7,
+   "lo": "2026-09-26",
+   "hi": "2026-10-26",
+   "trained": "2026-09-26",
+   "model": "SARIMAX(0,1,4)x(1,0,1,7)+dengue"
+  }
+ ],
+ "snapshots_after_get": {
+  "d": 181,
+  "lo": "2026-03-30",
+  "hi": "2026-09-26"
+ },
+ "cleanup_leftover_facility_rows": 0
+}

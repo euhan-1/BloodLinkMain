@@ -42,6 +42,9 @@ async function extractErrorMessage(res: Response): Promise<string> {
   } catch {
     // response wasn't JSON — fall through to the generic message
   }
+  // A 429 from anything that isn't our own JSON error (an edge/proxy page)
+  // would otherwise surface as a bare "429 ..." in the error box.
+  if (res.status === 429) return "Too many sign-in attempts. Please wait a moment and try again.";
   return `${res.status} ${res.statusText}`;
 }
 
