@@ -44,8 +44,14 @@ PHASE_2/3 for what that means precisely.
 | O- | -1.43 | 0.5656 | non-stationary | 1 | -6.32 | 3.1e-08 | stationary |
 
 7 of 8 series are non-stationary in levels (raw p up to 0.566) and every one of the 8 becomes
-stationary after one difference (d1 p at most 3.1e-08). **AB-** already rejects the unit root in levels (min d = 0) — the selected order still uses d = 1 there regardless, since d is fixed across the whole grid. 
-d = 1 is well supported for the other 7 types. No series needed d = 2.
+stationary after one difference (d1 p at most 3.1e-08). **AB-** already rejects the unit root in levels (min d = 0). No series needed d = 2.
+
+d is now searched (d in {0, 1}), not fixed, and the grid's AIC/Ljung-Box criterion does not simply
+follow the ADF verdict above: it selected d = 0 for 6 of the eight types
+(A-, AB+, AB-, B-, O+, O-) and d = 1 for 2 (A+, B+) — see
+each type's `order` in the Phase 2 table. AB- is the type where that agrees with its own ADF result; for the other d = 0 winners, the selection
+fit substitutes a strong AR/seasonal-AR component (coefficients near, at, or past the unit-root
+boundary — see `PHASE_2_ESTIMATION.md`) for the differencing the raw ADF test alone would call for.
 
 ## 2. ACF / PACF of the differenced series
 

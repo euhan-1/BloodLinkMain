@@ -58,19 +58,19 @@ Jarque-Bera p > 0.05, AND heteroskedasticity p > 0.05.**
 | Type | Order | K | LB p uncorrected (7/14/21/28) | LB p corrected (7/14/21/28) | Jarque-Bera | Het. (breakvar) stat / p | Resid ACF outside 95% bound | Verdict |
 |---|---|---|---|---|---|---|---|---|
 | A+ | (1,1,1)x(1,0,1,7) | K=4 | 0.7786 / 0.2388 / 0.5103 / 0.4810 | 0.2604 / 0.0673 / 0.2655 / 0.2733 | 1.5 / 0.4762 / 0.04 / 2.71 | 0.79 / 0.1645 | 2/28 [9, 23] | **PASS** |
-| A- | (2,0,0)x(1,0,1,7) | K=4 | 0.7817 / 0.1387 / 0.2406 / 0.0502 | 0.2632 / 0.0319 / 0.0913 / 0.0154 | 2.5 / 0.2912 / 0.01 / 2.62 | 1.15 / 0.4271 | 3/28 [9, 14, 23] | **FAIL** (Ljung-Box (corrected)) |
-| AB+ | (1,0,2)x(1,0,1,7) | K=5 | 0.5799 / 0.0918 / 0.1855 / 0.3139 | 0.0590 / 0.0110 / 0.0465 / 0.1210 | 3.0 / 0.2232 / 0.20 / 3.12 | 1.11 / 0.5256 | 2/28 [9, 10] | **FAIL** (Ljung-Box (corrected)) |
-| AB- | (1,0,1)x(1,0,1,7) | K=4 | 0.8219 / 0.8506 / 0.8130 / 0.9112 | 0.3050 / 0.5621 / 0.5814 / 0.7751 | 0.7 / 0.7207 / -0.08 / 2.90 | 1.16 / 0.3903 | 0/28 [] | **PASS** |
-| B+ | (1,1,2)x(1,0,1,7) | K=5 | 0.9585 / 0.4497 / 0.4481 / 0.6050 | 0.3635 / 0.1223 / 0.1718 / 0.3291 | 0.6 / 0.7404 / -0.09 / 2.96 | 1.05 / 0.7827 | 1/28 [8] | **PASS** |
-| B- | (1,0,1)x(1,0,1,7) | K=4 | 0.6629 / 0.9241 / 0.6853 / 0.8736 | 0.1735 / 0.7004 / 0.4263 / 0.7112 | 0.1 / 0.9661 / 0.01 / 3.06 | 0.91 / 0.5652 | 2/28 [4, 20] | **PASS** |
-| O+ | (1,0,2)x(1,0,1,7) | K=5 | 1.0e-05 / 1.1e-05 / 3.6e-07 / 7.2e-07 | 2.3e-08 / 2.1e-07 / 1.0e-08 / 3.5e-08 | 0.5 / 0.7905 / 0.01 / 2.83 | 1.20 / 0.2848 | 9/28 [1, 2, 6, 8, 11, 17, 18, 21, 24] | **FAIL** (Ljung-Box (corrected)) |
-| O- | (0,0,2)x(1,0,1,7) | K=4 | 0.5967 / 0.4497 / 0.6532 / 0.5862 | 0.1374 / 0.1730 / 0.3930 / 0.3654 | 1.2 / 0.5375 / 0.06 / 2.75 | 1.05 / 0.7719 | 0/28 [] | **PASS** |
+| A- | (2,0,0)x(1,0,1,7) | K=4 | 0.7838 / 0.1382 / 0.2393 / 0.0500 | 0.2653 / 0.0317 / 0.0907 / 0.0153 | 2.5 / 0.2920 / 0.01 / 2.62 | 1.15 / 0.4282 | 3/28 [9, 14, 23] | **FAIL** (Ljung-Box (corrected)) |
+| AB+ | (1,0,2)x(1,0,1,7) | K=5 | 0.5490 / 0.0881 / 0.1841 / 0.3129 | 0.0518 / 0.0104 / 0.0460 / 0.1205 | 3.1 / 0.2121 / 0.21 / 3.11 | 1.11 / 0.5282 | 2/28 [9, 10] | **FAIL** (Ljung-Box (corrected)) |
+| AB- | (1,0,1)x(1,0,1,7) | K=4 | 0.8224 / 0.8509 / 0.8131 / 0.9112 | 0.3055 / 0.5626 / 0.5815 / 0.7751 | 0.7 / 0.7206 / -0.08 / 2.90 | 1.16 / 0.3907 | 0/28 [] | **PASS** |
+| B+ | (1,1,2)x(1,0,1,7) | K=5 | 0.9585 / 0.4497 / 0.4481 / 0.6050 | 0.3635 / 0.1223 / 0.1718 / 0.3291 | 0.6 / 0.7404 / -0.09 / 2.96 | 1.05 / 0.7826 | 1/28 [8] | **PASS** |
+| B- | (1,0,1)x(1,0,1,7) | K=4 | 0.6630 / 0.9242 / 0.6854 / 0.8736 | 0.1736 / 0.7006 / 0.4264 / 0.7113 | 0.1 / 0.9661 / 0.01 / 3.06 | 0.91 / 0.5652 | 2/28 [4, 20] | **PASS** |
+| O+ | (1,0,2)x(1,0,1,7) | K=5 | 0.9836 / 0.8987 / 0.9690 / 0.9471 | 0.4814 / 0.5529 / 0.8300 / 0.8056 | 1.5 / 0.4746 / 0.15 / 3.04 | 1.24 / 0.2083 | 0/28 [] | **PASS** |
+| O- | (0,0,2)x(1,0,1,7) | K=4 | 0.5956 / 0.4525 / 0.6558 / 0.5873 | 0.1369 / 0.1747 / 0.3956 / 0.3664 | 1.2 / 0.5384 / 0.06 / 2.75 | 1.05 / 0.7733 | 0/28 [] | **PASS** |
 
-* **PASS (5): A+, AB-, B+, B-, O-.**
-* **FAIL (3): A-, AB+, O+.**
+* **PASS (6): A+, AB-, B+, B-, O+, O-.**
+* **FAIL (2): A-, AB+.**
 
 The order is identical in both fits (PHASE_2) — only the data changes. Where the two verdicts differ, that difference
-is caused entirely by fitting on 30 more (or fewer) days: O+.
+is caused entirely by fitting on 30 more (or fewer) days: no type differs between the two fits.
 
 ## Results — hold-out (one-step-ahead, 30 days the SELECTION FIT never saw)
 
@@ -93,11 +93,11 @@ LB columns. Baseline is a naive last-training-value-repeated forecast over the i
 
 ## All three, compared
 
-* **Pass PRODUCTION FIT and hold-out (3): A+, B+, O-.** The types where both "the
+* **Pass PRODUCTION FIT and hold-out (4): A+, B+, O+, O-.** The types where both "the
   order fits the full history well" and "its forecast errors on genuinely new data are independent" hold.
 * **Pass PRODUCTION FIT, FAIL hold-out (2): AB-, B-.** Fits the full history but
   its forecast errors on new data are still serially correlated.
-* **FAIL PRODUCTION FIT, pass hold-out (3): A-, AB+, O+.** A
+* **FAIL PRODUCTION FIT, pass hold-out (2): A-, AB+.** A
   reminder that in-sample and out-of-sample diagnostics answer different questions.
 
 ## Caveats

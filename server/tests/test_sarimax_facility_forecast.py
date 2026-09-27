@@ -16,16 +16,21 @@ Run from the server/ directory:
     .venv\\Scripts\\python.exe -m unittest tests.test_sarimax_facility_forecast -v
 """
 
+import csv
 import math
 import unittest
 from datetime import date, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 from main import (
+    FACILITY_SARIMAX_MAXITER,
     FORECAST_CHECKPOINTS,
+    SARIMAX_AIC_PER_OBS_DEGRADATION_THRESHOLD,
     SARIMAX_MIN_DAYS_REQUIRED,
     _fit_sarimax_facility_forecast,
     _resample_daily_series,
+    _sarimax_fit_is_sane,
     dengue_season_index,
 )
 
@@ -186,6 +191,117 @@ class FitSarimaxFacilityForecastTests(unittest.TestCase):
         with patch("statsmodels.tsa.statespace.sarimax.SARIMAX", return_value=_FakeModel()):
             result = _fit_sarimax_facility_forecast(series, today)
         self.assertIsNone(result)
+
+
+class SarimaxConvergenceRecoveryTests(unittest.TestCase):
+    """Regression test for a real convergence failure found in Northside's O+ series
+    (2026-09, GENERATED DEMONSTRATION DATA — see docs/methodology/run_methodology.py):
+    SARIMAX(1,0,2)x(1,0,1,7), refit on the full 420-day series from statsmodels' default
+    start, reported mle_retvals.converged=True but had landed on a materially worse,
+    non-invertible optimum (ar.L1 -> 1.000011, a seasonal MA coefficient at -2.87) than
+    the SAME order's own training-window (selection) fit (corrected Ljung-Box 2e-8 vs
+    0.44-0.80, 9/28 vs 0/28 residual ACF lags outside bound). Real data, real fits —
+    this IS the bug, not a stand-in for it. See the module comment above
+    SARIMAX_AIC_PER_OBS_DEGRADATION_THRESHOLD in main.py for the full investigation."""
+
+    ORDER = (1, 0, 2)
+    SEASONAL_ORDER = (1, 0, 1, 7)
+    HOLDOUT_DAYS = 30  # ORDER_SELECTION_HOLDOUT_DAYS at the time this was investigated
+
+    @classmethod
+    def setUpClass(cls):
+        csv_path = Path(__file__).resolve().parents[2] / "docs" / "methodology" / "northside_420d_history.csv"
+        rows = list(csv.DictReader(open(csv_path)))
+        o_plus = [(date.fromisoformat(r["snapshot_date"]), int(float(r["units"])))
+                  for r in rows if r["blood_type"] == "O+"]
+        o_plus.sort()
+        cls.full_series = o_plus
+        cls.today = o_plus[-1][0]
+
+    def _fit_training_window(self):
+        """The SAME order's SELECTION fit (training window only) — what a real
+        select_orders.py run would already have computed and stored as start_params /
+        selection_aic_per_obs. Reproduced directly here rather than running the full
+        72-candidate grid search just to get this one baseline fit."""
+        import pandas as pd
+        from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+        train = self.full_series[:-self.HOLDOUT_DAYS]
+        dates = [d for d, _ in train]
+        idx = pd.DatetimeIndex(dates)
+        endog = pd.Series([v for _, v in train], index=idx, dtype=float)
+        exog = pd.DataFrame({"dengue_season": [dengue_season_index(d) for d in dates]}, index=idx)
+        fit = SARIMAX(
+            endog, exog=exog, order=self.ORDER, seasonal_order=self.SEASONAL_ORDER, trend=None,
+            enforce_stationarity=False, enforce_invertibility=False,
+        ).fit(disp=False, maxiter=FACILITY_SARIMAX_MAXITER)
+        self.assertTrue(fit.mle_retvals.get("converged"), "the selection fit itself must converge for this test to mean anything")
+        return fit, len(train)
+
+    def test_default_start_on_the_full_series_is_caught_as_unsound(self):
+        """Reproduces the failure directly: the SAME default-start fit
+        run_methodology.py's production-fit section used, on the SAME 420-day series,
+        judged against the SAME order's own selection-fit AIC/observation — must be
+        rejected by _sarimax_fit_is_sane even though statsmodels itself reports it as
+        converged."""
+        import pandas as pd
+        from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+        sel_fit, n_train = self._fit_training_window()
+        baseline_aic_per_obs = sel_fit.aic / n_train
+
+        dates = [d for d, _ in self.full_series]
+        idx = pd.DatetimeIndex(dates)
+        endog = pd.Series([v for _, v in self.full_series], index=idx, dtype=float)
+        exog = pd.DataFrame({"dengue_season": [dengue_season_index(d) for d in dates]}, index=idx)
+        bad_fit = SARIMAX(
+            endog, exog=exog, order=self.ORDER, seasonal_order=self.SEASONAL_ORDER, trend=None,
+            enforce_stationarity=False, enforce_invertibility=False,
+        ).fit(disp=False, maxiter=FACILITY_SARIMAX_MAXITER)
+        self.assertTrue(bad_fit.mle_retvals.get("converged"), "this IS the bug: converged=True at a bad optimum")
+
+        ok, reason, diag = _sarimax_fit_is_sane(bad_fit, len(self.full_series), baseline_aic_per_obs)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "aic_degraded_vs_baseline")
+        self.assertGreater(diag["aic_per_obs_delta_vs_baseline"], SARIMAX_AIC_PER_OBS_DEGRADATION_THRESHOLD)
+
+    def test_fit_sarimax_facility_forecast_recovers_and_still_serves_a_forecast(self):
+        """The full path with no start_params available (the worst case — a
+        pre-migration row with nothing stored yet) but a baseline available: the
+        default-start attempt is unsound, the nm->lbfgs retry finds the good basin, and
+        a real forecast is served instead of either the degenerate fit or a silent
+        None."""
+        sel_fit, n_train = self._fit_training_window()
+        baseline_aic_per_obs = sel_fit.aic / n_train
+
+        result = _fit_sarimax_facility_forecast(
+            self.full_series, self.today, order=self.ORDER, seasonal_order=self.SEASONAL_ORDER,
+            model_label="SARIMAX(1,0,2)x(1,0,1,7)+dengue", start_params=None,
+            baseline_aic_per_obs=baseline_aic_per_obs,
+        )
+        self.assertIsNotNone(result, "the retry must recover a usable fit, not silently give up")
+        for c in FORECAST_CHECKPOINTS:
+            cp = result["checkpoints"][c]
+            for key in ("units", "lower", "upper"):
+                self.assertTrue(math.isfinite(cp[key]))
+        self.assertLess(result["checkpoints"][30]["lower"], result["checkpoints"][30]["upper"])
+
+    def test_warm_start_from_the_selection_fit_avoids_the_bad_basin_on_the_first_attempt(self):
+        """PREVENT, not just RECOVER: passing the selection fit's own params as
+        start_params (what a real facility_sarimax_order row now stores) reaches a
+        sound fit on the FIRST attempt — no "primary fit unsound" retry log — instead
+        of relying on the nm/lbfgs safety net every time."""
+        sel_fit, n_train = self._fit_training_window()
+        baseline_aic_per_obs = sel_fit.aic / n_train
+
+        with patch("builtins.print") as mocked_print:
+            result = _fit_sarimax_facility_forecast(
+                self.full_series, self.today, order=self.ORDER, seasonal_order=self.SEASONAL_ORDER,
+                model_label="SARIMAX(1,0,2)x(1,0,1,7)+dengue", start_params=sel_fit.params.tolist(),
+                baseline_aic_per_obs=baseline_aic_per_obs,
+            )
+        self.assertIsNotNone(result)
+        mocked_print.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -70,6 +70,24 @@ CREATE TABLE facility_sarimax_order (
     -- forecast, so holdout_mape/rmse above can be read against a real baseline.
     holdout_baseline_mape double precision,
     holdout_baseline_rmse double precision,
+    -- This winning candidate's OWN converged params from the grid search
+    -- (_fit_candidate_order), in statsmodels' own params order for this exact
+    -- (p,d,q)x(P,D,Q,s)+dengue spec. Passed as start_params to warm-start the
+    -- production/live refit on the FULL series (main.py:_fit_sarimax_facility_forecast)
+    -- instead of statsmodels' generic default start — see the module comment above
+    -- SARIMAX_AIC_PER_OBS_DEGRADATION_THRESHOLD for the convergence failure (Northside
+    -- O+, 2026-09) this exists to prevent: mle_retvals.converged=True from a default
+    -- start landed on a materially worse, non-invertible optimum on the same data.
+    -- Same row, same upsert as the order it belongs to, so a re-selection replaces
+    -- both together and a stale vector can never attach to a different spec. NULL on
+    -- a row selected before this column existed, until the next re-selection.
+    start_params jsonb,
+    -- That same winning candidate's AIC / training-window observation count — the
+    -- baseline _sarimax_fit_is_sane compares the production/live fit's own AIC per
+    -- observation against, so a fit that's technically "converged" but landed
+    -- somewhere much worse than its own selection basin is still caught. NULL
+    -- alongside start_params for a pre-migration row.
+    selection_aic_per_obs double precision,
     -- The last TRAINING day (today minus ORDER_SELECTION_HOLDOUT_DAYS) — NOT a
     -- freshness gate (selection re-runs only when triggered, never
     -- automatically from the passage of a day, unlike

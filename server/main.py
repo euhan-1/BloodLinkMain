@@ -194,6 +194,33 @@ _ORDER_SELECTION_LOCK_NAMESPACE = 7302  # a SEPARATE advisory-lock namespace fro
 # fallback, whichever is available right now, so it never needs to wait on
 # selection.
 
+# CONVERGENCE, beyond mle_retvals.converged (see _sarimax_fit_is_sane). Northside O+
+# investigation (2026-09): the training-window (390-day) SELECTION fit for O+'s winning
+# order (1,0,2)x(1,0,1,7) converged cleanly (corrected Ljung-Box 0.44-0.80, 0/28 residual
+# ACF lags outside bound). Refit on the FULL 420-day series from statsmodels' default
+# start, mle_retvals.converged still reported True, but the fit had landed on a different,
+# non-invertible optimum (ar.L1 -> 1.000011, a seasonal MA coefficient at -2.87, |theta|>1)
+# with corrected Ljung-Box down to 2e-8 and 9/28 lags outside bound. Refitting the SAME
+# 420-day series from the selection fit's own converged params (or from nm/powell then
+# lbfgs) landed back in the good basin (AIC ~2382 vs ~2474 from the bad optimum) with clean
+# diagnostics. mle_retvals.converged only means scipy's optimizer stopped moving — not that
+# it stopped somewhere sane — so a second, calibrated check is needed after it.
+#
+# An absolute AR/MA root-modulus floor was tried first and does NOT work: AB-'s own
+# training-window fit (and its production fit, warm-started from that same fit) both
+# legitimately carry a root at modulus ~0.11 — a harmless near AR/MA cancellation, no AIC
+# or Ljung-Box problem either fit — which sits BELOW the degenerate O+ fit's own worst root
+# (~0.86). No single floor can pass AB- and fail O+, so root moduli are computed and
+# returned for logging/diagnosis only; they do not gate _sarimax_fit_is_sane's verdict.
+#
+# What DOES cleanly separate them: AIC per observation, compared against the SAME order's
+# training-window (selection) fit, scaled for the extra observations (AIC/N is comparable
+# across different N; raw AIC is not). Calibrated on Northside's 8 currently-selected
+# orders: every good production fit sits within +0.03 nats/observation of its own
+# selection fit (worst: O-, +0.0265); the O+ convergence failure that prompted this sat at
+# +0.2364 — about 9x that gap. 0.05 sits with real margin on both sides.
+SARIMAX_AIC_PER_OBS_DEGRADATION_THRESHOLD = 0.05
+
 EARTH_RADIUS_KM = 6371.0
 
 # DEV-ONLY escape hatch (Step 6C), off unless explicitly enabled in .env. Never
@@ -949,6 +976,58 @@ def _resample_daily_series(
     return result
 
 
+def _sarimax_fit_is_sane(fit, n_obs: int, baseline_aic_per_obs: Optional[float]) -> tuple[bool, str, dict]:
+    """Whether a completed .fit() call is trustworthy enough to serve or store — not just
+    "converged". See the module comment above SARIMAX_AIC_PER_OBS_DEGRADATION_THRESHOLD for
+    why mle_retvals.converged (checked first, below) isn't enough on its own, why an AR/MA
+    root-modulus floor doesn't work for this data, and why AIC-per-observation vs the same
+    order's training-window fit is what actually catches it.
+
+    Shared by all three places a SARIMAX model gets fit: the grid search
+    (_fit_candidate_order, baseline_aic_per_obs=None — nothing to compare against yet), the
+    winning order's hold-out refit (_evaluate_order_on_holdout), and the production/live fit
+    (_fit_sarimax_facility_forecast). One rule, checked the same way everywhere, instead of
+    three copies drifting apart.
+
+    Returns (ok, reason, diagnostics). diagnostics is populated whenever there's a real fit to
+    describe (empty only when convergence itself already failed), so a caller can log what was
+    actually true about a rejected fit, not just that it was rejected."""
+    import numpy as np  # lazy — see the import comment near the top of this file
+
+    if not (hasattr(fit, "mle_retvals") and fit.mle_retvals.get("converged", False)):
+        return False, "not_converged", {}
+
+    aic, bic = getattr(fit, "aic", float("nan")), getattr(fit, "bic", float("nan"))
+    params = getattr(fit, "params", None)
+    param_values = np.asarray(params, dtype=float) if params is not None else np.array([])
+    if not (math.isfinite(aic) and math.isfinite(bic) and param_values.size and np.all(np.isfinite(param_values))):
+        return False, "non_finite_fit", {}
+
+    sigma2 = float(params.get("sigma2", float("nan"))) if hasattr(params, "get") else float("nan")
+    if not math.isfinite(sigma2) or sigma2 <= 0:
+        return False, "non_positive_sigma2", {"sigma2": sigma2}
+
+    def root_moduli(roots) -> "np.ndarray":
+        return np.abs(np.asarray(roots)) if roots is not None and len(roots) else np.array([])
+
+    ar_roots, ma_roots = root_moduli(getattr(fit, "arroots", None)), root_moduli(getattr(fit, "maroots", None))
+    if (ar_roots.size and not np.all(np.isfinite(ar_roots))) or (ma_roots.size and not np.all(np.isfinite(ma_roots))):
+        return False, "non_finite_roots", {}
+
+    aic_per_obs = aic / n_obs
+    diagnostics = {
+        "aic_per_obs": aic_per_obs,
+        "min_ar_root": float(ar_roots.min()) if ar_roots.size else None,
+        "min_ma_root": float(ma_roots.min()) if ma_roots.size else None,
+    }
+    if baseline_aic_per_obs is not None:
+        delta = aic_per_obs - baseline_aic_per_obs
+        diagnostics["aic_per_obs_delta_vs_baseline"] = delta
+        if delta > SARIMAX_AIC_PER_OBS_DEGRADATION_THRESHOLD:
+            return False, "aic_degraded_vs_baseline", diagnostics
+    return True, "ok", diagnostics
+
+
 # NOTE ON THE AI MODEL-SELECTION FEATURE: deliberately NOT wired in here.
 # train_sarimax_selector.py builds and evaluates a decision-tree selector
 # that chooses among sarimax_selector_common.CANDIDATE_LIBRARY, but its own
@@ -964,6 +1043,8 @@ def _fit_sarimax_facility_forecast(
     order: tuple[int, int, int] = FACILITY_SARIMAX_ORDER,
     seasonal_order: tuple[int, int, int, int] = FACILITY_SARIMAX_SEASONAL_ORDER,
     model_label: str = FACILITY_SARIMAX_LABEL,
+    start_params: Optional[list[float]] = None,
+    baseline_aic_per_obs: Optional[float] = None,
 ) -> Optional[dict]:
     """Fits `order`/`seasonal_order` (the fixed FACILITY_SARIMAX_ORDER/
     FACILITY_SARIMAX_SEASONAL_ORDER by default, or a per-type order selected by
@@ -984,11 +1065,37 @@ def _fit_sarimax_facility_forecast(
     model estimate: it's a known fact, not a forecast, so there's nothing to
     gain by substituting a fitted value the way the linear-trend path does.
 
+    `start_params` — this (facility, blood_type)'s SELECTION fit's own converged
+    params (facility_sarimax_order.start_params), when one has been selected — warm-
+    starts the fit from the same basin the grid search already found, rather than
+    statsmodels' generic default start. This is the PREVENT half of the Northside O+
+    convergence-failure fix (see the module comment above
+    SARIMAX_AIC_PER_OBS_DEGRADATION_THRESHOLD): refitting the SAME series from the
+    default start can converge (mle_retvals.converged=True) at a materially worse,
+    non-invertible optimum. None when there's no stored selection yet (the fixed
+    FACILITY_SARIMAX_ORDER fallback never has one) — the fit then starts from
+    statsmodels' own default, same as before this fix.
+
+    `baseline_aic_per_obs` — that same selection fit's AIC per training observation
+    (facility_sarimax_order.selection_aic_per_obs), passed to _sarimax_fit_is_sane so
+    a fit that lands somewhere much worse than its own selection basin is caught even
+    though mle_retvals reports it as converged. None skips that comparison (nothing to
+    compare against) but the convergence/finite/root checks in _sarimax_fit_is_sane
+    still run.
+
+    RECOVER: if the fit (warm-started or not) fails _sarimax_fit_is_sane, this retries
+    ONCE from a different start — Nelder-Mead (derivative-free, so it isn't caught by
+    the same bad gradient basin) refined by one L-BFGS-B polish — before giving up.
+    Still failing after that retry falls back to the linear trend, same as any other
+    unusable fit here, with a one-line log so this is visible after the fact (see
+    _SARIMAX_FIT_FAILED and the /forecast endpoint's per-type fallback).
+
     Returns None — never raises — whenever there isn't enough data to
-    attempt a fit, the fit doesn't converge, or it converges to a
-    non-finite/degenerate forecast. The caller falls back to a linear trend
-    for that blood type whenever this returns None; a bad fit here must
-    never 500 the /forecast endpoint.
+    attempt a fit, the fit doesn't converge, it converges to a
+    non-finite/degenerate forecast, or (after the retry above) it never lands
+    somewhere trustworthy. The caller falls back to a linear trend for that blood
+    type whenever this returns None; a bad fit here must never 500 the /forecast
+    endpoint.
     """
     if len(daily_series) < SARIMAX_MIN_DAYS_REQUIRED or daily_series[-1][0] != today:
         return None
@@ -1009,26 +1116,62 @@ def _fit_sarimax_facility_forecast(
         index=pd.DatetimeIndex(future_dates),
     )
 
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            fit = SARIMAX(
-                endog, exog=exog,
-                order=order, seasonal_order=seasonal_order,
-                trend=None, enforce_stationarity=False, enforce_invertibility=False,
-            ).fit(disp=False, maxiter=FACILITY_SARIMAX_MAXITER)
+    n_obs = len(daily_series)
 
-        if not fit.mle_retvals.get("converged", False):
+    def fit_checked(model, **fit_kwargs) -> Optional[object]:
+        """Fits with `fit_kwargs` and returns the fit only if it's sane per
+        _sarimax_fit_is_sane; None (never raises) on any failure, exactly like the
+        rest of this function's contract."""
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                candidate = model.fit(disp=False, maxiter=FACILITY_SARIMAX_MAXITER, **fit_kwargs)
+        except Exception:
+            return None
+        ok, _reason, _diag = _sarimax_fit_is_sane(candidate, n_obs, baseline_aic_per_obs)
+        return candidate if ok else None
+
+    try:
+        model = SARIMAX(
+            endog, exog=exog,
+            order=order, seasonal_order=seasonal_order,
+            trend=None, enforce_stationarity=False, enforce_invertibility=False,
+        )
+    except Exception:
+        return None
+
+    fit = fit_checked(model, start_params=start_params) if start_params is not None else fit_checked(model)
+    if fit is None:
+        print(f"[sarimax] {model_label} primary fit unsound on a {n_obs}-day series; retrying nm->lbfgs")
+        # nm is only relocating the start point for the lbfgs polish below, not itself
+        # the fit that gets judged — Nelder-Mead frequently reports its OWN
+        # converged=False at this maxiter while still landing somewhere lbfgs can
+        # polish into a sound fit (see the module comment above
+        # SARIMAX_AIC_PER_OBS_DEGRADATION_THRESHOLD): gating on nm's own convergence
+        # here would throw away exactly the recovery this retry exists for. Only
+        # guard against nm producing unusable (non-finite) params to start lbfgs from.
+        fit_nm = None
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                candidate_nm = model.fit(disp=False, maxiter=FACILITY_SARIMAX_MAXITER, method="nm")
+            if all(math.isfinite(v) for v in candidate_nm.params):
+                fit_nm = candidate_nm
+        except Exception:
+            pass
+        fit = fit_checked(model, start_params=fit_nm.params.values, method="lbfgs") if fit_nm is not None else None
+        if fit is None:
+            print(f"[sarimax] {model_label} retry also unsound on a {n_obs}-day series; falling back to linear trend")
             return None
 
+    try:
         forecast_res = fit.get_forecast(steps=horizon, exog=future_exog)
         point = forecast_res.predicted_mean
         ci = forecast_res.conf_int(alpha=1 - FORECAST_INTERVAL_CONFIDENCE)
     except Exception:
-        # Any statsmodels failure (non-convergence raised as an exception,
-        # a singular/rank-deficient fit, a linear-algebra error on a
-        # pathological series, ...) falls back to the linear trend for this
-        # blood type rather than ever reaching the caller as a 500.
+        # Any statsmodels failure (a singular/rank-deficient fit, a linear-algebra
+        # error on a pathological series, ...) falls back to the linear trend for
+        # this blood type rather than ever reaching the caller as a 500.
         return None
 
     lower_col, upper_col = ci.columns[0], ci.columns[1]
@@ -1063,11 +1206,18 @@ def _get_selected_order(conn, facility_id: int, blood_type: str) -> Optional[dic
     """The stored per-type SARIMAX order from facility_sarimax_order, or None if
     none has been selected yet for this (facility, blood_type) — the live
     fitter's caller then falls back to FACILITY_SARIMAX_ORDER (see
-    _fit_and_cache_sarimax)."""
+    _fit_and_cache_sarimax).
+
+    start_params/selection_aic_per_obs are both None on a row selected before
+    those columns existed — the live fitter then falls back to statsmodels' own
+    default start with no baseline to check the fit's AIC against (same as
+    before this pair of columns was added), until the next re-selection fills
+    them in."""
     row = conn.execute(
         text(
             """
-            SELECT p, d, q, seasonal_p, seasonal_d, seasonal_q, seasonal_s, criterion_satisfied
+            SELECT p, d, q, seasonal_p, seasonal_d, seasonal_q, seasonal_s, criterion_satisfied,
+                   start_params, selection_aic_per_obs
             FROM facility_sarimax_order WHERE facility_id = :facility_id AND blood_type = :blood_type
             """
         ),
@@ -1137,10 +1287,15 @@ def _fit_and_cache_sarimax(
         order = (selected["p"], selected["d"], selected["q"])
         seasonal_order = (selected["seasonal_p"], selected["seasonal_d"], selected["seasonal_q"], selected["seasonal_s"])
         label = _order_label(*order, *seasonal_order, selected=True)
+        start_params, baseline_aic_per_obs = selected["start_params"], selected["selection_aic_per_obs"]
     else:
         order, seasonal_order = FACILITY_SARIMAX_ORDER, FACILITY_SARIMAX_SEASONAL_ORDER
         label = _order_label(*order, *seasonal_order, selected=False)
-    result = _fit_sarimax_facility_forecast(daily_series, today, order=order, seasonal_order=seasonal_order, model_label=label)
+        start_params, baseline_aic_per_obs = None, None
+    result = _fit_sarimax_facility_forecast(
+        daily_series, today, order=order, seasonal_order=seasonal_order, model_label=label,
+        start_params=start_params, baseline_aic_per_obs=baseline_aic_per_obs,
+    )
     if result is None:
         _SARIMAX_FIT_FAILED.add((facility_id, blood_type, today))
         return None
@@ -1243,8 +1398,11 @@ def _collect_sarimax_results(
 def _fit_candidate_order(y: "pd.Series", exog: "pd.DataFrame", p: int, d: int, q: int, sp: int, sq: int) -> Optional[dict]:
     """One candidate in the order-selection grid: fits SARIMAX(p,d,q)x(sp,0,sq,7)
     with the dengue exog and the same fit settings as the live fitter, and
-    returns its diagnostics, or None if it doesn't converge. Real work — not
-    pure — but isolated so _rank_candidates_and_select (the actual selection
+    returns its diagnostics, or None if it doesn't converge OR fails
+    _sarimax_fit_is_sane's finite/root/sigma2 guard (baseline_aic_per_obs=None here —
+    there's no prior fit of THIS series to compare against yet; that comparison is
+    the production/live fit's job, against what this function returns). Real work —
+    not pure — but isolated so _rank_candidates_and_select (the actual selection
     RULE) can be unit-tested on fabricated candidate dicts without fitting
     anything."""
     import numpy as np  # lazy — see the import comment near the top of this file
@@ -1260,7 +1418,8 @@ def _fit_candidate_order(y: "pd.Series", exog: "pd.DataFrame", p: int, d: int, q
                 y, exog=exog, order=order, seasonal_order=seasonal_order,
                 trend=None, enforce_stationarity=False, enforce_invertibility=False,
             ).fit(disp=False, maxiter=FACILITY_SARIMAX_MAXITER)
-        if not fit.mle_retvals.get("converged", False):
+        ok, _reason, _diag = _sarimax_fit_is_sane(fit, len(y), None)
+        if not ok:
             return None
     except Exception:
         return None
@@ -1282,6 +1441,12 @@ def _fit_candidate_order(y: "pd.Series", exog: "pd.DataFrame", p: int, d: int, q
     return {
         "p": p, "d": d, "q": q, "seasonal_p": sp, "seasonal_d": 0, "seasonal_q": sq, "seasonal_s": 7,
         "aic": float(fit.aic), "lb_p": lb_p,
+        # This candidate's OWN converged params/AIC-per-obs — carried through by
+        # _rank_candidates_and_select's {**winner, ...} spread untouched, so the
+        # winning candidate's basin is available to warm-start the production/live
+        # fit on the full series (see _fit_sarimax_facility_forecast's start_params).
+        "start_params": fit.params.tolist(),
+        "aic_per_obs": float(fit.aic) / len(y),
     }
 
 
@@ -1326,6 +1491,7 @@ def _select_sarimax_order_for_series(y: "pd.Series", exog: "pd.DataFrame") -> Op
 def _evaluate_order_on_holdout(
     y_train: "pd.Series", exog_train: "pd.DataFrame", y_holdout: "pd.Series", exog_holdout: "pd.DataFrame",
     order: tuple[int, int, int], seasonal_order: tuple[int, int, int, int],
+    start_params: Optional[list[float]] = None, baseline_aic_per_obs: Optional[float] = None,
 ) -> Optional[dict]:
     """Refits the WINNING order on the training window alone (a single extra
     fit — the 36 candidates in the grid are diagnosed on their own training
@@ -1335,8 +1501,16 @@ def _evaluate_order_on_holdout(
     last-training-value-repeated baseline over the identical window (the valid
     out-of-sample accuracy evidence), plus a Ljung-Box independence check on
     ONE-STEP-AHEAD hold-out errors (see below) — or None for that check alone
-    if it doesn't come out finite; None for the whole return only if the
-    training refit itself doesn't converge.
+    if it doesn't come out finite; None for the whole return if the training
+    refit doesn't converge OR fails _sarimax_fit_is_sane.
+
+    `start_params`/`baseline_aic_per_obs` are this same order's winning candidate
+    fit from the grid search (_fit_candidate_order, on this EXACT y_train/exog_train)
+    — warm-starting here isn't just the general PREVENT fix, it's fitting the
+    identical data twice and has no excuse to land anywhere else. baseline_aic_per_obs
+    then makes that self-consistency an assertion, not an assumption: if this refit's
+    AIC/observation drifts from the grid search's own winning fit, that's caught
+    the same way a production/live-fit divergence would be.
 
     NOT tested here: Ljung-Box on the STATIC (fixed-origin, multi-step)
     forecast errors used for MAPE/RMSE. That would be invalid — h-step-ahead
@@ -1357,11 +1531,13 @@ def _evaluate_order_on_holdout(
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
+            fit_kwargs = {"start_params": start_params} if start_params is not None else {}
             fit = SARIMAX(
                 y_train, exog=exog_train, order=order, seasonal_order=seasonal_order,
                 trend=None, enforce_stationarity=False, enforce_invertibility=False,
-            ).fit(disp=False, maxiter=FACILITY_SARIMAX_MAXITER)
-        if not fit.mle_retvals.get("converged", False):
+            ).fit(disp=False, maxiter=FACILITY_SARIMAX_MAXITER, **fit_kwargs)
+        ok, _reason, _diag = _sarimax_fit_is_sane(fit, len(y_train), baseline_aic_per_obs)
+        if not ok:
             return None
         point = fit.get_forecast(steps=len(y_holdout), exog=exog_holdout).predicted_mean
     except Exception:
@@ -1492,7 +1668,10 @@ def _run_order_selection_for_facility(facility_id: int, max_types: Optional[int]
                     continue  # nothing in the grid converged on the training window; leave it on whatever it had
                 order = (selection["p"], selection["d"], selection["q"])
                 seasonal_order = (selection["seasonal_p"], selection["seasonal_d"], selection["seasonal_q"], selection["seasonal_s"])
-                holdout = _evaluate_order_on_holdout(y_train, exog_train, y_holdout, exog_holdout, order, seasonal_order)
+                holdout = _evaluate_order_on_holdout(
+                    y_train, exog_train, y_holdout, exog_holdout, order, seasonal_order,
+                    start_params=selection["start_params"], baseline_aic_per_obs=selection["aic_per_obs"],
+                )
                 if holdout is None:
                     continue  # the winning order refits fine 36 times over but not a 37th; extremely unlikely, but skip rather than guess
 
@@ -1506,6 +1685,7 @@ def _run_order_selection_for_facility(facility_id: int, max_types: Optional[int]
                                  criterion_satisfied, n_candidates_converged,
                                  lb_p_14_holdout_onestep, lb_p_21_holdout_onestep, lb_p_28_holdout_onestep,
                                  holdout_mape, holdout_rmse, holdout_baseline_mape, holdout_baseline_rmse,
+                                 start_params, selection_aic_per_obs,
                                  trained_through_date, evaluated_through_date, selected_at)
                             VALUES
                                 (:facility_id, :blood_type, :p, :d, :q, :seasonal_p, :seasonal_d, :seasonal_q, :seasonal_s,
@@ -1513,6 +1693,7 @@ def _run_order_selection_for_facility(facility_id: int, max_types: Optional[int]
                                  :criterion_satisfied, :n_candidates_converged,
                                  :lb_p_14_holdout_onestep, :lb_p_21_holdout_onestep, :lb_p_28_holdout_onestep,
                                  :holdout_mape, :holdout_rmse, :holdout_baseline_mape, :holdout_baseline_rmse,
+                                 CAST(:start_params AS jsonb), :selection_aic_per_obs,
                                  :trained_through_date, :evaluated_through_date, now())
                             ON CONFLICT (facility_id, blood_type) DO UPDATE SET
                                 p = EXCLUDED.p, d = EXCLUDED.d, q = EXCLUDED.q,
@@ -1528,6 +1709,8 @@ def _run_order_selection_for_facility(facility_id: int, max_types: Optional[int]
                                 holdout_mape = EXCLUDED.holdout_mape, holdout_rmse = EXCLUDED.holdout_rmse,
                                 holdout_baseline_mape = EXCLUDED.holdout_baseline_mape,
                                 holdout_baseline_rmse = EXCLUDED.holdout_baseline_rmse,
+                                start_params = EXCLUDED.start_params,
+                                selection_aic_per_obs = EXCLUDED.selection_aic_per_obs,
                                 trained_through_date = EXCLUDED.trained_through_date,
                                 evaluated_through_date = EXCLUDED.evaluated_through_date, selected_at = now()
                             """
@@ -1547,6 +1730,13 @@ def _run_order_selection_for_facility(facility_id: int, max_types: Optional[int]
                             "lb_p_28_holdout_onestep": holdout["lb_p_onestep"][28],
                             "holdout_mape": holdout["mape"], "holdout_rmse": holdout["rmse"],
                             "holdout_baseline_mape": holdout["baseline_mape"], "holdout_baseline_rmse": holdout["baseline_rmse"],
+                            # This winning candidate's OWN converged params (see
+                            # _fit_candidate_order) — stored in the SAME row, SAME upsert as
+                            # the order they belong to, so a re-selection replaces both
+                            # together and a stale param vector can never attach to a
+                            # different (p,d,q)x(P,D,Q,s) spec.
+                            "start_params": json.dumps(selection["start_params"]),
+                            "selection_aic_per_obs": selection["aic_per_obs"],
                             "trained_through_date": train_series[-1][0], "evaluated_through_date": today,
                         },
                     )

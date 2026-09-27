@@ -93,13 +93,13 @@ mechanism is real** — this is still demonstration data (see the data notice ab
 | Type | Dengue coef (production fit) | Dengue p (production fit) |
 |---|---|---|
 | A+ | -7.058 | 1.5e-36 |
-| A- | -2.298 | 1.5e-48 |
-| AB+ | -1.525 | 3.4e-14 |
-| AB- | -0.557 | 6.7e-11 |
+| A- | -2.302 | 2.9e-48 |
+| AB+ | -1.522 | 1.1e-13 |
+| AB- | -0.557 | 7.4e-11 |
 | B+ | -4.742 | 5.7e-10 |
 | B- | -1.102 | 1.3e-14 |
-| O+ | -14.147 | 9.7e-31 |
-| O- | -5.721 | 1.8e-176 |
+| O+ | -14.272 | 8.3e-53 |
+| O- | -5.724 | 9.9e-177 |
 
 ## 4. Selection stability check
 

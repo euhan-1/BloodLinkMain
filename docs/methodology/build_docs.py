@@ -111,8 +111,14 @@ PHASE_2/3 for what that means precisely.
 {table(["Type", "ADF stat (raw)", "p (raw)", "Verdict (raw)", "Min d to pass", "ADF stat (d=1)", "p (d=1)", "Verdict (d=1)"], raw_rows)}
 {n_nonstationary_raw} of 8 series are non-stationary in levels (raw p up to {max_raw_p:.3f}) and every one of the 8 becomes
 stationary after one difference (d1 p at most {max_d1_p:.1e}). {(f"**{', '.join(d0_types)}** already rejects the unit root in "
-f"levels (min d = 0) — the selected order still uses d = 1 there regardless, since d is fixed across the whole grid. " if d0_types else "")}
-d = 1 is well supported for the other {8 - len(d0_types)} types. No series needed d = 2.
+"levels (min d = 0). " if d0_types else "")}No series needed d = 2.
+
+d is now searched (d in {{0, 1}}), not fixed, and the grid's AIC/Ljung-Box criterion does not simply
+follow the ADF verdict above: it selected d = 0 for {len(d0_selected)} of the eight types
+({', '.join(d0_selected) or 'none'}) and d = 1 for {len(d1_selected)} ({', '.join(d1_selected) or 'none'}) — see
+each type's `order` in the Phase 2 table. {(f"{', '.join(t for t in d0_selected if t in d0_types)} is the type where that agrees with its own ADF result; for the other d = 0 winners, " if any(t in d0_types for t in d0_selected) else "For the d = 0 winners, ")}the selection
+fit substitutes a strong AR/seasonal-AR component (coefficients near, at, or past the unit-root
+boundary — see `PHASE_2_ESTIMATION.md`) for the differencing the raw ADF test alone would call for.
 
 ## 2. ACF / PACF of the differenced series
 

@@ -76,10 +76,41 @@ out = {"meta": {"days": N_DAYS, "first": str(wide.index[0].date()), "last": str(
                                "The organic 2026-09-27 splice day has been dropped — see the module docstring."}}
 
 
-def fit_order(y, x, order, sorder):
+def fit_order(y, x, order, sorder, start_params=None):
     m = SARIMAX(y, exog=x, order=order, seasonal_order=sorder, trend=None,
                 enforce_stationarity=False, enforce_invertibility=False)
-    return m.fit(disp=False, maxiter=MAXITER)
+    kwargs = {"start_params": start_params} if start_params is not None else {}
+    return m.fit(disp=False, maxiter=MAXITER, **kwargs)
+
+
+def fit_production(y, x, order, sorder, start_params, baseline_aic_per_obs):
+    """Mirrors main.py:_fit_sarimax_facility_forecast's FIXED fit strategy exactly —
+    this is the whole reason this function exists separately from fit_order above.
+    Before the Northside O+ convergence-failure investigation, the PRODUCTION FIT
+    below was just fit_order(y, x, order, sorder): a bare default-start fit checked
+    only by mle_retvals.converged, which is exactly what let a materially worse,
+    non-invertible optimum through as "converged=True" for O+ (see the module comment
+    above app.SARIMAX_AIC_PER_OBS_DEGRADATION_THRESHOLD in main.py for the full
+    writeup). Now: warm-start from the selection fit's own converged params
+    (PREVENT), checked with app._sarimax_fit_is_sane against that selection fit's own
+    AIC/observation; if that still isn't sound, retry once via Nelder-Mead (its own
+    convergence not required — it's only relocating the start point) refined by one
+    L-BFGS-B polish (RECOVER), exactly like the live path.
+
+    Returns (fit, recovered_via): "warm_start" (no retry needed), "nm_lbfgs_retry", or
+    "unrecovered:<reason>" if even the retry doesn't pass — reported as-is rather than
+    dropped, unlike the live path (which would fall back to the linear trend for real;
+    this script has no such fallback to report against)."""
+    m = SARIMAX(y, exog=x, order=order, seasonal_order=sorder, trend=None,
+                enforce_stationarity=False, enforce_invertibility=False)
+    fit = m.fit(disp=False, maxiter=MAXITER, start_params=start_params)
+    ok, _reason, _diag = app._sarimax_fit_is_sane(fit, len(y), baseline_aic_per_obs)
+    if ok:
+        return fit, "warm_start"
+    fit_nm = m.fit(disp=False, maxiter=MAXITER, method="nm")
+    fit_retry = m.fit(disp=False, maxiter=MAXITER, start_params=fit_nm.params.values, method="lbfgs")
+    ok2, reason2, _diag2 = app._sarimax_fit_is_sane(fit_retry, len(y), baseline_aic_per_obs)
+    return (fit_retry, "nm_lbfgs_retry") if ok2 else (fit_retry, f"unrecovered:{reason2}")
 
 
 def params_of(f):
@@ -178,7 +209,11 @@ for t in TYPES:
     order = (winner["p"], winner["d"], winner["q"])
     sorder = (winner["seasonal_p"], winner["seasonal_d"], winner["seasonal_q"], winner["seasonal_s"])
     K = winner["p"] + winner["q"] + winner["seasonal_p"] + winner["seasonal_q"]
-    f_sel = fit_order(y_tr, x_tr, order, sorder)  # refit once more to get the full params table
+    # Refit once more to get the full params table (se/z/p — the grid search's own
+    # per-candidate fit doesn't keep those), warm-started from that SAME winning
+    # candidate's own params: this is the identical (y_tr, x_tr, order, sorder) the
+    # grid already fit, so there's no excuse for this refit to land anywhere else.
+    f_sel = fit_order(y_tr, x_tr, order, sorder, start_params=winner["start_params"])
     top5 = candidates[:5]
     # "Gap to runner-up" is relative to the WINNER, which is not always the lowest-AIC
     # candidate overall (the selection rule picks lowest AIC AMONG THOSE THAT PASS Ljung-Box;
@@ -201,10 +236,12 @@ for t in TYPES:
         "diagnostics": diagnostics_of(f_sel, K),
     }
 
-    # --- PRODUCTION FIT: the SAME selected order, on the FULL series ---
-    f_prod = fit_order(y_full, x_full, order, sorder)
+    # --- PRODUCTION FIT: the SAME selected order, on the FULL series, fit the FIXED
+    # way the live path now fits it (see fit_production's docstring) ---
+    f_prod, recovered_via = fit_production(y_full, x_full, order, sorder, winner["start_params"], winner["aic_per_obs"])
     production[t] = {"order": order, "seasonal_order": sorder, "aic": float(f_prod.aic), "bic": float(f_prod.bic),
-                     "params": params_of(f_prod), "diagnostics": diagnostics_of(f_prod, K)}
+                     "params": params_of(f_prod), "diagnostics": diagnostics_of(f_prod, K),
+                     "recovered_via": recovered_via}
 
     # --- Phase 4: forecast the hold-out from the SELECTION fit (reuse f_sel, no refit) ---
     fc = f_sel.get_forecast(steps=HOLDOUT, exog=x_ho)
@@ -234,10 +271,16 @@ for t in TYPES:
     except Exception:
         pass
 
-    # live-path parity: the real production function, this type's SELECTED order, same training series
+    # live-path parity: the real production function, this type's SELECTED order, same
+    # training series, warm-started the SAME way _fit_and_cache_sarimax now does (passing
+    # this row's own start_params) — parity means matching what the FIXED live call site
+    # actually passes, not just its order/seasonal_order.
     daily = [(idx.date(), int(v)) for idx, v in y_tr.items()]
     label = app._order_label(*order, *sorder, selected=True)
-    live = app._fit_sarimax_facility_forecast(daily, y_tr.index[-1].date(), order=order, seasonal_order=sorder, model_label=label)
+    live = app._fit_sarimax_facility_forecast(
+        daily, y_tr.index[-1].date(), order=order, seasonal_order=sorder, model_label=label,
+        start_params=winner["start_params"],
+    )
     parity = None
     if live:
         parity = {str(c): {"live": live["checkpoints"][c]["units"], "mine": int(round(max(0, pt[c - 1])))}
