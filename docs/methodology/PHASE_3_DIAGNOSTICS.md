@@ -2,7 +2,7 @@
 
 > **Data notice.** The 420-day series analysed here (`northside_420d_history.csv`, 2025-08-03 to 2026-09-26, 8 blood types, 3,360 daily counts) is **generated demonstration data**, not real blood bank records. It is entirely the uploaded synthetic file (`upload_history_id=224`) — an earlier version of this export spliced one real day from live `blood_units` onto the end, which turned out to be a genuine problem (see PHASE_3's method note); that splice has been removed. This report shows that the implementation performs the methodology correctly on a known series. It is **not** empirical evidence about real blood supply, and no sentence in it should be read as one.
 
-> **Two fits, never conflated.** SELECTION FIT = fit on the training window only (the series minus the last 30 days) — what the 36-candidate grid search and its AIC/Ljung-Box criterion actually judged (`server/select_orders.py` / `main.py:_run_order_selection_for_facility`). PRODUCTION FIT = the SAME selected order, refit on the FULL series — what a live forecast request actually runs (`main.py:_fit_and_cache_sarimax`). They are reported separately throughout; neither stands in for the other.
+> **Two fits, never conflated.** SELECTION FIT = fit on the training window only (the series minus the last 30 days) — what the 72-candidate grid search (d in {0,1} searched) and its AIC/Ljung-Box criterion actually judged (`server/select_orders.py` / `main.py:_run_order_selection_for_facility`). PRODUCTION FIT = the SAME selected order, refit on the FULL series — what a live forecast request actually runs (`main.py:_fit_and_cache_sarimax`). They are reported separately throughout; neither stands in for the other.
 
 ## What the live system does versus what this report does
 
@@ -15,7 +15,7 @@ offline.
 
 ## Method (code: `run_methodology.py`)
 
-d=1, D=0, s=7 always; p, q, seasonal P, seasonal Q per type (PHASE_1/2). Residuals are the statsmodels **standardised
+d, p, q, seasonal P, seasonal Q all per type (PHASE_1/2; D=0, s=7 always). Residuals are the statsmodels **standardised
 one-step-ahead in-sample forecast errors** of the relevant fit. The first `burn` observations (likelihood burn-in) are
 dropped.
 
@@ -42,13 +42,13 @@ Jarque-Bera p > 0.05, AND heteroskedasticity p > 0.05.**
 | Type | Order | K | LB p uncorrected (7/14/21/28) | LB p corrected (7/14/21/28) | Jarque-Bera | Het. (breakvar) stat / p | Resid ACF outside 95% bound | Verdict |
 |---|---|---|---|---|---|---|---|---|
 | A+ | (1,1,1)x(1,0,1,7) | K=4 | 0.8739 / 0.2479 / 0.4991 / 0.4888 | 0.3738 / 0.0710 / 0.2566 / 0.2797 | 1.8 / 0.3992 / -0.01 / 2.66 | 0.89 / 0.4998 | 1/28 [9] | **PASS** |
-| A- | (1,1,2)x(1,0,1,7) | K=5 | 0.7604 / 0.1941 / 0.3851 / 0.1227 | 0.1245 / 0.0320 / 0.1352 / 0.0339 | 3.1 / 0.2105 / 0.06 / 2.57 | 1.13 / 0.5016 | 2/28 [9, 23] | **FAIL** (Ljung-Box (corrected)) |
-| AB+ | (1,1,2)x(1,0,1,7) | K=5 | 0.4916 / 0.1104 / 0.1973 / 0.3424 | 0.0403 / 0.0142 / 0.0507 / 0.1371 | 3.3 / 0.1963 / 0.22 / 3.13 | 1.11 / 0.5562 | 2/28 [6, 9] | **FAIL** (Ljung-Box (corrected)) |
-| AB- | (1,1,1)x(1,0,1,7) | K=4 | 0.5933 / 0.5647 / 0.4191 / 0.6179 | 0.1357 / 0.2518 / 0.1980 / 0.3960 | 0.1 / 0.9291 / -0.04 / 2.94 | 1.21 / 0.2936 | 1/28 [17] | **PASS** |
+| A- | (2,0,0)x(1,0,1,7) | K=4 | 0.8080 / 0.1718 / 0.3691 / 0.1359 | 0.2897 / 0.0425 / 0.1649 / 0.0517 | 2.5 / 0.2907 / 0.06 / 2.62 | 1.12 / 0.5110 | 3/28 [9, 14, 23] | **FAIL** (Ljung-Box (corrected)) |
+| AB+ | (1,0,2)x(1,0,1,7) | K=5 | 0.4994 / 0.1250 / 0.1919 / 0.3329 | 0.0418 / 0.0169 / 0.0488 / 0.1316 | 3.5 / 0.1727 / 0.23 / 3.09 | 1.10 / 0.5870 | 2/28 [6, 9] | **FAIL** (Ljung-Box (corrected)) |
+| AB- | (1,0,1)x(1,0,1,7) | K=4 | 0.7213 / 0.6488 / 0.6107 / 0.7908 | 0.2127 / 0.3221 / 0.3519 / 0.5917 | 0.6 / 0.7412 / -0.09 / 2.92 | 1.14 / 0.4598 | 0/28 [] | **PASS** |
 | B+ | (1,1,2)x(1,0,1,7) | K=5 | 0.9708 / 0.5047 / 0.5312 / 0.7104 | 0.4099 / 0.1504 / 0.2274 / 0.4350 | 0.8 / 0.6747 / -0.11 / 2.97 | 1.06 / 0.7460 | 1/28 [8] | **PASS** |
-| B- | (1,1,2)x(1,0,1,7) | K=5 | 0.5378 / 0.8224 / 0.5604 / 0.6449 | 0.0494 / 0.4250 / 0.2492 / 0.3667 | 0.1 / 0.9552 / 0.02 / 3.06 | 0.91 / 0.5974 | 2/28 [4, 20] | **PASS** |
-| O+ | (1,1,2)x(1,0,1,7) | K=5 | 0.9324 / 0.9027 / 0.9152 / 0.9353 | 0.2969 / 0.5611 / 0.6867 / 0.7777 | 1.1 / 0.5643 / 0.11 / 3.15 | 1.21 / 0.2838 | 0/28 [] | **PASS** |
-| O- | (1,1,2)x(1,0,1,7) | K=5 | 0.3338 / 0.3783 / 0.6957 / 0.6076 | 0.0184 / 0.0910 / 0.3694 / 0.3315 | 1.6 / 0.4472 / 0.05 / 2.69 | 0.97 / 0.8422 | 1/28 [4] | **PASS** |
+| B- | (1,0,1)x(1,0,1,7) | K=4 | 0.5505 / 0.8258 / 0.6107 / 0.7433 | 0.1162 / 0.5243 / 0.3519 / 0.5320 | 0.5 / 0.7963 / 0.03 / 3.16 | 0.91 / 0.6156 | 2/28 [4, 20] | **PASS** |
+| O+ | (1,0,2)x(1,0,1,7) | K=5 | 0.9775 / 0.9469 / 0.9473 / 0.9462 | 0.4426 / 0.6720 / 0.7643 / 0.8035 | 1.1 / 0.5718 / 0.12 / 3.10 | 1.22 / 0.2561 | 0/28 [] | **PASS** |
+| O- | (0,0,2)x(1,0,1,7) | K=4 | 0.4176 / 0.3608 / 0.6407 / 0.5921 | 0.0685 / 0.1230 / 0.3807 / 0.3710 | 1.2 / 0.5384 / 0.09 / 2.78 | 0.94 / 0.7175 | 1/28 [4] | **PASS** |
 
 * **PASS (6): A+, AB-, B+, B-, O+, O-.**
 * **FAIL (2): A-, AB+.**
@@ -58,19 +58,19 @@ Jarque-Bera p > 0.05, AND heteroskedasticity p > 0.05.**
 | Type | Order | K | LB p uncorrected (7/14/21/28) | LB p corrected (7/14/21/28) | Jarque-Bera | Het. (breakvar) stat / p | Resid ACF outside 95% bound | Verdict |
 |---|---|---|---|---|---|---|---|---|
 | A+ | (1,1,1)x(1,0,1,7) | K=4 | 0.7786 / 0.2388 / 0.5103 / 0.4810 | 0.2604 / 0.0673 / 0.2655 / 0.2733 | 1.5 / 0.4762 / 0.04 / 2.71 | 0.79 / 0.1645 | 2/28 [9, 23] | **PASS** |
-| A- | (1,1,2)x(1,0,1,7) | K=5 | 0.7350 / 0.1412 / 0.2214 / 0.0359 | 0.1119 / 0.0201 / 0.0596 / 0.0072 | 3.1 / 0.2163 / 0.00 / 2.58 | 1.15 / 0.4076 | 2/28 [9, 23] | **FAIL** (Ljung-Box (corrected)) |
-| AB+ | (1,1,2)x(1,0,1,7) | K=5 | 0.5761 / 0.0800 / 0.1870 / 0.3163 | 0.0581 / 0.0091 / 0.0470 / 0.1224 | 3.0 / 0.2246 / 0.20 / 3.14 | 1.13 / 0.4879 | 3/28 [6, 9, 10] | **FAIL** (Ljung-Box (corrected)) |
-| AB- | (1,1,1)x(1,0,1,7) | K=4 | 0.5393 / 0.5875 / 0.4896 / 0.6819 | 0.1114 / 0.2697 / 0.2493 / 0.4620 | 0.2 / 0.8991 / -0.04 / 2.93 | 1.25 / 0.1973 | 2/28 [11, 17] | **PASS** |
+| A- | (2,0,0)x(1,0,1,7) | K=4 | 0.7817 / 0.1387 / 0.2406 / 0.0502 | 0.2632 / 0.0319 / 0.0913 / 0.0154 | 2.5 / 0.2912 / 0.01 / 2.62 | 1.15 / 0.4271 | 3/28 [9, 14, 23] | **FAIL** (Ljung-Box (corrected)) |
+| AB+ | (1,0,2)x(1,0,1,7) | K=5 | 0.5799 / 0.0918 / 0.1855 / 0.3139 | 0.0590 / 0.0110 / 0.0465 / 0.1210 | 3.0 / 0.2232 / 0.20 / 3.12 | 1.11 / 0.5256 | 2/28 [9, 10] | **FAIL** (Ljung-Box (corrected)) |
+| AB- | (1,0,1)x(1,0,1,7) | K=4 | 0.8219 / 0.8506 / 0.8130 / 0.9112 | 0.3050 / 0.5621 / 0.5814 / 0.7751 | 0.7 / 0.7207 / -0.08 / 2.90 | 1.16 / 0.3903 | 0/28 [] | **PASS** |
 | B+ | (1,1,2)x(1,0,1,7) | K=5 | 0.9585 / 0.4497 / 0.4481 / 0.6050 | 0.3635 / 0.1223 / 0.1718 / 0.3291 | 0.6 / 0.7404 / -0.09 / 2.96 | 1.05 / 0.7827 | 1/28 [8] | **PASS** |
-| B- | (1,1,2)x(1,0,1,7) | K=5 | 0.6340 / 0.9110 / 0.6218 / 0.7998 | 0.0738 / 0.5792 / 0.2994 / 0.5450 | 0.0 / 0.9959 / 0.00 / 2.98 | 0.90 / 0.5369 | 2/28 [4, 20] | **PASS** |
-| O+ | (1,1,2)x(1,0,1,7) | K=5 | 0.9909 / 0.9137 / 0.9723 / 0.9622 | 0.5490 / 0.5851 / 0.8414 / 0.8451 | 1.2 / 0.5493 / 0.13 / 3.07 | 1.19 / 0.3172 | 0/28 [] | **PASS** |
-| O- | (1,1,2)x(1,0,1,7) | K=5 | 0.4380 / 0.3855 / 0.6651 / 0.5881 | 0.0315 / 0.0939 / 0.3390 / 0.3140 | 1.7 / 0.4286 / 0.03 / 2.69 | 1.08 / 0.6662 | 1/28 [8] | **PASS** |
+| B- | (1,0,1)x(1,0,1,7) | K=4 | 0.6629 / 0.9241 / 0.6853 / 0.8736 | 0.1735 / 0.7004 / 0.4263 / 0.7112 | 0.1 / 0.9661 / 0.01 / 3.06 | 0.91 / 0.5652 | 2/28 [4, 20] | **PASS** |
+| O+ | (1,0,2)x(1,0,1,7) | K=5 | 1.0e-05 / 1.1e-05 / 3.6e-07 / 7.2e-07 | 2.3e-08 / 2.1e-07 / 1.0e-08 / 3.5e-08 | 0.5 / 0.7905 / 0.01 / 2.83 | 1.20 / 0.2848 | 9/28 [1, 2, 6, 8, 11, 17, 18, 21, 24] | **FAIL** (Ljung-Box (corrected)) |
+| O- | (0,0,2)x(1,0,1,7) | K=4 | 0.5967 / 0.4497 / 0.6532 / 0.5862 | 0.1374 / 0.1730 / 0.3930 / 0.3654 | 1.2 / 0.5375 / 0.06 / 2.75 | 1.05 / 0.7719 | 0/28 [] | **PASS** |
 
-* **PASS (6): A+, AB-, B+, B-, O+, O-.**
-* **FAIL (2): A-, AB+.**
+* **PASS (5): A+, AB-, B+, B-, O-.**
+* **FAIL (3): A-, AB+, O+.**
 
 The order is identical in both fits (PHASE_2) — only the data changes. Where the two verdicts differ, that difference
-is caused entirely by fitting on 30 more (or fewer) days: no type differs between the two fits.
+is caused entirely by fitting on 30 more (or fewer) days: O+.
 
 ## Results — hold-out (one-step-ahead, 30 days the SELECTION FIT never saw)
 
@@ -81,23 +81,23 @@ LB columns. Baseline is a naive last-training-value-repeated forecast over the i
 | Type | LB p (one-step), lag 14 | lag 21 | lag 28 | MAPE % | RMSE | Baseline MAPE % | Baseline RMSE | vs baseline | Verdict |
 |---|---|---|---|---|---|---|---|---|---|
 | A+ | 0.2784 | 0.3214 | 0.1573 | 4.53 | 3.25 | 6.07 | 5.28 | beats baseline | **PASS** |
-| A- | 0.2644 | 0.1003 | 0.1691 | 4.29 | 0.84 | 7.87 | 1.56 | beats baseline | **PASS** |
-| AB+ | 0.7656 | 0.9073 | 0.6863 | 4.09 | 0.93 | 4.35 | 1.17 | beats baseline | **PASS** |
-| AB- | 2.6e-05 | 6.9e-07 | 8.3e-09 | 7.78 | 0.68 | 7.18 | 0.84 | loses to baseline | **FAIL** |
+| A- | 0.2921 | 0.1255 | 0.1823 | 4.32 | 0.84 | 7.87 | 1.56 | beats baseline | **PASS** |
+| AB+ | 0.8426 | 0.9525 | 0.7926 | 4.19 | 0.96 | 4.35 | 1.17 | beats baseline | **PASS** |
+| AB- | 7.4e-05 | 4.3e-06 | 5.0e-08 | 7.50 | 0.67 | 7.18 | 0.84 | loses to baseline | **FAIL** |
 | B+ | 0.3722 | 0.3024 | 0.4704 | 4.02 | 2.69 | 5.31 | 3.31 | beats baseline | **PASS** |
-| B- | 0.0030 | 0.0030 | 0.0063 | 6.82 | 0.82 | 9.71 | 1.33 | beats baseline | **FAIL** |
-| O+ | 0.8478 | 0.7865 | 0.2733 | 5.24 | 6.21 | 17.32 | 15.86 | beats baseline | **PASS** |
-| O- | 0.7518 | 0.7698 | 0.8543 | 5.73 | 1.49 | 7.32 | 1.92 | beats baseline | **PASS** |
+| B- | 0.0033 | 0.0030 | 0.0072 | 6.79 | 0.82 | 9.71 | 1.33 | beats baseline | **FAIL** |
+| O+ | 0.7786 | 0.5979 | 0.2328 | 5.35 | 6.23 | 17.32 | 15.86 | beats baseline | **PASS** |
+| O- | 0.8065 | 0.8532 | 0.9315 | 5.71 | 1.48 | 7.32 | 1.92 | beats baseline | **PASS** |
 
 **Hold-out PASS (6): A+, A-, AB+, B+, O+, O-.**
 
 ## All three, compared
 
-* **Pass PRODUCTION FIT and hold-out (4): A+, B+, O+, O-.** The types where both "the
+* **Pass PRODUCTION FIT and hold-out (3): A+, B+, O-.** The types where both "the
   order fits the full history well" and "its forecast errors on genuinely new data are independent" hold.
 * **Pass PRODUCTION FIT, FAIL hold-out (2): AB-, B-.** Fits the full history but
   its forecast errors on new data are still serially correlated.
-* **FAIL PRODUCTION FIT, pass hold-out (2): A-, AB+.** A
+* **FAIL PRODUCTION FIT, pass hold-out (3): A-, AB+, O+.** A
   reminder that in-sample and out-of-sample diagnostics answer different questions.
 
 ## Caveats
@@ -107,3 +107,11 @@ LB columns. Baseline is a naive last-training-value-repeated forecast over the i
   rolling-origin evaluation was run.
 * Jarque-Bera and heteroskedasticity are evaluated in-sample only (on both fits); the selection criterion and the
   hold-out check are both Ljung-Box only (see main.py's ORDER SELECTION module comment for why).
+* **AB- and B- are the two smallest series here (means of roughly 7.7 and 11.4 units, against 67-87 for A+ and O+),
+  and they are the only two types that still fail the one-step hold-out check even restricted to lag 7 alone — the
+  single lag with the least small-sample concern (checked separately from the lags 14/21/28 shown above; not a
+  re-reading of the same result). That is not a coincidence to explain away: a Gaussian ARMA is describing a series
+  where the actual outcomes are small non-negative integers, often under 10, and the model has no way to know that.
+  This is a limitation of the model family for these two types, not an unexplained failure of the fitted order — a
+  count model (e.g. an integer-valued or Poisson/negative-binomial time series model) would be a more appropriate
+  description of a series this small, and might well resolve what looks here like a serial-correlation problem.

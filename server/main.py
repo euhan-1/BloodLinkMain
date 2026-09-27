@@ -91,9 +91,20 @@ SARIMAX_MIN_DAYS_REQUIRED = 30
 
 # The fixed, already-validated order from SYNTHETIC_SARIMAX_VALIDATION.md —
 # the same order fit_and_cache_synthetic_forecast.py uses for the synthetic
-# reference model. Per-facility, AI-chosen order selection is a separate,
-# later step; this endpoint always fits this one fixed order once a facility
-# clears SARIMAX_MIN_DAYS_REQUIRED.
+# reference model. Per-facility order selection (see SARIMAX_ORDER_GRID_D
+# below) is a separate, later step that searches d as well as p/q/P/Q; this
+# is only the FALLBACK for a facility+type with no selection yet.
+#
+# The fallback stays at d=1 deliberately, even though selection itself now
+# searches d=0 too: with no evidence yet for this specific facility+type, d=1
+# is the conservative default. Over-differencing a series that's actually
+# stationary costs one redundant parameter (a near-unit MA root that cancels
+# the difference — see PHASE_1_IDENTIFICATION.md's limitations for how
+# starkly this shows up on the demonstration data). Under-differencing a
+# series that's actually integrated invalidates the inference outright
+# (a nominally stationary model fit to a non-stationary series). The two
+# failure modes are not symmetric, so the untested default leans toward the
+# cheaper mistake.
 FACILITY_SARIMAX_ORDER = (0, 1, 4)
 FACILITY_SARIMAX_SEASONAL_ORDER = (1, 0, 1, 7)
 FACILITY_SARIMAX_LABEL = "SARIMAX(0,1,4)x(1,0,1,7)+dengue"
@@ -117,15 +128,25 @@ _SARIMAX_FIT_FAILED: set[tuple[int, str, date]] = set()
 # see _run_order_selection_for_facility), triggered in the background after a
 # historical upload (see upload_historical_inventory_snapshots).
 #
-# Grid: p,q in {0,1,2}; d=1 fixed; seasonal P,Q in {0,1}; D=0, s=7 fixed — 36
-# candidates. The dengue-season regressor is kept in every candidate.
+# Grid: p,q in {0,1,2}; d in {0,1}; seasonal P,Q in {0,1}; D=0, s=7 fixed — 72
+# candidates. The dengue-season regressor is kept in every candidate. d was
+# fixed at 1 through an earlier version of this mechanism; that was wrong for
+# this data (see PHASE_1_IDENTIFICATION.md's limitations) — the raw ADF test
+# identification runs is biased toward non-rejection by a level shift like the
+# dengue flag, so a series that is actually stationary around that shift reads
+# as non-stationary, and every d=1 fit ends up with an MA root at or on the
+# unit circle, cancelling the difference it was never right to take. Rather
+# than have identification try to out-guess that bias, d is now a searched
+# parameter like everything else in the grid, decided the same way: by AIC and
+# the Ljung-Box criterion, not assumed.
 #
 # SELECTION RULE: fit every candidate on TRAINING data only — the series minus
 # the last ORDER_SELECTION_HOLDOUT_DAYS days — never the full series. Among
 # candidates that CONVERGE on that training window, rank by AIC ascending and
 # take the lowest-AIC candidate whose Ljung-Box test on ITS OWN training
 # residuals — df-corrected using that candidate's OWN K =
-# p+q+seasonal_p+seasonal_q, at lags 14, 21 AND 28 — passes at 0.05 on ALL
+# p+q+seasonal_p+seasonal_q (d is NOT a free parameter Ljung-Box needs to
+# correct for; only the ARMA terms are), at lags 14, 21 AND 28 — passes at 0.05 on ALL
 # THREE of those lags (not any one). All three, not any one, because this is
 # the same PASS rule Chapter I Phase 3 already uses for the fixed order
 # ("Ljung-Box (corrected) p > 0.05 at lags 14, 21 and 28"): passing only the
@@ -155,6 +176,7 @@ _SARIMAX_FIT_FAILED: set[tuple[int, str, date]] = set()
 # baseline over the identical window. Both sets of numbers are stored, clearly
 # labeled _in_sample vs _holdout (see schema_facility_sarimax_order.sql).
 SARIMAX_ORDER_GRID_PQ = (0, 1, 2)
+SARIMAX_ORDER_GRID_D = (0, 1)  # searched, not assumed — see the module comment above
 SARIMAX_ORDER_GRID_SEASONAL_PQ = (0, 1)
 SARIMAX_ORDER_GRID_LAGS = (14, 21, 28)  # the lags the criterion is checked at
 ORDER_SELECTION_HOLDOUT_DAYS = max(FORECAST_CHECKPOINTS)  # 30 — same horizon the live forecast itself covers
@@ -1218,8 +1240,8 @@ def _collect_sarimax_results(
     return results, missing
 
 
-def _fit_candidate_order(y: "pd.Series", exog: "pd.DataFrame", p: int, q: int, sp: int, sq: int) -> Optional[dict]:
-    """One candidate in the order-selection grid: fits SARIMAX(p,1,q)x(sp,0,sq,7)
+def _fit_candidate_order(y: "pd.Series", exog: "pd.DataFrame", p: int, d: int, q: int, sp: int, sq: int) -> Optional[dict]:
+    """One candidate in the order-selection grid: fits SARIMAX(p,d,q)x(sp,0,sq,7)
     with the dengue exog and the same fit settings as the live fitter, and
     returns its diagnostics, or None if it doesn't converge. Real work — not
     pure — but isolated so _rank_candidates_and_select (the actual selection
@@ -1230,7 +1252,7 @@ def _fit_candidate_order(y: "pd.Series", exog: "pd.DataFrame", p: int, q: int, s
     from statsmodels.stats.diagnostic import acorr_ljungbox
     from statsmodels.tsa.statespace.sarimax import SARIMAX
 
-    order, seasonal_order = (p, 1, q), (sp, 0, sq, 7)
+    order, seasonal_order = (p, d, q), (sp, 0, sq, 7)
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -1258,7 +1280,7 @@ def _fit_candidate_order(y: "pd.Series", exog: "pd.DataFrame", p: int, q: int, s
         lb_p[lag] = float(chi2.sf(stat, dfree))
 
     return {
-        "p": p, "d": 1, "q": q, "seasonal_p": sp, "seasonal_d": 0, "seasonal_q": sq, "seasonal_s": 7,
+        "p": p, "d": d, "q": q, "seasonal_p": sp, "seasonal_d": 0, "seasonal_q": sq, "seasonal_s": 7,
         "aic": float(fit.aic), "lb_p": lb_p,
     }
 
@@ -1284,19 +1306,19 @@ def _rank_candidates_and_select(candidates: list[dict]) -> Optional[dict]:
 
 
 def _select_sarimax_order_for_series(y: "pd.Series", exog: "pd.DataFrame") -> Optional[dict]:
-    """Runs the full 36-candidate grid (SARIMAX_ORDER_GRID_PQ x
-    SARIMAX_ORDER_GRID_PQ x SARIMAX_ORDER_GRID_SEASONAL_PQ x
-    SARIMAX_ORDER_GRID_SEASONAL_PQ) against `y`/`exog` and applies the selection
-    rule. ~9 s locally (36 fits); budget several minutes per type on the
-    deployed instance (server/select_orders.py is the intended way to run this
-    against production data — see its module docstring for why). Whatever `y`
-    is gets fit directly: the TRAINING/hold-out split is the caller's job (see
-    _run_order_selection_for_facility, the only caller) — this function has no
-    opinion on which slice of a series it's given."""
+    """Runs the full 72-candidate grid (SARIMAX_ORDER_GRID_PQ x
+    SARIMAX_ORDER_GRID_PQ x SARIMAX_ORDER_GRID_D x SARIMAX_ORDER_GRID_SEASONAL_PQ
+    x SARIMAX_ORDER_GRID_SEASONAL_PQ) against `y`/`exog` and applies the
+    selection rule. ~18 s locally (72 fits); budget several minutes per type on
+    the deployed instance (server/select_orders.py is the intended way to run
+    this against production data — see its module docstring for why). Whatever
+    `y` is gets fit directly: the TRAINING/hold-out split is the caller's job
+    (see _run_order_selection_for_facility, the only caller) — this function
+    has no opinion on which slice of a series it's given."""
     candidates = [
-        r for p in SARIMAX_ORDER_GRID_PQ for q in SARIMAX_ORDER_GRID_PQ
+        r for p in SARIMAX_ORDER_GRID_PQ for q in SARIMAX_ORDER_GRID_PQ for d in SARIMAX_ORDER_GRID_D
         for sp in SARIMAX_ORDER_GRID_SEASONAL_PQ for sq in SARIMAX_ORDER_GRID_SEASONAL_PQ
-        if (r := _fit_candidate_order(y, exog, p, q, sp, sq)) is not None
+        if (r := _fit_candidate_order(y, exog, p, d, q, sp, sq)) is not None
     ]
     return _rank_candidates_and_select(candidates)
 

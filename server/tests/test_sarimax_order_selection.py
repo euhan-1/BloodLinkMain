@@ -116,7 +116,7 @@ class FitAndCacheUsesSelectedOrderTests(unittest.TestCase):
 
 
 class OrderSelectionRunTests(unittest.TestCase):
-    """Real fits, against the real DB, with the grid shrunk to 16 candidates/type
+    """Real fits, against the real DB, with the grid shrunk to 32 candidates/type
     (SARIMAX_ORDER_GRID_PQ patched to (0,1) instead of (0,1,2)) to keep this fast.
     70 days uploaded: ORDER_SELECTION_MIN_DAYS is SARIMAX_MIN_DAYS_REQUIRED(30) +
     ORDER_SELECTION_HOLDOUT_DAYS(30) = 60, so this leaves a 40-day training window."""
@@ -162,12 +162,12 @@ class OrderSelectionRunTests(unittest.TestCase):
         self.assertEqual(set(rows), set(TYPES[:4]))
         for bt, (p, d, qq, sp, sq, satisfied, n_conv, lb_holdout, mape, rmse, base_mape, base_rmse,
                 trained_through, evaluated_through) in rows.items():
-            self.assertEqual(d, 1)
+            self.assertIn(d, (0, 1))  # d is searched now, not fixed
             self.assertIn(p, (0, 1))
             self.assertIn(qq, (0, 1))
             self.assertIn(sp, (0, 1))
             self.assertIn(sq, (0, 1))
-            self.assertTrue(0 < n_conv <= 16, n_conv)  # the shrunk grid: 2*2*2*2 candidates; not all necessarily converge
+            self.assertTrue(0 < n_conv <= 32, n_conv)  # the shrunk grid: 2(p)*2(q)*2(d)*2(sp)*2(sq); not all necessarily converge
             self.assertIsInstance(satisfied, bool)
             # hold-out diagnostics: computed on data the selection above never saw
             self.assertIsNotNone(lb_holdout)

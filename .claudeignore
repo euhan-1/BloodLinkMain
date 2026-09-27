@@ -1,0 +1,44 @@
+# .claudeignore - Optimized for Python 3.13 FastAPI + Vite React SPA
+
+# System and OS Files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Frontend (Vite + React SPA)
+node_modules/
+dist/
+build/
+.vercel/
+*.log
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+bun.lockb
+
+# Backend (Python 3.13 + FastAPI)
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.flake8
+.black
+.mypy_cache/
+.venv/
+env/
+venv/
+ENV/
+
+# Data & Forecasting Caches (pandas/scipy/statsmodels)
+.ipynb_checkpoints/
+*.csv
+*.xlsx
+*.parquet
+*.pkl
+*.pickle
+
+# Local Supabase / Postgres configurations (if any local sync files exist)
+.supabase/

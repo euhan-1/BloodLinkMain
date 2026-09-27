@@ -5,7 +5,7 @@ _rank_candidates_and_select, imported directly, not reimplemented) and then
 keeping the SELECTION FIT and the PRODUCTION FIT strictly separate throughout:
 
   SELECTION FIT  = fit on the TRAINING window only (series minus the last 30
-                   days) — what the 36-candidate grid search and its AIC/
+                   days) — what the 72-candidate grid search (d in {0,1} searched, not assumed) and its AIC/
                    Ljung-Box criterion actually judged. This is what
                    server/select_orders.py / _run_order_selection_for_facility
                    runs against a live facility.
@@ -56,9 +56,9 @@ warnings.simplefilter("ignore")
 MAXITER = app.FACILITY_SARIMAX_MAXITER
 HOLDOUT = app.ORDER_SELECTION_HOLDOUT_DAYS  # 30 — the SAME split the live selection mechanism uses
 STABILITY_EXTRA_CUT = 30  # the stability check's training window ends this many days earlier still
-GRID = list(itertools.product(app.SARIMAX_ORDER_GRID_PQ, app.SARIMAX_ORDER_GRID_PQ,
+GRID = list(itertools.product(app.SARIMAX_ORDER_GRID_PQ, app.SARIMAX_ORDER_GRID_PQ, app.SARIMAX_ORDER_GRID_D,
                               app.SARIMAX_ORDER_GRID_SEASONAL_PQ, app.SARIMAX_ORDER_GRID_SEASONAL_PQ))
-assert len(GRID) == 36
+assert len(GRID) == 72  # d is searched now, not fixed at 1 — see main.py's ORDER SELECTION module comment
 
 df = pd.DataFrame(list(csv.DictReader(open(HERE / "northside_420d_history.csv"))))
 df["snapshot_date"] = pd.to_datetime(df["snapshot_date"])
@@ -111,10 +111,10 @@ def diagnostics_of(f, K):
 
 
 def run_grid(y, x):
-    """The SAME 36-candidate grid, via the SAME live functions
-    (app._fit_candidate_order / app._rank_candidates_and_select) — not a
-    reimplementation. Returns (sorted_by_aic, winner)."""
-    candidates = [c for (p, q, sp, sq) in GRID if (c := app._fit_candidate_order(y, x, p, q, sp, sq)) is not None]
+    """The SAME 72-candidate grid (d in {0,1} searched, not assumed), via the
+    SAME live functions (app._fit_candidate_order / app._rank_candidates_and_select)
+    — not a reimplementation. Returns (sorted_by_aic, winner)."""
+    candidates = [c for (p, q, d, sp, sq) in GRID if (c := app._fit_candidate_order(y, x, p, d, q, sp, sq)) is not None]
     winner = app._rank_candidates_and_select(candidates)
     candidates.sort(key=lambda c: c["aic"])
     return candidates, winner
@@ -173,7 +173,7 @@ for t in TYPES:
     y_ho, x_ho = y_full.iloc[-HOLDOUT:], x_full.iloc[-HOLDOUT:]
     t0 = time.time()
 
-    # --- SELECTION FIT: 36-candidate grid on the TRAINING window only ---
+    # --- SELECTION FIT: 72-candidate grid (d searched) on the TRAINING window only ---
     candidates, winner = run_grid(y_tr, x_tr)
     order = (winner["p"], winner["d"], winner["q"])
     sorder = (winner["seasonal_p"], winner["seasonal_d"], winner["seasonal_q"], winner["seasonal_s"])
@@ -247,12 +247,18 @@ for t in TYPES:
                  "coverage": float(inside.mean()), "n_inside": int(inside.sum()),
                  "width_by_horizon": {str(h): float(width[h - 1]) for h in (1, 5, 10, 15, 20, 25, 30)},
                  "lb_onestep_holdout": lb_onestep,
-                 "live_parity": parity, "live_parity_match": bool(parity and all(v["live"] == v["mine"] for v in parity.values()))}
+                 "live_parity": parity, "live_parity_match": bool(parity and all(v["live"] == v["mine"] for v in parity.values())),
+                 "point_forecast": pt.tolist(), "actual": act.tolist(), "series_mean": float(y_full.mean())}
     print(f"{t}: selection+production+phase4 done in {time.time() - t0:.1f}s", flush=True)
 out["selection"], out["production"], out["phase4"] = selection, production, phase4
 print(f"all 8 types: {time.time() - t0_all:.1f}s total", flush=True)
 
 # ---------------- Stability check: training window cut 30 days shorter still ----------------
+# Instability COST: order_b (selected 30 days earlier) refit on window_a's own
+# training data (same data order_a was selected/fit on) and forecast the SAME
+# holdout, isolating what just the order choice costs, holding the data fixed.
+# Also checks whether order_b still satisfies the Ljung-Box criterion on window_a's
+# data — "a selection made 30 days earlier" tested against the later window.
 stability = {}
 t0 = time.time()
 for t in TYPES:
@@ -261,10 +267,40 @@ for t in TYPES:
     order_391 = selection[t]["order"] + selection[t]["seasonal_order"]
     order_361 = (winner_short["p"], winner_short["d"], winner_short["q"],
                 winner_short["seasonal_p"], winner_short["seasonal_d"], winner_short["seasonal_q"], winner_short["seasonal_s"])
+
+    y_full, x_full = wide[t], exog_all
+    y_tr, x_tr = y_full.iloc[:-HOLDOUT], x_full.iloc[:-HOLDOUT]
+    y_ho, x_ho = y_full.iloc[-HOLDOUT:], x_full.iloc[-HOLDOUT:]
+    p_b, d_b, q_b, sp_b, sd_b, sq_b, ss_b = order_361
+    f_b = fit_order(y_tr, x_tr, (p_b, d_b, q_b), (sp_b, sd_b, sq_b, ss_b))
+    fc_b = f_b.get_forecast(steps=HOLDOUT, exog=x_ho)
+    pt_b = fc_b.predicted_mean.values
+    act = np.array(phase4[t]["actual"])
+    e_b = act - pt_b
+    metrics_b = {"mape": float(np.mean(np.abs(e_b) / act) * 100), "rmse": float(np.sqrt(np.mean(e_b ** 2)))}
+
+    pt_a = np.array(phase4[t]["point_forecast"])
+    abs_diff = np.abs(pt_a - pt_b)
+    series_mean = phase4[t]["series_mean"]
+    mean_abs_diff, max_abs_diff = float(abs_diff.mean()), float(abs_diff.max())
+
+    cand_b = app._fit_candidate_order(y_tr, x_tr, p_b, d_b, q_b, sp_b, sq_b)
+    order_b_passes_on_window_a = bool(cand_b and all(v is not None and v > 0.05 for v in cand_b["lb_p"].values()))
+
     stability[t] = {
         "window_a": selection[t]["window"],
         "window_b": {"start": str(y_short.index[0].date()), "end": str(y_short.index[-1].date()), "n_days": len(y_short)},
         "order_a": order_391, "order_b": order_361, "stable": order_391 == order_361,
+        "instability_cost": {
+            "mape_a": phase4[t]["sarimax"]["mape"], "rmse_a": phase4[t]["sarimax"]["rmse"],
+            "mape_b": metrics_b["mape"], "rmse_b": metrics_b["rmse"],
+            "mean_abs_diff": mean_abs_diff, "max_abs_diff": max_abs_diff,
+            "series_mean": series_mean,
+            "mean_abs_diff_pct": mean_abs_diff / series_mean * 100,
+            "max_abs_diff_pct": max_abs_diff / series_mean * 100,
+            "order_a_passes": selection[t]["criterion_satisfied"],
+            "order_b_passes_on_window_a": order_b_passes_on_window_a,
+        },
     }
 out["stability"] = stability
 print(f"stability check: {time.time() - t0:.1f}s ->", {t: stability[t]["stable"] for t in TYPES}, flush=True)
