@@ -1,8 +1,9 @@
 """Supporting checks for the methodology docs (writes extra_checks.json):
 1. weekday effect: is s=7 seasonality actually present in the demo series?
    (detrend with a centred 7-day moving average, one-way ANOVA by weekday)
-2. continuity: last history day (2026-09-25) vs Northside's current usable
-   stock per type in the DB (what the dashboard's 'Today' point is built from).
+2. continuity: last history day (now the live series' last day) vs Northside's
+   current usable stock per type in the DB (what the dashboard's 'Today' point
+   is built from).
 Run from repo root: server\\.venv\\Scripts\\python.exe docs\\methodology\\run_extra_checks.py
 """
 import json, sys
@@ -16,7 +17,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent / "server"))
 from database import engine
 
-df = pd.read_csv(HERE / "northside_180d_history.csv", parse_dates=["snapshot_date"])
+df = pd.read_csv(HERE / "northside_420d_history.csv", parse_dates=["snapshot_date"])
 wide = df.pivot(index="snapshot_date", columns="blood_type", values="units").sort_index()
 out = {"weekday": {}, "continuity": {}}
 for t in wide.columns:

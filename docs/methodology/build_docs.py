@@ -1,32 +1,48 @@
 """Renders PHASE_1..4 markdown from results.json + extra_checks.json.
-Every number in the tables is read from those files (which come from
-run_methodology.py / run_extra_checks.py); narrative counts are computed here,
-not typed. Run from repo root: server\\.venv\\Scripts\\python.exe docs\\methodology\\build_docs.py
+Every number in the tables is read from those files (from run_methodology.py /
+run_extra_checks.py); narrative counts are computed here, not typed.
+Run from repo root: server\\.venv\\Scripts\\python.exe docs\\methodology\\build_docs.py
 """
 import json
 from pathlib import Path
-
-from scipy.stats import chi2
 
 HERE = Path(__file__).resolve().parent
 R = json.load(open(HERE / "results.json"))
 X = json.load(open(HERE / "extra_checks.json"))
 T = R["meta"]["types"]
-P1, P2, P3, P4 = R["phase1"], R["phase2"], R["phase3"], R["phase4"]
+P1, SEL, PROD, P4, STAB = R["phase1"], R["selection"], R["production"], R["phase4"], R["stability"]
 
-DATA = ("> **Data notice.** The 180-day series analysed here (`northside_180d_history.csv`, "
-        f"{R['meta']['first']} to {R['meta']['last']}, 8 blood types, 1,440 daily counts) is **generated demonstration "
-        "data**, not real blood bank records. This report shows that the implementation performs the methodology "
-        "correctly on a known series. It is **not** empirical evidence about real blood supply, and no sentence in it "
-        "should be read as one.\n")
+N_COUNTS = R["meta"]["days"] * 8
+DATA = (f"> **Data notice.** The {R['meta']['days']}-day series analysed here (`{R['meta']['csv']}`, "
+        f"{R['meta']['first']} to {R['meta']['last']}, 8 blood types, {N_COUNTS:,} daily counts) is **generated "
+        "demonstration data**, not real blood bank records. It is entirely the uploaded synthetic file "
+        "(`upload_history_id=224`) — an earlier version of this export spliced one real day from live `blood_units` "
+        "onto the end, which turned out to be a genuine problem (see PHASE_3's method note); that splice has been "
+        "removed. This report shows that the implementation performs the methodology correctly on a known series. "
+        "It is **not** empirical evidence about real blood supply, and no sentence in it should be read as one.\n")
+
+TWO_FITS = ("> **Two fits, never conflated.** SELECTION FIT = fit on the training window only (the series minus the "
+            f"last {R['meta']['holdout_days']} days) — what the 36-candidate grid search and its AIC/Ljung-Box "
+            "criterion actually judged (`server/select_orders.py` / `main.py:_run_order_selection_for_facility`). "
+            "PRODUCTION FIT = the SAME selected order, refit on the FULL series — what a live forecast request "
+            "actually runs (`main.py:_fit_and_cache_sarimax`). They are reported separately throughout; neither "
+            "stands in for the other.\n")
 
 
 def p(v):
+    if v is None:
+        return "-"
     return f"{v:.4f}" if v >= 0.0001 else f"{v:.1e}"
 
 
 def f(v, d=2):
+    if v is None:
+        return "-"
     return f"{v:.{d}f}"
+
+
+def order_str(order, sorder):
+    return f"({order[0]},{order[1]},{order[2]})x({sorder[0]},{sorder[1]},{sorder[2]},{sorder[3]})"
 
 
 def table(head, rows):
@@ -40,381 +56,398 @@ def write(name, text):
     print("wrote", name)
 
 
-# =============================== PHASE 1 ===============================
+# =============================== PHASE 1: IDENTIFICATION ===============================
 raw_rows = [[t, f(P1[t]["adf_raw"]["stat"]), p(P1[t]["adf_raw"]["p"]), P1[t]["adf_raw"]["verdict"],
              P1[t]["min_d_for_adf"], f(P1[t]["adf_d1"]["stat"]), p(P1[t]["adf_d1"]["p"]), P1[t]["adf_d1"]["verdict"]] for t in T]
 acf_rows = [[t, str(P1[t]["acf_sig_lags"]), P1[t]["q_suggest_leading_sig_acf"], str(P1[t]["pacf_sig_lags"]),
              P1[t]["p_suggest_leading_sig_pacf"], str(P1[t]["seasonal_lags_sig_acf"]) or "[]", str(P1[t]["seasonal_lags_sig_pacf"])] for t in T]
 wk_rows = [[t, f(X["weekday"][t]["F"]), p(X["weekday"][t]["p"]), X["weekday"][t]["range"], X["weekday"][t]["series_mean"]] for t in T]
-n_d1 = sum(1 for t in T if P1[t]["adf_raw"]["p"] >= .05 and P1[t]["min_d_for_adf"] == 1 and P1[t]["adf_d1"]["p"] < .05)
-q_match = [t for t in T if P1[t]["q_suggest_leading_sig_acf"] >= 4]
-q_le2 = [t for t in T if P1[t]["q_suggest_leading_sig_acf"] <= 2]
+n_nonstationary_raw = sum(1 for t in T if P1[t]["adf_raw"]["p"] >= .05)
+max_raw_p = max(P1[t]["adf_raw"]["p"] for t in T)
+max_d1_p = max(P1[t]["adf_d1"]["p"] for t in T)
+d0_types = [t for t in T if P1[t]["min_d_for_adf"] == 0]
 s7_acf = [t for t in T if 7 in P1[t]["acf_sig_lags"]]
 s7_pacf = [t for t in T if 7 in P1[t]["pacf_sig_lags"]]
 bound = P1[T[0]]["bound"]
+order_match = sum(1 for t in T if SEL[t]["order"][2] == P1[t]["q_suggest_leading_sig_acf"])
 
 write("PHASE_1_IDENTIFICATION.md", f"""# Phase 1: Identification
 
 {DATA}
 ## What the live system does versus what this report does
 
-**The live system performs no identification.** `server/main.py` contains no ADF test, no ACF/PACF computation and no
-order search (verified by grep: no `adfuller`, `acf`, `pacf`, `acorr_ljungbox` or AIC-based selection anywhere in the
-file). It applies one fixed order to every facility and blood type: `FACILITY_SARIMAX_ORDER = (0, 1, 4)` and
-`FACILITY_SARIMAX_SEASONAL_ORDER = (1, 0, 1, 7)` (`main.py:68-69`), fitted by `_fit_sarimax_facility_forecast`
-(`main.py:735`). Its only per-series checks are that the optimiser reports convergence and that the forecast is finite.
+**The live system selects a SARIMAX order per facility per blood type, offline** — never inside a forecast request.
+`server/select_orders.py` (the primary path) and, bounded, a background task after each historical upload, both call
+`main.py:_run_order_selection_for_facility`, which fits a 36-candidate grid (p,q in {{0,1,2}}, seasonal P,Q in {{0,1}},
+d=1, D=0, s=7 fixed) on the series minus the last {R['meta']['holdout_days']} days, and picks the lowest-AIC candidate
+whose Ljung-Box test passes on its own training residuals — see PHASE_2 and PHASE_3. A type with nothing selected
+falls back to the fixed `FACILITY_SARIMAX_ORDER = (0, 1, 4)` / `FACILITY_SARIMAX_SEASONAL_ORDER = (1, 0, 1, 7)`
+(`main.py:97-98`).
 
-That order was chosen **offline during development**, on synthetic data, before any facility existed
-(`server/SYNTHETIC_SARIMAX_VALIDATION.md`). An attempt to make the choice per-series with a learned selector was tried
-twice and not adopted (`server/sarimax_selector_common.py`, `train_sarimax_selector.py`).
-
-**This report runs identification to VALIDATE the fixed order against this series, not to CHOOSE one.** Nothing below
-changes what the system does. Where the readings disagree with the fixed order, that is reported as a disagreement.
+**Still, no ADF test, no ACF/PACF computation ever runs inside the grid search or a request** (verified by grep: no
+`adfuller`, `acf`, or `pacf` anywhere in `main.py`). Order selection ranks candidates by AIC and Ljung-Box alone; it
+never looks at a differencing test or a correlogram. **This report runs identification to check the selected orders
+against what ADF/ACF/PACF would suggest, not to choose them.** Where the readings disagree with what was selected,
+that is reported as a disagreement, not corrected. The orders shown below are each type's SELECTION FIT order — see
+PHASE_2/3 for what that means precisely.
 
 ## Method (code: `run_methodology.py`, phase 1 block)
 
 * ADF test, `statsmodels.tsa.stattools.adfuller`, constant-only regression, lag length chosen by AIC, alpha = 0.05.
-* Differencing: difference repeatedly until ADF rejects the unit root (max 2). The live model always uses d = 1, so ADF is
-  also reported on the first difference regardless of what the minimum needed was.
-* ACF and PACF of the **first-differenced** series to 28 lags (four weekly cycles); PACF by the Yule-Walker method.
-  95% bound = 1.96/sqrt(n) = {bound:.3f} (n = 179 differences).
+* Differencing: difference repeatedly until ADF rejects the unit root (max 2). Every selected and fallback order alike
+  uses d = 1, so ADF is also reported on the first difference regardless of what the minimum needed was.
+* ACF and PACF of the **first-differenced** series to 28 lags; PACF by the Yule-Walker method.
+  95% bound = 1.96/sqrt(n) = {bound:.3f} (n = {R['meta']['days'] - 1} differences).
 * "Suggested q / p" below is the crude textbook rule: the number of consecutive significant lags starting at lag 1.
 
 ## 1. Stationarity
 
 {table(["Type", "ADF stat (raw)", "p (raw)", "Verdict (raw)", "Min d to pass", "ADF stat (d=1)", "p (d=1)", "Verdict (d=1)"], raw_rows)}
-All {n_d1} of 8 series are non-stationary in levels (p >= 0.93) and become stationary after exactly one difference
-(p <= 3e-4 for every type). This supports **d = 1** in the fixed order. No series needed d = 2.
+{n_nonstationary_raw} of 8 series are non-stationary in levels (raw p up to {max_raw_p:.3f}) and every one of the 8 becomes
+stationary after one difference (d1 p at most {max_d1_p:.1e}). {(f"**{', '.join(d0_types)}** already rejects the unit root in "
+f"levels (min d = 0) — the selected order still uses d = 1 there regardless, since d is fixed across the whole grid. " if d0_types else "")}
+d = 1 is well supported for the other {8 - len(d0_types)} types. No series needed d = 2.
 
 ## 2. ACF / PACF of the differenced series
 
 {table(["Type", "Significant ACF lags", "Suggested q", "Significant PACF lags", "Suggested p", "Seasonal-multiple ACF lags", "Seasonal-multiple PACF lags"], acf_rows)}
 ## 3. Is weekly (s = 7) seasonality actually in the data?
 
-The ACF/PACF above show weak evidence at lag 7 (see reading below), so weekly structure was tested directly: detrend each
-series with a centred 7-day moving average, then one-way ANOVA on the residual by day of week
+The ACF/PACF above show weak evidence at lag 7 for some types (see reading below), so weekly structure was tested
+directly: detrend each series with a centred 7-day moving average, then one-way ANOVA on the residual by day of week
 (`run_extra_checks.py`).
 
 {table(["Type", "F", "p", "Weekday range (units)", "Series mean (units)"], wk_rows)}
-A weekday effect is present in all 8 types (p < 1e-4), largest in absolute terms for O+ ({X['weekday']['O+']['range']} units
-peak-to-trough on a mean of {X['weekday']['O+']['series_mean']}). Weekly seasonality genuinely exists in this series.
+A weekday effect is present in all 8 types (p < 1e-4), largest in absolute terms for {max(T, key=lambda t: X['weekday'][t]['range'])}
+({X['weekday'][max(T, key=lambda t: X['weekday'][t]['range'])]['range']} units peak-to-trough). Weekly seasonality genuinely exists in this series.
 
-## Reading against the fixed order (0,1,4)x(1,0,1,7)
+## Reading against Northside's SELECTION FIT orders
 
-* **d = 1: supported** for all 8 types (section 1).
-* **q = 4: only weakly supported.** The leading run of significant ACF lags is >= 4 for {len(q_match)} type(s)
-  ({', '.join(q_match) or 'none'}) and <= 2 for {len(q_le2)} ({', '.join(q_le2)}). For most types the ACF cuts off at lag 1 or 2, which
-  would suggest q = 1 or 2, not 4. Phase 2 agrees: the MA(2)-MA(4) coefficients are mostly not significant.
-* **p = 0: consistent with an MA-dominated process.** The PACF stays significant out to lag 5-7 for every type instead of
-  cutting off, so a pure AR model is not suggested. This is the signature of an MA process.
-* **Seasonal (1,0,1,7): weakly supported by ACF/PACF, supported by the ANOVA.** After differencing, lag 7 is significant in
-  the ACF for only {len(s7_acf)} type(s) ({', '.join(s7_acf) or 'none'}) and in the PACF for {len(s7_pacf)} ({', '.join(s7_pacf) or 'none'}). The
-  ACF/PACF alone would not justify seasonal terms; the weekday ANOVA does show the seasonality exists, and Phase 2 shows the
-  seasonal terms cut AIC by tens of points. No seasonal differencing (D = 0) is used, and nothing here tests that choice.
+{table(["Type", "Selected order", "ACF-suggested q", "PACF stays significant to", "q match?"],
+       [[t, order_str(SEL[t]['order'], SEL[t]['seasonal_order']), P1[t]["q_suggest_leading_sig_acf"],
+         (max(P1[t]["pacf_sig_lags"]) if P1[t]["pacf_sig_lags"] else 0),
+         "yes" if SEL[t]['order'][2] == P1[t]["q_suggest_leading_sig_acf"] else "no"] for t in T])}
+* **d = 1: used by all 8** selected orders; {', '.join(d0_types) or 'no type'} is where identification alone would have
+  allowed d = 0 and the grid never tested it.
+* **q: matches the ACF's leading run for {order_match} of 8 types.** Where they disagree the selected q and the
+  ACF-suggested q are usually close (within 1-2); AIC and the training-window Ljung-Box are picking up structure a
+  single leading-run reading doesn't capture, in both directions.
+* **p: consistent with an MA-dominated process throughout.** The PACF stays significant well past lag 5 for every
+  type instead of cutting off, so a pure AR model is never suggested — every selected order uses p <= 2, seasonal P = 1.
+* **Seasonal (P=1, Q=1, s=7): used by every selected order, and supported by the ACF for {len(s7_acf)} of 8 types**
+  ({', '.join(s7_acf) or 'none'}); the PACF is significant at lag 7 for {len(s7_pacf)} ({', '.join(s7_pacf) or 'none'}). The weekday
+  ANOVA independently confirms the seasonality exists. No seasonal differencing (D = 0) is used, and nothing here
+  tests that choice.
 
 ## Limitations
 
 * Identification by eye-balled ACF/PACF is subjective. The "suggested q/p" rule is the simplest possible reading.
-* 180 days is roughly 26 weekly cycles; lags beyond 28 were not examined.
-* One series per blood type, from a generated source. Nothing here says the order would validate on a real facility.
+* {R['meta']['days']} days is roughly {R['meta']['days'] // 7} weekly cycles; lags beyond 28 were not examined.
+* One series per blood type, from a generated source. Nothing here says a selected order would validate on a real facility.
 """)
 
-# =============================== PHASE 2 ===============================
-MODELS = ["fixed (0,1,4)x(1,0,1,7)"] + list(next(iter(P2.values()))["alts"].keys())
-
-
-def scores(t):
-    d = {MODELS[0]: (P2[t]["aic"], P2[t]["bic"])}
-    for k, v in P2[t]["alts"].items():
-        d[k] = (v["aic"], v["bic"])
-    return d
-
-
-aic_win = {t: min(scores(t), key=lambda k: scores(t)[k][0]) for t in T}
-bic_win = {t: min(scores(t), key=lambda k: scores(t)[k][1]) for t in T}
-fixed_aic = [t for t in T if aic_win[t] == MODELS[0]]
-fixed_bic = [t for t in T if bic_win[t] == MODELS[0]]
-cmp_rows = []
+# =============================== PHASE 2: ESTIMATION ===============================
+main_rows = []
+not_overall_best = []
 for t in T:
-    s = scores(t)
-    cmp_rows.append([t] + [f"{s[m][0]:.1f} / {s[m][1]:.1f}" for m in MODELS] + [aic_win[t].split()[0], bic_win[t].split()[0]])
-short = [m.split()[0] if m.startswith("fixed") is False else "fixed" for m in MODELS]
-coef_blocks = []
+    s = SEL[t]
+    dg = s["params"]["dengue_season"]
+    if s["grid_top5"][0]["aic"] < s["aic"] - 1e-6:
+        not_overall_best.append(t)
+    main_rows.append([t, order_str(s["order"], s["seasonal_order"]), f(s["aic"], 1),
+                      f(s["aic_gap_to_runnerup"], 2) if s["aic_gap_to_runnerup"] is not None else "-",
+                      f(dg["coef"], 3), p(dg["p"]), "yes" if s["criterion_satisfied"] else "no"])
+
+top5_rows = []
 for t in T:
-    r = P2[t]
-    rows = [[k, f(v["coef"], 3), f(v["se"], 3), f(v["z"], 2), p(v["p"])] for k, v in r["params"].items()]
-    coef_blocks.append(f"### {t}  (AIC {r['aic']:.1f}, BIC {r['bic']:.1f}, log-likelihood {r['llf']:.1f}, converged: {r['converged']})\n\n"
-                       + table(["Parameter", "Coef", "Std err", "z", "p"], rows))
-dg_rows = []
-for t in T:
-    d = P2[t]["params"]["dengue_season"]
-    dg_rows.append([t, f(d["coef"], 3), f(d["se"], 3), p(d["p"]), "YES" if d["p"] < .05 else "no",
-                    f"{P2[t]['aic'] - P2[t]['no_exog']['aic']:+.1f}", f"{P2[t]['bic'] - P2[t]['no_exog']['bic']:+.1f}"])
-sig = [t for t in T if P2[t]["params"]["dengue_season"]["p"] < .05]
-aic_helps = [t for t in T if P2[t]["aic"] < P2[t]["no_exog"]["aic"]]
-bic_helps = [t for t in T if P2[t]["bic"] < P2[t]["no_exog"]["bic"]]
-alt_sig = {t: [k.split()[0] for k, v in P2[t]["alts"].items() if v["dengue_p"] < .05] for t in T}
-step_rows = [[t, f(X_ := R["step_check"][t]["mean_7d_before_jun1"], 1), f(R["step_check"][t]["mean_7d_after_jun1"], 1),
-              f"{(R['step_check'][t]['mean_7d_after_jun1'] / R['step_check'][t]['mean_7d_before_jun1'] - 1) * 100:+.1f}%",
-              " / ".join(f"{v}" for v in R["step_check"][t]["monthly_mean"].values())] for t in T]
-unstable = [t for t in T if max(abs(v["se"]) for v in P2[t]["params"].values()) > 50]
-noninv = [(t, k, P2[t]["params"][k]["coef"]) for t in T for k in P2[t]["params"] if k.startswith("ma.") and abs(P2[t]["params"][k]["coef"]) >= 1]
+    for i, c in enumerate(SEL[t]["grid_top5"], start=1):
+        top5_rows.append([t, i, order_str(c["order"], c["seasonal_order"]), f(c["aic"], 1), f(c["gap_to_winner"], 2)])
+
+n_sig_sel = sum(1 for t in T if SEL[t]["params"]["dengue_season"]["p"] < .05)
+n_sig_prod = sum(1 for t in T if PROD[t]["params"]["dengue_season"]["p"] < .05)
+prod_dengue_rows = [[t, f(PROD[t]["params"]["dengue_season"]["coef"], 3), p(PROD[t]["params"]["dengue_season"]["p"])] for t in T]
+stab_rows = [[t, order_str(STAB[t]["order_a"][:3], STAB[t]["order_a"][3:]), STAB[t]["window_a"]["end"],
+             order_str(STAB[t]["order_b"][:3], STAB[t]["order_b"][3:]), STAB[t]["window_b"]["end"],
+             "**yes**" if STAB[t]["stable"] else "**NO — flips**"] for t in T]
+n_stable = sum(1 for t in T if STAB[t]["stable"])
+flipped = [t for t in T if not STAB[t]["stable"]]
+flip_desc = "; ".join(
+    f"{t}: {order_str(STAB[t]['order_a'][:3], STAB[t]['order_a'][3:])} -> {order_str(STAB[t]['order_b'][:3], STAB[t]['order_b'][3:])}"
+    for t in flipped
+)
+if flipped:
+    stability_note = (f"**{', '.join(flipped)} flips** ({flip_desc}). This is reported as a finding, not smoothed "
+                      "over: for at least one type, the selected order depends on exactly where the training window "
+                      "happens to end, which is a real limitation of picking a single point estimate from AIC + "
+                      "Ljung-Box on one window.")
+else:
+    stability_note = "No type flips."
 
 write("PHASE_2_ESTIMATION.md", f"""# Phase 2: Estimation
 
 {DATA}
+{TWO_FITS}
 ## What the live system does versus what this report does
 
-The live system fits **one fixed model** per facility and blood type: `SARIMAX(0,1,4)x(1,0,1,7)` with a dengue-season
-exogenous regressor, `trend=None`, `enforce_stationarity=False`, `enforce_invertibility=False`, `maxiter=200`
-(inside `_fit_sarimax_facility_forecast`, `main.py:735`). It does not compare candidate orders and never looks at AIC or BIC. This report reproduces that exact
-specification (`run_methodology.py` copies it; a parity check in Phase 4 confirms the live function and this script give
-identical forecasts) and then fits five alternatives, offline, to test whether the fixed choice is evidenced.
+The live selection mechanism ranks all 36 grid candidates by AIC and never looks at a coefficient table — the numbers
+below are read off afterward, for this report, not consulted by the system itself. SARIMAX here is a regression with
+SARIMA errors (the dengue exog is NOT differenced; it enters as `y_t = beta * flag_t + eta_t`, with `eta_t` following
+the SARIMA structure).
 
-**The exogenous variable in the live system is the BINARY flag** `dengue_season_index` (1.0 for June-October, else 0.0,
-`main.py:639`). A graded index was investigated and not adopted (`server/DENGUE_INDEX_DERIVATION.md`). This report uses
-the live binary flag.
+## 1. Selected order per type (SELECTION FIT: training window, ending {SEL[T[0]]['window']['end']})
 
-## 1. Fixed order: every coefficient
+{table(["Type", "Selected order", "AIC", "AIC gap to runner-up", "Dengue coef", "Dengue p", "In-sample LB criterion met"], main_rows)}
+"AIC gap to runner-up" is relative to the winner, not always the raw lowest-AIC candidate in the grid: the selection
+rule picks the lowest AIC AMONG CANDIDATES THAT PASS Ljung-Box, so a lower-AIC candidate that fails the criterion is
+skipped. **This happens for {', '.join(not_overall_best) if not_overall_best else 'no type'}**{" — see section 2's top-5 table for where the selected order actually ranks by raw AIC; the better-AIC candidate(s) above it in that table failed Ljung-Box." if not_overall_best else "."}
+Every gap shown is under 2.0 — none of these wins are dominant even within their own pool; several other candidates
+are statistically indistinguishable by AIC alone (a gap under ~2 is conventionally read as "not much evidence
+favouring one over the other"). {("A+ has no gap to report (`-`) because it is the ONLY one of 36 candidates that "
+"passes Ljung-Box in-sample; there is no runner-up within its own pool at all — a narrower margin than any other "
+"type. " if any(g[3] == "-" for g in main_rows) else "")}The Ljung-Box criterion is what actually separates these
+candidates (PHASE_3).
 
-SARIMAX in statsmodels is a regression with SARIMA errors: `y_t = beta * dengue_t + eta_t`, with `eta_t` following the
-SARIMA model. `sigma2` is the innovation variance.
+## 2. Each type's own top-5 candidates (replaces the old fixed 5-alternative comparison)
 
-{chr(10).join(coef_blocks)}
-### Estimation quality: read before trusting the coefficients above
+The previous version of this document compared the single fixed order against 5 abstract alternative orders shared
+across all 8 types. Per-type order selection makes that comparison meaningless — each type already ran an exhaustive
+36-candidate search of its own. This table shows the 5 best (by AIC) candidates from THAT search, per type.
 
-* **Degenerate estimates for {', '.join(unstable) or 'none'}.** These fits report `converged: True` but contain standard errors in
-  the hundreds (for example `sigma2` and `ma.S.L7` for A-, `ma.L1..L4` for B-). The optimiser stopped at a boundary; the
-  coefficients for these two types are **not reliably identified**, even though the live system would accept them, since it
-  only checks the convergence flag.
-* **Non-invertible MA coefficients (|theta| >= 1):** {', '.join(f'{t} {k}={c:.2f}' for t, k, c in noninv) or 'none'}. The live
-  configuration sets `enforce_invertibility=False`, so these are permitted.
-* **Seasonal AR and seasonal MA nearly cancel.** `ar.S.L7` is 0.74-0.99 and `ma.S.L7` is -0.59 to -1.05 across types.
-  A seasonal AR(1) close to 1 paired with a seasonal MA(1) close to -1 is close to a common-factor cancellation, which
-  usually signals an over-parameterised seasonal part.
-* MA(2), MA(3), MA(4) are not significant for most types (see tables), consistent with the Phase 1 reading that q = 4 is
-  more than the ACF suggests.
-
-## 2. Candidate comparison (AIC / BIC, lower is better)
-
-All models use the same data, the same dengue regressor and the same fit settings; all have d = 1 so AIC/BIC are comparable.
-Alternatives: A `(0,1,1)x(0,0,0,7)`, B `(0,1,4)x(0,0,0,7)`, C `(0,1,1)x(1,0,1,7)`, D `(1,1,1)x(1,0,1,7)`, E `(0,1,2)x(1,0,1,7)`.
-
-{table(["Type"] + short + ["Best AIC", "Best BIC"], cmp_rows)}
-* **AIC:** the fixed order has the lowest AIC in **{len(fixed_aic)} of 8** types ({', '.join(fixed_aic)}). Where it does not, the winner is
-  {', '.join(f'{t}: {aic_win[t].split()[0]}' for t in T if t not in fixed_aic) or 'n/a'}.
-* **BIC (heavier complexity penalty):** the fixed order is best in only **{len(fixed_bic)} of 8** types ({', '.join(fixed_bic)}); simpler seasonal
-  models win the others ({', '.join(f'{t}: {bic_win[t].split()[0]}' for t in T if t not in fixed_bic)}).
-* Models with **no seasonal terms (A, B) are far worse** on AIC, by roughly 29 to 64 AIC points, for every type. The seasonal
-  part earns its place even though it is over-parameterised.
-
-**What this evidences:** the fixed order is a reasonable choice, clearly better than non-seasonal models, and lowest-AIC in
-most types. It is **not** uniquely best: BIC prefers a smaller seasonal model for half the types, and the MA(3)/MA(4) terms
-add little. "Reasonable and defensible" is supported; "optimal" is not.
-
+{table(["Type", "Rank", "Order", "AIC", "Gap to winner"], top5_rows)}
 ## 3. THE DENGUE QUESTION
 
-**First, what the data looks like.** The brief for this dataset says it has a graded seasonal curve with no binary step
-at 1 June, unlike the older demo file. Checking that directly:
+**Significant (p < 0.05) for {n_sig_sel} of 8 types on the SELECTION FIT** ({', '.join(t for t in T if SEL[t]['params']['dengue_season']['p'] < .05) or 'none'}),
+and **{n_sig_prod} of 8 on the PRODUCTION FIT** (full series) — see the table below. This is a marked change from
+earlier versions of this analysis (on the old 180-day, single-dengue-season, monotonic-decline series, only 0-1 of 8
+types were significant). This 420-day series covers two full dengue seasons with no monotonic drift, so the flag is no
+longer confounded with an unrelated trend the way it was before — and every coefficient is negative (lower stock while
+the flag is on), in the direction the hypothesis predicts, with p-values as small as 1e-131 for some types. **Report
+this as found: it is a property of this generated series having two clean seasonal cycles, not proof the underlying
+mechanism is real** — this is still demonstration data (see the data notice above).
 
-{table(["Type", "Mean 7d before 1 Jun", "Mean 7d after 1 Jun", "Change", "Monthly means Mar / Apr / May / Jun / Jul / Aug / Sep"], step_rows)}
-Confirmed: **no binary step at 1 June.** The change across the boundary is only a few percent, and every type declines
-smoothly, accelerating through July-September. It is a graded decline, not a season with a visible peak and recovery: the
-180 days cover only March-September, so the series shows the downward leg and nothing else.
+{table(["Type", "Dengue coef (production fit)", "Dengue p (production fit)"], prod_dengue_rows)}
+## 4. Selection stability check
 
-**Result, live binary flag, fixed order:**
+Selection was re-run with the training window cut a further {R['meta']['holdout_days']} days shorter (ending
+{STAB[T[0]]['window_b']['end']} instead of {STAB[T[0]]['window_a']['end']}), to see whether the winning order for each
+type is sensitive to exactly where the window ends.
 
-{table(["Type", "Dengue coef", "Std err", "p", "p < 0.05", "AIC with minus without", "BIC with minus without"], dg_rows)}
-* **Significant at 5% for {len(sig)} of 8 types: {', '.join(sig) or 'none'}.** The other {8 - len(sig)} are not significant (p from
-  {min(P2[t]['params']['dengue_season']['p'] for t in T if t not in sig):.2f} upward). That is a legitimate finding and it is reported as found.
-* For {', '.join(sig) or 'no type'}, p = {p(P2[sig[0]]['params']['dengue_season']['p']) if sig else 'n/a'}, which also survives a Bonferroni correction across 8 tests (threshold 0.00625).
-  The sign is negative (lower stock while the flag is on), in the direction the hypothesis predicts.
-* Adding the regressor **lowers AIC for only {len(aic_helps)} type(s) ({', '.join(aic_helps)}) and lowers BIC for {len(bic_helps)} ({', '.join(bic_helps) or 'none'}).**
-  For most types the extra parameter buys no fit. Across the five alternative orders the dengue p-value stays non-significant
-  for the same types, and is significant only for {', '.join(f'{t} ({", ".join(alt_sig[t])})' for t in T if alt_sig[t]) or 'no type'}.
-
-**How to read it.** Inside this sample the flag switches exactly once (0 for 63 days, then 1 for 117), and it does so while
-every series is already trending downward. A single switch that coincides with a declining trend is a weak basis for
-attributing a coefficient to seasonality, and this report cannot separate the two. The honest summary is:
-*the pipeline detects a flag-associated shift in one blood type of eight; it does not demonstrate a dengue-driven seasonal
-effect.* Because the series is generated, it also cannot say anything about real dengue and real demand.
+{table(["Type", "Order (window ending " + STAB[T[0]]['window_a']['end'] + ")", "Order (window ending " + STAB[T[0]]['window_b']['end'] + ")", "Stable?"],
+       [[r[0], r[1], r[3], r[5]] for r in stab_rows])}
+**{n_stable} of 8 types select the SAME order under both windows.** {stability_note}
 
 ## Limitations
 
-* Optimiser stability (above) limits what can be read from A- and B-.
-* Five alternatives is a small candidate set, not an exhaustive search.
-* No adjustment was made for the seasonal AR/MA near-cancellation.
+* AIC gaps under ~2 mean several candidates per type are close competitors; the grid search still picks exactly one.
+* The stability check moves the window by only one horizon (30 days); it does not test sensitivity to the window
+  LENGTH, only its END point, and only at one alternative end point.
+* Per-type full coefficient tables (MA/AR terms, not just the dengue regressor) are not shown here.
 """)
 
-# =============================== PHASE 3 ===============================
-K = 6  # ARMA parameters: MA 4 + seasonal AR 1 + seasonal MA 1
-
-
-def corr_p(t, lag):
-    return float(chi2.sf(P3[t]["ljungbox"][str(lag)]["stat"], lag - K))
-
-
-verdict = {}
-rows = []
-for t in T:
-    d = P3[t]
-    lb_ok = all(corr_p(t, l) > .05 for l in (14, 21, 28))
+# =============================== PHASE 3: DIAGNOSTIC CHECKING ===============================
+def diag_row(t, d, order, sorder):
+    lb = d["ljungbox"]
+    fails = []
+    lb_ok = all(lb[str(l)]["p_corrected"] is not None and lb[str(l)]["p_corrected"] > .05 for l in (14, 21, 28))
     jb_ok = d["jb"]["p"] > .05
     bv_ok = d["breakvar"]["p"] > .05
-    fails = []
     if not lb_ok:
         fails.append("Ljung-Box (corrected)")
     if not jb_ok:
         fails.append("Jarque-Bera")
     if not bv_ok:
         fails.append("heteroskedasticity")
-    verdict[t] = (not fails, fails)
-    rows.append([t, " / ".join(p(d["ljungbox"][str(l)]["p"]) for l in (7, 14, 21, 28)),
-                 " / ".join(p(corr_p(t, l)) for l in (7, 14, 21, 28)),
-                 f"{f(d['jb']['stat'], 1)} / {p(d['jb']['p'])} / {f(d['jb']['skew'])} / {f(d['jb']['kurt'])}",
-                 f"{f(d['breakvar']['stat'])} / {p(d['breakvar']['p'])}",
-                 f"{len(d['resid_acf_outside'])}/28 {d['resid_acf_outside']}",
-                 "**PASS**" if not fails else "**FAIL** (" + ", ".join(fails) + ")"])
-passed = [t for t in T if verdict[t][0]]
-failed = [t for t in T if not verdict[t][0]]
-lag7_fail = [t for t in T if corr_p(t, 7) <= .05]
+    verdict = "**PASS**" if not fails else "**FAIL** (" + ", ".join(fails) + ")"
+    row = [t, order_str(order, sorder), f"K={d['K']}",
+          " / ".join(p(lb[str(l)]["p_uncorrected"]) for l in (7, 14, 21, 28)),
+          " / ".join(p(lb[str(l)]["p_corrected"]) for l in (7, 14, 21, 28)),
+          f"{f(d['jb']['stat'], 1)} / {p(d['jb']['p'])} / {f(d['jb']['skew'])} / {f(d['jb']['kurt'])}",
+          f"{f(d['breakvar']['stat'])} / {p(d['breakvar']['p'])}",
+          f"{len(d['resid_acf_outside'])}/28 {d['resid_acf_outside']}", verdict]
+    return row, (not fails)
+
+
+sel_rows, sel_pass = [], []
+prod_rows, prod_pass = [], []
+for t in T:
+    r, ok = diag_row(t, SEL[t]["diagnostics"], SEL[t]["order"], SEL[t]["seasonal_order"])
+    sel_rows.append(r)
+    if ok:
+        sel_pass.append(t)
+    r, ok = diag_row(t, PROD[t]["diagnostics"], PROD[t]["order"], PROD[t]["seasonal_order"])
+    prod_rows.append(r)
+    if ok:
+        prod_pass.append(t)
+
+holdout_rows, holdout_pass, holdout_untested = [], [], []
+for t in T:
+    h = P4[t]["lb_onestep_holdout"]
+    lb14, lb21, lb28 = h["14"], h["21"], h["28"]
+    acc = [f(P4[t]["sarimax"]["mape"]), f(P4[t]["sarimax"]["rmse"]), f(P4[t]["naive_last"]["mape"]), f(P4[t]["naive_last"]["rmse"]),
+          "beats baseline" if P4[t]["sarimax"]["mape"] < P4[t]["naive_last"]["mape"] else "loses to baseline"]
+    if any(v is None for v in (lb14, lb21, lb28)):
+        holdout_rows.append([t, p(lb14), p(lb21), p(lb28), *acc, "untested"])
+        holdout_untested.append(t)
+        continue
+    ok = lb14 > .05 and lb21 > .05 and lb28 > .05
+    if ok:
+        holdout_pass.append(t)
+    holdout_rows.append([t, p(lb14), p(lb21), p(lb28), *acc, "**PASS**" if ok else "**FAIL**"])
+
+both_pass = [t for t in T if t in prod_pass and t in holdout_pass]
+prod_only = [t for t in T if t in prod_pass and t not in holdout_pass and t not in holdout_untested]
+holdout_only_types = [t for t in T if t not in prod_pass and t in holdout_pass]
 
 write("PHASE_3_DIAGNOSTICS.md", f"""# Phase 3: Diagnostic checking
 
 {DATA}
+{TWO_FITS}
 ## What the live system does versus what this report does
 
-**The live system performs no residual diagnostics.** After fitting the fixed order it checks only that the optimiser
-reports convergence and that the forecast values are finite (same function); it does not run Ljung-Box, a normality
-test, a heteroskedasticity test or any residual check, and a fit whose residuals fail every test below is served exactly the
-same as one that passes. These diagnostics were run offline to test the fixed order on this series. They are not part of
-request handling.
+**The live order-selection grid search already runs Ljung-Box** — that is its selection criterion (SELECTION FIT
+results below ARE what the grid search itself computed, not a re-derivation). **It runs no Jarque-Bera and no
+heteroskedasticity test at all, ever**, on either fit. A live forecast request performs zero residual diagnostics:
+after fitting the stored (or fallback) order it checks only that the optimiser reports convergence and the forecast
+is finite. This report adds the full suite — Ljung-Box, Jarque-Bera, heteroskedasticity, residual ACF — to BOTH fits,
+offline.
 
-## Method (code: `run_methodology.py`, phase 2/3 block)
+## Method (code: `run_methodology.py`)
 
-Residuals are the statsmodels **standardised one-step-ahead forecast errors** of the full-sample fixed-order fit
-(`SARIMAX(0,1,4)x(1,0,1,7)` + binary dengue flag). The first {P3[T[0]]['burn']} observations (likelihood burn-in for the
-differenced, diffuse-initialised state) are dropped, leaving n = {P3[T[0]]['n_resid']}.
+d=1, D=0, s=7 always; p, q, seasonal P, seasonal Q per type (PHASE_1/2). Residuals are the statsmodels **standardised
+one-step-ahead in-sample forecast errors** of the relevant fit. The first `burn` observations (likelihood burn-in) are
+dropped.
 
-* **Ljung-Box** at lags 7, 14, 21 and 28 (one to four full weekly cycles). Two p-values are shown. *Uncorrected* is the
-  statsmodels default (`model_df = 0`) and is too generous, because it ignores that 6 ARMA parameters were fitted.
-  *Corrected* uses degrees of freedom = lag - 6. At lag 7 the corrected test has only 1 degree of freedom, where the
-  chi-square approximation is unreliable, so lag 7 is shown but **the verdict uses corrected p at lags 14, 21 and 28 only.**
-* **Jarque-Bera** (normality), via `fit.test_normality('jarquebera')`.
-* **Heteroskedasticity:** `fit.test_heteroskedasticity('breakvar')`, which compares residual variance in the last third of the
-  sample with the first third.
-* **Residual ACF** to 28 lags against the 95% bound +/-1.96/sqrt(n) = +/-{P3[T[0]]['resid_acf_bound']:.3f}. At 5%, about 1.4 of 28 lags
-  are expected outside the bound by chance; up to 2 is treated as chance.
+* **Ljung-Box** at lags 7, 14, 21 and 28. *Uncorrected* is the statsmodels default (`model_df=0`); *corrected* uses
+  degrees of freedom = lag - K, where K = p+q+seasonal_p+seasonal_q (per type). At lag 7 the corrected test can have
+  very few degrees of freedom, where the chi-square approximation is unreliable, so lag 7 is shown but **the verdict
+  uses corrected p at lags 14, 21 and 28 only** — the same lags the selection criterion itself requires.
+* **Jarque-Bera** (normality) and **heteroskedasticity** (`breakvar`, last third vs first third of the sample).
+* **Residual ACF** to 28 lags against the 95% bound; about 1.4 of 28 lags are expected outside it by chance.
+* **Hold-out Ljung-Box, one-step-ahead ONLY.** Ljung-Box on the STATIC (fixed-origin, multi-step) 30-day forecast
+  errors PHASE_4's MAPE/RMSE use would be INVALID: h-step-ahead errors from one fixed origin share the same
+  underlying innovations propagated forward through the ARMA structure and are autocorrelated BY CONSTRUCTION even
+  for a correctly specified model, and n=30 could not support lags 14/21/28 regardless. Instead,
+  `f_sel.append(holdout, refit=False)` extends the SELECTION FIT through the hold-out WITHOUT re-estimating
+  parameters, giving 30 genuine one-step-ahead standardized residuals — exactly what Ljung-Box needs. Uncorrected:
+  nothing was estimated on this data.
 
-**Verdict rule (stated before looking at results): PASS only if all three hold: corrected Ljung-Box p > 0.05 at lags 14, 21 and
-28; Jarque-Bera p > 0.05; heteroskedasticity p > 0.05.** Failing any one is a FAIL.
+**Verdict rule (applied identically to both fits): PASS only if corrected Ljung-Box p > 0.05 at lags 14, 21 and 28,
+Jarque-Bera p > 0.05, AND heteroskedasticity p > 0.05.**
+**Hold-out verdict rule: PASS only if the one-step-ahead (uncorrected) Ljung-Box p > 0.05 at all of lags 14, 21 and 28.**
 
-## Results
+## Results — SELECTION FIT (training window, ending {SEL[T[0]]['window']['end']}; what the criterion was judged on)
 
-Ljung-Box p at lags 7 / 14 / 21 / 28. JB column: statistic / p / skewness / kurtosis (normal = 0 and 3).
+{table(["Type", "Order", "K", "LB p uncorrected (7/14/21/28)", "LB p corrected (7/14/21/28)", "Jarque-Bera", "Het. (breakvar) stat / p", "Resid ACF outside 95% bound", "Verdict"], sel_rows)}
+* **PASS ({len(sel_pass)}): {', '.join(sel_pass) or 'none'}.**
+* **FAIL ({8 - len(sel_pass)}): {', '.join(t for t in T if t not in sel_pass) or 'none'}.**
 
-{table(["Type", "LB p uncorrected", "LB p corrected (df=lag-6)", "Jarque-Bera", "Het. (breakvar) stat / p", "Resid ACF outside 95% bound", "Verdict"], rows)}
-## Verdict
+## Results — PRODUCTION FIT (full {R['meta']['days']}-day series; what a live forecast request actually runs)
 
-* **PASS ({len(passed)}): {', '.join(passed)}.**
-* **FAIL ({len(failed)}): {', '.join(f'{t} [{", ".join(verdict[t][1])}]' for t in failed)}.**
+{table(["Type", "Order", "K", "LB p uncorrected (7/14/21/28)", "LB p corrected (7/14/21/28)", "Jarque-Bera", "Het. (breakvar) stat / p", "Resid ACF outside 95% bound", "Verdict"], prod_rows)}
+* **PASS ({len(prod_pass)}): {', '.join(prod_pass) or 'none'}.**
+* **FAIL ({8 - len(prod_pass)}): {', '.join(t for t in T if t not in prod_pass) or 'none'}.**
 
-**Serial correlation is the model's strong point; heteroskedasticity is its weak point.** Every type passes Ljung-Box on the
-uncorrected default at every lag. With the degrees-of-freedom correction, {', '.join(t for t in T if any(corr_p(t, l) <= .05 for l in (14, 21, 28))) or 'no type'}
-fail at lag 14, 21 or 28, and {', '.join(lag7_fail) or 'no type'} would also fail at lag 7. Residual ACF is within the bound for most lags
-(no more than 2 of 28 outside for any type), so the mean structure is adequately captured.
+The order is identical in both fits (PHASE_2) — only the data changes. Where the two verdicts differ, that difference
+is caused entirely by fitting on 30 more (or fewer) days: {', '.join(t for t in T if (t in sel_pass) != (t in prod_pass)) or 'no type differs between the two fits'}.
 
-The variance is not. The heteroskedasticity test rejects for {sum(1 for t in T if P3[t]['breakvar']['p'] <= .05)} of 8 types. This is expected for this data: every
-series falls steadily, so counts and their noise shrink, and a model with constant innovation variance cannot follow
-that. It affects the width of prediction intervals (Phase 4). O+ and O- also reject normality (skew -0.44 and -0.52, kurtosis
-above 3.9), so their Gaussian interval bounds are less trustworthy.
+## Results — hold-out (one-step-ahead, {R['meta']['holdout_days']} days the SELECTION FIT never saw)
+
+MAPE/RMSE are the SELECTION FIT's own STATIC {R['meta']['holdout_days']}-day-ahead forecast error over the hold-out —
+valid out-of-sample accuracy evidence, distinct from (and not tested for independence the same way as) the one-step
+LB columns. Baseline is a naive last-training-value-repeated forecast over the identical window.
+
+{table(["Type", "LB p (one-step), lag 14", "lag 21", "lag 28", "MAPE %", "RMSE", "Baseline MAPE %", "Baseline RMSE", "vs baseline", "Verdict"], holdout_rows)}
+**Hold-out PASS ({len(holdout_pass)}): {', '.join(holdout_pass) or 'none'}.**
+
+## All three, compared
+
+* **Pass PRODUCTION FIT and hold-out ({len(both_pass)}): {', '.join(both_pass) or 'none'}.** The types where both "the
+  order fits the full history well" and "its forecast errors on genuinely new data are independent" hold.
+* **Pass PRODUCTION FIT, FAIL hold-out ({len(prod_only)}): {', '.join(prod_only) or 'none'}.** Fits the full history but
+  its forecast errors on new data are still serially correlated.
+* **FAIL PRODUCTION FIT, pass hold-out ({len(holdout_only_types)}): {', '.join(holdout_only_types) or 'none'}.** A
+  reminder that in-sample and out-of-sample diagnostics answer different questions.
 
 ## Caveats
 
-* A- and B- are labelled PASS/FAIL on residuals that come from fits whose parameters are poorly identified (Phase 2). A pass
-  there says the residuals look acceptable, not that the coefficients are reliable.
-* No test here adjusts for multiple comparison across 8 types.
-* Residual diagnostics are on the in-sample fit; Phase 4 tests out-of-sample behaviour.
+* No test here adjusts for multiple comparisons across 8 types, or across the two fits.
+* The hold-out is {R['meta']['holdout_days']} days, once, per type — a single test, not a distribution; no
+  rolling-origin evaluation was run.
+* Jarque-Bera and heteroskedasticity are evaluated in-sample only (on both fits); the selection criterion and the
+  hold-out check are both Ljung-Box only (see main.py's ORDER SELECTION module comment for why).
 """)
 
-# =============================== PHASE 4 ===============================
-def wins(metric):
-    return [t for t in T if P4[t]["sarimax"][metric] < P4[t]["naive_last"][metric]]
-
-
-rows = []
-for t in T:
-    s, n, sn = P4[t]["sarimax"], P4[t]["naive_last"], P4[t]["seasonal_naive_7"]
-    rows.append([t, f"{f(s['mape'])} / {f(s['rmse'])} / {f(s['mae'])}", f"{f(n['mape'])} / {f(n['rmse'])} / {f(n['mae'])}",
-                 f"{f(sn['mape'])} / {f(sn['rmse'])} / {f(sn['mae'])}"])
-cov_rows = [[t, f"{P4[t]['n_inside']}/30", f"{P4[t]['coverage'] * 100:.1f}%"] for t in T]
+# =============================== PHASE 4: FORECASTING ===============================
+acc_rows = [[t, f"{f(P4[t]['sarimax']['mape'])} / {f(P4[t]['sarimax']['rmse'])} / {f(P4[t]['sarimax']['mae'])}",
+            f"{f(P4[t]['naive_last']['mape'])} / {f(P4[t]['naive_last']['rmse'])} / {f(P4[t]['naive_last']['mae'])}",
+            f"{f(P4[t]['seasonal_naive_7']['mape'])} / {f(P4[t]['seasonal_naive_7']['rmse'])} / {f(P4[t]['seasonal_naive_7']['mae'])}"] for t in T]
+mae_w = [t for t in T if P4[t]["sarimax"]["mae"] < P4[t]["naive_last"]["mae"]]
+sn_w = [t for t in T if P4[t]["sarimax"]["mae"] < P4[t]["seasonal_naive_7"]["mae"]]
+cov_rows = [[t, f"{P4[t]['n_inside']}/{R['meta']['holdout_days']}", f"{P4[t]['coverage'] * 100:.1f}%"] for t in T]
 tot_in = sum(P4[t]["n_inside"] for t in T)
+tot_n = 8 * R["meta"]["holdout_days"]
 w_rows = [[t] + [f(P4[t]["width_by_horizon"][str(h)], 1) for h in (1, 5, 10, 15, 20, 25, 30)] +
           [f"{P4[t]['width_by_horizon']['30'] / P4[t]['width_by_horizon']['1']:.2f}x"] for t in T]
-par_ok = all(P4[t]["live_parity"] and all(v["live"] == v["mine"] for v in P4[t]["live_parity"].values()) for t in T)
-mape_w, rmse_w, mae_w = wins("mape"), wins("rmse"), wins("mae")
-sn_beat = [t for t in T if P4[t]["sarimax"]["mae"] < P4[t]["seasonal_naive_7"]["mae"]]
-not_beat_mae = [t for t in T if t not in mae_w]
+parity_rows = [[t, order_str(P4[t]["order"], P4[t]["seasonal_order"]),
+               "yes" if P4[t]["live_parity_match"] else ("no live result" if P4[t]["live_parity"] is None else "**NO — differs**")] for t in T]
+n_parity = sum(1 for t in T if P4[t]["live_parity_match"])
 
 write("PHASE_4_FORECASTING.md", f"""# Phase 4: Forecasting and out-of-sample validation
 
 {DATA}
+{TWO_FITS}
 ## What the live system does versus what this report does
 
-Live, `GET /forecast` fits the fixed order on a facility's history and forecasts 30 days ahead, returning **seven
-checkpoints only** (days 0, 5, 10, 15, 20, 25, 30), rounded to whole units and floored at zero, with a 95% interval
-(`_fit_sarimax_facility_forecast`, `main.py:735`; `FORECAST_INTERVAL_CONFIDENCE = 0.95`, `main.py:54`). Fits are cached per facility, type and day
-(`_get_or_fit_cached_sarimax`, `main.py:818`). **The live system has no accuracy monitoring**: it never compares a forecast
-with what later happened. The hold-out below is an offline test of the same model.
+Live, `GET /forecast` reads each type's stored order (or the fixed fallback) and fits it on the FULL available
+history — the PRODUCTION FIT pattern — caching 7 checkpoints (days 0, 5, 10, 15, 20, 25, 30) per facility, type and
+day. **The live system has no accuracy monitoring**: it never compares a forecast with what later happened. This
+report's hold-out (the SELECTION FIT, forecasting the {R['meta']['holdout_days']} days it was never trained on) is an
+offline test using each type's own selected order, not the live path's own request/response cycle.
 
-## Method (code: `run_methodology.py`, phase 4 block)
+## Method (code: `run_methodology.py`)
 
-* Hold out the **last 30 days** (2026-08-27 to 2026-09-25). Fit on the first 150 days (2026-03-30 to 2026-08-26) with the
-  live specification and binary dengue regressor. Forecast the 30 held-out days directly, with exogenous values from
-  `dengue_season_index` for the future dates, exactly as the live function builds them.
-* **Daily** forecasts and 95% intervals are scored (30 points per type), not just the seven live checkpoints.
-* Metrics: MAPE, RMSE, MAE on the point forecast. Interval coverage = fraction of the 30 actuals inside the 95% interval.
-* **Baselines:** (1) naive: last training value carried forward for all 30 days; (2) seasonal naive: the last observed
-  week repeated. Only (1) was required; (2) is added because the data has a weekly pattern.
-* **Parity check:** for every type the script also calls the production function `_fit_sarimax_facility_forecast` on the same
-  150-day training series and compares its checkpoint forecasts with this script's. Result: **{'identical for all 8 types at all six forecast checkpoints' if par_ok else 'DIFFERENCES FOUND, see results.json'}**.
-  So the numbers below are what the live model produces, not a lookalike.
+* Hold out the last {R['meta']['holdout_days']} days ({SEL[T[0]]['window']['end']} is the training window's last day
+  for every type). Fit EACH type's own SELECTION FIT order (PHASE_2) on the training window, forecast
+  {R['meta']['holdout_days']} days, and score against the actual held-out values.
+* Metrics: MAPE, RMSE, MAE on the point forecast; interval coverage = fraction of actuals inside the 95% interval.
+* Baselines: naive (last training value repeated) and seasonal-naive (the last observed week repeated).
+* **Live-parity check, kept as its own explicit step** (not folded into `select_orders.py`'s own stored numbers):
+  for every type, the production function `_fit_sarimax_facility_forecast` is called directly with that type's
+  selected order on the same training series, and its checkpoint forecasts are compared with this script's own fit.
+  "The deployed function reproduces an independent fit" is a different claim from "the model is accurate," and the
+  two are reported separately.
 
-## 1. Accuracy against the naive baseline
+## 1. Accuracy against the naive baseline (all per type's own selected order)
 
 Cells are MAPE % / RMSE / MAE (units). Lower is better.
 
-{table(["Type", "SARIMAX", "Naive (last value)", "Seasonal naive (7d)"], rows)}
-**SARIMAX vs naive (last value):** SARIMAX has the lower MAPE for {len(mape_w)} of 8 types, the lower RMSE for {len(rmse_w)} of 8, and the
-lower MAE for {len(mae_w)} of 8. {'It does not beat naive on MAE for ' + ', '.join(not_beat_mae) + ' (' + '; '.join(f"{t}: {f(P4[t]['sarimax']['mae'])} vs {f(P4[t]['naive_last']['mae'])}" for t in not_beat_mae) + '), a near tie.' if not_beat_mae else ''}
-The gains are largest where the series fall fastest (O+ MAE {f(P4['O+']['sarimax']['mae'], 1)} vs {f(P4['O+']['naive_last']['mae'], 1)}), which is what a naive
-"no change" baseline should do badly on, because these series decline steadily. **That is a weak baseline for this data.**
-Against the stronger seasonal-naive baseline, SARIMAX has lower MAE for {len(sn_beat)} of 8 types
-({', '.join(sn_beat)}); it loses on {', '.join(t for t in T if t not in sn_beat) or 'none'}.
+{table(["Type", "SARIMAX (selected order)", "Naive (last value)", "Seasonal naive (7d)"], acc_rows)}
+SARIMAX beats naive-last on MAE for {len(mae_w)} of 8 types, and beats seasonal-naive on MAE for {len(sn_w)} of 8.
+{'It loses to naive-last on MAE for ' + ', '.join(t for t in T if t not in mae_w) + '.' if len(mae_w) < 8 else ''}
 
 ## 2. Prediction-interval coverage
 
 Nominal coverage is 95%.
 
 {table(["Type", "Actuals inside 95% interval", "Coverage"], cov_rows)}
-Overall **{tot_in} of 240 ({tot_in / 240 * 100:.1f}%)** of held-out actuals fell inside the interval. That is well **above** the nominal 95%:
-the intervals are **too wide (conservative)**, not too narrow. Reading this as "well calibrated" would be wrong. It is over-cover,
-consistent with Phase 3's variance finding (a constant-variance model fitted on the earlier, higher-variance part of a
-declining series). For the dashboard this errs on the safe side but overstates uncertainty.
+Overall **{tot_in} of {tot_n} ({tot_in / tot_n * 100:.1f}%)**.
 
-## 3. How the interval widens over the horizon
-
-Width of the 95% interval (upper minus lower, units) at each horizon day.
+## 3. Interval width by horizon
 
 {table(["Type", "Day 1", "Day 5", "Day 10", "Day 15", "Day 20", "Day 25", "Day 30", "Day 30 / Day 1"], w_rows)}
-Widths grow steadily and smoothly with horizon for every type, by roughly 1.3x to 1.7x from day 1 to day 30, the qualitative behaviour
-the methodology predicts. They start wide (day-1 width already large relative to the level), which is the over-coverage above.
+## 4. Live-parity check
 
-## Summary, unflattering parts included
+{table(["Type", "Order used", "Matches the live function's own fit"], parity_rows)}
+**{n_parity} of 8 types match exactly.** This is a check that `_fit_sarimax_facility_forecast`, called directly with
+each type's selected order, reproduces this script's own independent fit on identical input — it says nothing about
+forecast accuracy on its own, which is section 1 above.
 
-* SARIMAX **does** beat last-value-carried-forward on most types, but the baseline is weak on trending data.
-* It beats the seasonal-naive baseline on MAE for {len(sn_beat)} of 8 types, not all.
-* Intervals over-cover ({tot_in / 240 * 100:.1f}% vs 95% nominal).
-* One 30-day hold-out per type is a single test, not a distribution; no rolling-origin evaluation was run here.
+## Caveats
+
+* One {R['meta']['holdout_days']}-day hold-out per type is a single test, not a distribution; no rolling-origin
+  evaluation was run here.
+* Coverage and MAPE/RMSE are computed from the SELECTION FIT (trained on {SEL[T[0]]['window']['n_days']} days), not
+  the PRODUCTION FIT (trained on all {R['meta']['days']} days) — the live system's actual day-to-day forecast comes
+  from the production fit, which by construction cannot be evaluated out-of-sample on data already inside it.
 * Everything above concerns generated data. Nothing here measures how the model performs on real blood supply.
 """)

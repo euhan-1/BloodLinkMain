@@ -1,49 +1,47 @@
 # Phase 4: Forecasting and out-of-sample validation
 
-> **Data notice.** The 180-day series analysed here (`northside_180d_history.csv`, 2026-03-30 to 2026-09-25, 8 blood types, 1,440 daily counts) is **generated demonstration data**, not real blood bank records. This report shows that the implementation performs the methodology correctly on a known series. It is **not** empirical evidence about real blood supply, and no sentence in it should be read as one.
+> **Data notice.** The 420-day series analysed here (`northside_420d_history.csv`, 2025-08-03 to 2026-09-26, 8 blood types, 3,360 daily counts) is **generated demonstration data**, not real blood bank records. It is entirely the uploaded synthetic file (`upload_history_id=224`) — an earlier version of this export spliced one real day from live `blood_units` onto the end, which turned out to be a genuine problem (see PHASE_3's method note); that splice has been removed. This report shows that the implementation performs the methodology correctly on a known series. It is **not** empirical evidence about real blood supply, and no sentence in it should be read as one.
+
+> **Two fits, never conflated.** SELECTION FIT = fit on the training window only (the series minus the last 30 days) — what the 36-candidate grid search and its AIC/Ljung-Box criterion actually judged (`server/select_orders.py` / `main.py:_run_order_selection_for_facility`). PRODUCTION FIT = the SAME selected order, refit on the FULL series — what a live forecast request actually runs (`main.py:_fit_and_cache_sarimax`). They are reported separately throughout; neither stands in for the other.
 
 ## What the live system does versus what this report does
 
-Live, `GET /forecast` fits the fixed order on a facility's history and forecasts 30 days ahead, returning **seven
-checkpoints only** (days 0, 5, 10, 15, 20, 25, 30), rounded to whole units and floored at zero, with a 95% interval
-(`_fit_sarimax_facility_forecast`, `main.py:735`; `FORECAST_INTERVAL_CONFIDENCE = 0.95`, `main.py:54`). Fits are cached per facility, type and day
-(`_get_or_fit_cached_sarimax`, `main.py:818`). **The live system has no accuracy monitoring**: it never compares a forecast
-with what later happened. The hold-out below is an offline test of the same model.
+Live, `GET /forecast` reads each type's stored order (or the fixed fallback) and fits it on the FULL available
+history — the PRODUCTION FIT pattern — caching 7 checkpoints (days 0, 5, 10, 15, 20, 25, 30) per facility, type and
+day. **The live system has no accuracy monitoring**: it never compares a forecast with what later happened. This
+report's hold-out (the SELECTION FIT, forecasting the 30 days it was never trained on) is an
+offline test using each type's own selected order, not the live path's own request/response cycle.
 
-## Method (code: `run_methodology.py`, phase 4 block)
+## Method (code: `run_methodology.py`)
 
-* Hold out the **last 30 days** (2026-08-27 to 2026-09-25). Fit on the first 150 days (2026-03-30 to 2026-08-26) with the
-  live specification and binary dengue regressor. Forecast the 30 held-out days directly, with exogenous values from
-  `dengue_season_index` for the future dates, exactly as the live function builds them.
-* **Daily** forecasts and 95% intervals are scored (30 points per type), not just the seven live checkpoints.
-* Metrics: MAPE, RMSE, MAE on the point forecast. Interval coverage = fraction of the 30 actuals inside the 95% interval.
-* **Baselines:** (1) naive: last training value carried forward for all 30 days; (2) seasonal naive: the last observed
-  week repeated. Only (1) was required; (2) is added because the data has a weekly pattern.
-* **Parity check:** for every type the script also calls the production function `_fit_sarimax_facility_forecast` on the same
-  150-day training series and compares its checkpoint forecasts with this script's. Result: **identical for all 8 types at all six forecast checkpoints**.
-  So the numbers below are what the live model produces, not a lookalike.
+* Hold out the last 30 days (2026-08-27 is the training window's last day
+  for every type). Fit EACH type's own SELECTION FIT order (PHASE_2) on the training window, forecast
+  30 days, and score against the actual held-out values.
+* Metrics: MAPE, RMSE, MAE on the point forecast; interval coverage = fraction of actuals inside the 95% interval.
+* Baselines: naive (last training value repeated) and seasonal-naive (the last observed week repeated).
+* **Live-parity check, kept as its own explicit step** (not folded into `select_orders.py`'s own stored numbers):
+  for every type, the production function `_fit_sarimax_facility_forecast` is called directly with that type's
+  selected order on the same training series, and its checkpoint forecasts are compared with this script's own fit.
+  "The deployed function reproduces an independent fit" is a different claim from "the model is accurate," and the
+  two are reported separately.
 
-## 1. Accuracy against the naive baseline
+## 1. Accuracy against the naive baseline (all per type's own selected order)
 
 Cells are MAPE % / RMSE / MAE (units). Lower is better.
 
-| Type | SARIMAX | Naive (last value) | Seasonal naive (7d) |
+| Type | SARIMAX (selected order) | Naive (last value) | Seasonal naive (7d) |
 |---|---|---|---|
-| A+ | 4.22 / 3.35 / 2.80 | 6.72 / 5.43 / 4.57 | 7.63 / 6.14 / 4.93 |
-| A- | 4.05 / 0.78 / 0.64 | 5.12 / 1.08 / 0.83 | 6.49 / 1.51 / 1.00 |
-| AB+ | 3.23 / 0.94 / 0.67 | 4.23 / 1.21 / 0.93 | 5.00 / 1.34 / 1.07 |
-| AB- | 5.61 / 0.48 / 0.41 | 5.71 / 0.63 / 0.40 | 4.70 / 0.58 / 0.33 |
-| B+ | 3.81 / 3.41 / 2.82 | 5.44 / 4.88 / 4.13 | 6.90 / 6.66 / 5.10 |
-| B- | 5.49 / 1.13 / 0.96 | 7.27 / 1.44 / 1.27 | 5.88 / 1.28 / 1.03 |
-| O+ | 6.81 / 9.19 / 6.56 | 15.04 / 17.02 / 16.00 | 8.50 / 10.86 / 8.47 |
-| O- | 5.89 / 1.66 / 1.31 | 10.39 / 2.82 / 2.50 | 9.43 / 2.65 / 2.13 |
+| A+ | 4.53 / 3.25 / 2.78 | 6.07 / 5.28 / 3.93 | 5.24 / 4.06 / 3.27 |
+| A- | 4.29 / 0.84 / 0.67 | 7.87 / 1.56 / 1.30 | 5.11 / 1.14 / 0.83 |
+| AB+ | 4.09 / 0.93 / 0.75 | 4.35 / 1.17 / 0.83 | 5.55 / 1.38 / 1.03 |
+| AB- | 7.78 / 0.68 / 0.58 | 7.18 / 0.84 / 0.57 | 8.25 / 0.86 / 0.60 |
+| B+ | 4.02 / 2.69 / 2.04 | 5.31 / 3.31 / 2.67 | 7.20 / 4.39 / 3.63 |
+| B- | 6.82 / 0.82 / 0.74 | 9.71 / 1.33 / 1.10 | 8.74 / 1.22 / 0.97 |
+| O+ | 5.24 / 6.21 / 4.54 | 17.32 / 15.86 / 14.67 | 7.21 / 7.39 / 6.00 |
+| O- | 5.73 / 1.49 / 1.25 | 7.32 / 1.92 / 1.57 | 6.50 / 1.83 / 1.43 |
 
-**SARIMAX vs naive (last value):** SARIMAX has the lower MAPE for 8 of 8 types, the lower RMSE for 8 of 8, and the
-lower MAE for 7 of 8. It does not beat naive on MAE for AB- (AB-: 0.41 vs 0.40), a near tie.
-The gains are largest where the series fall fastest (O+ MAE 6.6 vs 16.0), which is what a naive
-"no change" baseline should do badly on, because these series decline steadily. **That is a weak baseline for this data.**
-Against the stronger seasonal-naive baseline, SARIMAX has lower MAE for 7 of 8 types
-(A+, A-, AB+, B+, B-, O+, O-); it loses on AB-.
+SARIMAX beats naive-last on MAE for 7 of 8 types, and beats seasonal-naive on MAE for 8 of 8.
+It loses to naive-last on MAE for AB-.
 
 ## 2. Prediction-interval coverage
 
@@ -52,41 +50,51 @@ Nominal coverage is 95%.
 | Type | Actuals inside 95% interval | Coverage |
 |---|---|---|
 | A+ | 30/30 | 100.0% |
-| A- | 30/30 | 100.0% |
-| AB+ | 30/30 | 100.0% |
-| AB- | 30/30 | 100.0% |
-| B+ | 30/30 | 100.0% |
-| B- | 30/30 | 100.0% |
-| O+ | 29/30 | 96.7% |
-| O- | 30/30 | 100.0% |
+| A- | 29/30 | 96.7% |
+| AB+ | 28/30 | 93.3% |
+| AB- | 26/30 | 86.7% |
+| B+ | 29/30 | 96.7% |
+| B- | 29/30 | 96.7% |
+| O+ | 26/30 | 86.7% |
+| O- | 29/30 | 96.7% |
 
-Overall **239 of 240 (99.6%)** of held-out actuals fell inside the interval. That is well **above** the nominal 95%:
-the intervals are **too wide (conservative)**, not too narrow. Reading this as "well calibrated" would be wrong. It is over-cover,
-consistent with Phase 3's variance finding (a constant-variance model fitted on the earlier, higher-variance part of a
-declining series). For the dashboard this errs on the safe side but overstates uncertainty.
+Overall **226 of 240 (94.2%)**.
 
-## 3. How the interval widens over the horizon
-
-Width of the 95% interval (upper minus lower, units) at each horizon day.
+## 3. Interval width by horizon
 
 | Type | Day 1 | Day 5 | Day 10 | Day 15 | Day 20 | Day 25 | Day 30 | Day 30 / Day 1 |
 |---|---|---|---|---|---|---|---|---|
-| A+ | 16.4 | 17.5 | 19.6 | 21.6 | 23.4 | 25.3 | 27.2 | 1.65x |
-| A- | 4.2 | 4.3 | 4.5 | 4.8 | 4.9 | 5.2 | 5.5 | 1.30x |
-| AB+ | 5.3 | 5.8 | 6.4 | 6.9 | 7.4 | 8.0 | 8.5 | 1.60x |
-| AB- | 2.0 | 2.2 | 2.3 | 2.5 | 2.7 | 2.8 | 3.0 | 1.50x |
-| B+ | 18.4 | 19.4 | 21.1 | 22.8 | 24.3 | 26.2 | 28.1 | 1.53x |
-| B- | 4.5 | 4.8 | 5.1 | 5.5 | 5.8 | 6.1 | 6.5 | 1.43x |
-| O+ | 36.4 | 42.0 | 45.0 | 46.7 | 48.4 | 50.4 | 52.0 | 1.43x |
-| O- | 7.9 | 8.7 | 9.4 | 10.1 | 10.7 | 11.3 | 12.0 | 1.51x |
+| A+ | 12.7 | 14.5 | 14.6 | 14.6 | 14.6 | 14.6 | 14.6 | 1.15x |
+| A- | 3.2 | 3.6 | 3.6 | 3.6 | 3.6 | 3.6 | 3.6 | 1.13x |
+| AB+ | 3.7 | 4.4 | 4.4 | 4.4 | 4.4 | 4.4 | 4.4 | 1.18x |
+| AB- | 1.9 | 2.0 | 2.0 | 2.0 | 2.0 | 2.0 | 2.0 | 1.06x |
+| B+ | 9.7 | 11.9 | 12.0 | 12.0 | 12.1 | 12.2 | 12.3 | 1.27x |
+| B- | 2.4 | 2.9 | 2.9 | 2.9 | 2.9 | 2.9 | 2.9 | 1.20x |
+| O+ | 16.6 | 19.8 | 19.9 | 19.9 | 19.9 | 19.9 | 19.9 | 1.20x |
+| O- | 4.7 | 5.5 | 5.6 | 5.6 | 5.6 | 5.6 | 5.6 | 1.19x |
 
-Widths grow steadily and smoothly with horizon for every type, by roughly 1.3x to 1.7x from day 1 to day 30, the qualitative behaviour
-the methodology predicts. They start wide (day-1 width already large relative to the level), which is the over-coverage above.
+## 4. Live-parity check
 
-## Summary, unflattering parts included
+| Type | Order used | Matches the live function's own fit |
+|---|---|---|
+| A+ | (1,1,1)x(1,0,1,7) | yes |
+| A- | (1,1,2)x(1,0,1,7) | yes |
+| AB+ | (1,1,2)x(1,0,1,7) | yes |
+| AB- | (1,1,1)x(1,0,1,7) | yes |
+| B+ | (1,1,2)x(1,0,1,7) | yes |
+| B- | (1,1,2)x(1,0,1,7) | yes |
+| O+ | (1,1,2)x(1,0,1,7) | yes |
+| O- | (1,1,2)x(1,0,1,7) | yes |
 
-* SARIMAX **does** beat last-value-carried-forward on most types, but the baseline is weak on trending data.
-* It beats the seasonal-naive baseline on MAE for 7 of 8 types, not all.
-* Intervals over-cover (99.6% vs 95% nominal).
-* One 30-day hold-out per type is a single test, not a distribution; no rolling-origin evaluation was run here.
+**8 of 8 types match exactly.** This is a check that `_fit_sarimax_facility_forecast`, called directly with
+each type's selected order, reproduces this script's own independent fit on identical input — it says nothing about
+forecast accuracy on its own, which is section 1 above.
+
+## Caveats
+
+* One 30-day hold-out per type is a single test, not a distribution; no rolling-origin
+  evaluation was run here.
+* Coverage and MAPE/RMSE are computed from the SELECTION FIT (trained on 390 days), not
+  the PRODUCTION FIT (trained on all 420 days) — the live system's actual day-to-day forecast comes
+  from the production fit, which by construction cannot be evaluated out-of-sample on data already inside it.
 * Everything above concerns generated data. Nothing here measures how the model performs on real blood supply.

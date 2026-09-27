@@ -20,7 +20,7 @@ from typing import Optional
 
 import jwt
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy import text
@@ -108,6 +108,69 @@ _FORECAST_LOCK_NAMESPACE = 7301  # first key of the (namespace, facility_id) adv
 # every poll doesn't re-spend its fit budget on the same non-converging type.
 # ponytail: per-process memory (the app runs one worker); a restart just retries once.
 _SARIMAX_FIT_FAILED: set[tuple[int, str, date]] = set()
+
+# ─── Per-type SARIMAX order selection (offline) ────────────────────────────
+# FACILITY_SARIMAX_ORDER above was chosen once, offline, on synthetic data
+# (SYNTHETIC_SARIMAX_VALIDATION.md) and applied to every facility and blood type
+# alike. This grid search instead picks an order PER (facility, blood_type),
+# from a live facility's own history, offline (never inside a forecast request —
+# see _run_order_selection_for_facility), triggered in the background after a
+# historical upload (see upload_historical_inventory_snapshots).
+#
+# Grid: p,q in {0,1,2}; d=1 fixed; seasonal P,Q in {0,1}; D=0, s=7 fixed — 36
+# candidates. The dengue-season regressor is kept in every candidate.
+#
+# SELECTION RULE: fit every candidate on TRAINING data only — the series minus
+# the last ORDER_SELECTION_HOLDOUT_DAYS days — never the full series. Among
+# candidates that CONVERGE on that training window, rank by AIC ascending and
+# take the lowest-AIC candidate whose Ljung-Box test on ITS OWN training
+# residuals — df-corrected using that candidate's OWN K =
+# p+q+seasonal_p+seasonal_q, at lags 14, 21 AND 28 — passes at 0.05 on ALL
+# THREE of those lags (not any one). All three, not any one, because this is
+# the same PASS rule Chapter I Phase 3 already uses for the fixed order
+# ("Ljung-Box (corrected) p > 0.05 at lags 14, 21 and 28"): passing only the
+# shortest lag says nothing about serial correlation at the longer horizons
+# the 30-day forecast actually depends on, and using the SAME rule here keeps
+# the fixed-order and per-type numbers comparable rather than selecting
+# against a laxer standard. Lag 7 is excluded from the criterion for the same
+# reason PHASE_3_DIAGNOSTICS.md excludes it: at df = 7-K, the chi-square
+# approximation the correction relies on is unreliable for the more complex
+# candidates in this grid.
+# If NO candidate passes, the best-AIC candidate among those that converged is
+# still selected (never nothing), with criterion_satisfied=False — the live
+# fitter has no way to fall back to "no forecast" for a type that has enough
+# history, so it gets the best available fit, honestly labeled as not having
+# satisfied the independence criterion (facility_sarimax_order.criterion_satisfied).
+#
+# POST-SELECTION INFERENCE: choosing the order on the same data its own
+# diagnostics are then reported against would mean the model was picked to
+# make those diagnostics pass — the in-sample Ljung-Box p-values above are
+# evidence the SELECTION worked, not evidence the model fits data it hasn't
+# seen. So the winning order is refit on that same training window and
+# evaluated separately: forecast ORDER_SELECTION_HOLDOUT_DAYS days ahead,
+# compare against the actual held-out observations (never used for selection),
+# and store THAT Ljung-Box (on the 30 forecast errors, uncorrected — no
+# parameters were estimated on this data, so no df-correction applies), MAPE
+# and RMSE, alongside the same metrics for a naive last-training-value
+# baseline over the identical window. Both sets of numbers are stored, clearly
+# labeled _in_sample vs _holdout (see schema_facility_sarimax_order.sql).
+SARIMAX_ORDER_GRID_PQ = (0, 1, 2)
+SARIMAX_ORDER_GRID_SEASONAL_PQ = (0, 1)
+SARIMAX_ORDER_GRID_LAGS = (14, 21, 28)  # the lags the criterion is checked at
+ORDER_SELECTION_HOLDOUT_DAYS = max(FORECAST_CHECKPOINTS)  # 30 — same horizon the live forecast itself covers
+# A type needs this many days of history before order selection will even
+# attempt it: enough for a real training fit (SARIMAX_MIN_DAYS_REQUIRED) PLUS
+# a full hold-out window neither the selection nor its AIC ranking ever saw.
+ORDER_SELECTION_MIN_DAYS = SARIMAX_MIN_DAYS_REQUIRED + ORDER_SELECTION_HOLDOUT_DAYS
+MAX_ORDER_SELECTIONS_PER_BACKGROUND_RUN = 2  # see _run_order_selection_for_facility's max_types
+_ORDER_SELECTION_LOCK_NAMESPACE = 7302  # a SEPARATE advisory-lock namespace from forecast fitting (7301):
+# order selection (minutes per type — see server/select_orders.py, the primary
+# path) and per-request forecast fitting are different operations with
+# different time budgets: sharing one lock would make a slow selection run
+# block ordinary forecast reads from ever fitting a still-missing type, for no
+# benefit — a forecast read only wants the CURRENT stored order, selected or
+# fallback, whichever is available right now, so it never needs to wait on
+# selection.
 
 EARTH_RADIUS_KM = 6371.0
 
@@ -874,11 +937,19 @@ def _resample_daily_series(
 # default is not integrated. This function still hard-codes
 # FACILITY_SARIMAX_ORDER/FACILITY_SARIMAX_SEASONAL_ORDER exactly as it did
 # before that work started.
-def _fit_sarimax_facility_forecast(daily_series: list[tuple[date, int]], today: date) -> Optional[dict]:
-    """Fits FACILITY_SARIMAX_ORDER/FACILITY_SARIMAX_SEASONAL_ORDER with a
-    dengue-season exogenous regressor on one blood type's own resampled
-    daily series (see _resample_daily_series), and forecasts
-    max(FORECAST_CHECKPOINTS) days past `today`.
+def _fit_sarimax_facility_forecast(
+    daily_series: list[tuple[date, int]], today: date,
+    order: tuple[int, int, int] = FACILITY_SARIMAX_ORDER,
+    seasonal_order: tuple[int, int, int, int] = FACILITY_SARIMAX_SEASONAL_ORDER,
+    model_label: str = FACILITY_SARIMAX_LABEL,
+) -> Optional[dict]:
+    """Fits `order`/`seasonal_order` (the fixed FACILITY_SARIMAX_ORDER/
+    FACILITY_SARIMAX_SEASONAL_ORDER by default, or a per-type order selected by
+    _select_sarimax_order_for_series — see _fit_and_cache_sarimax, which is the
+    only real caller and decides which) with a dengue-season exogenous
+    regressor on one blood type's own resampled daily series (see
+    _resample_daily_series), and forecasts max(FORECAST_CHECKPOINTS) days past
+    `today`.
 
     Pure — no DB access — so it's directly unit-testable the same way
     _linear_trend and _prediction_interval_half_width are. The caller is
@@ -921,7 +992,7 @@ def _fit_sarimax_facility_forecast(daily_series: list[tuple[date, int]], today: 
             warnings.simplefilter("ignore")
             fit = SARIMAX(
                 endog, exog=exog,
-                order=FACILITY_SARIMAX_ORDER, seasonal_order=FACILITY_SARIMAX_SEASONAL_ORDER,
+                order=order, seasonal_order=seasonal_order,
                 trend=None, enforce_stationarity=False, enforce_invertibility=False,
             ).fit(disp=False, maxiter=FACILITY_SARIMAX_MAXITER)
 
@@ -954,7 +1025,33 @@ def _fit_sarimax_facility_forecast(daily_series: list[tuple[date, int]], today: 
     if set(checkpoints) != set(FORECAST_CHECKPOINTS):
         return None
 
-    return {"checkpoints": checkpoints, "exog_included": True, "model_order": FACILITY_SARIMAX_LABEL}
+    return {"checkpoints": checkpoints, "exog_included": True, "model_order": model_label}
+
+
+def _order_label(p: int, d: int, q: int, sp: int, sd: int, sq: int, ss: int, *, selected: bool) -> str:
+    """Matches the FACILITY_SARIMAX_LABEL format ("SARIMAX(0,1,4)x(1,0,1,7)+dengue").
+    A fallback (no stored per-type selection, using the fixed constant) is always
+    suffixed " [fallback]" — never presented as if it had been selected for this
+    facility and type."""
+    label = f"SARIMAX({p},{d},{q})x({sp},{sd},{sq},{ss})+dengue"
+    return label if selected else f"{label} [fallback]"
+
+
+def _get_selected_order(conn, facility_id: int, blood_type: str) -> Optional[dict]:
+    """The stored per-type SARIMAX order from facility_sarimax_order, or None if
+    none has been selected yet for this (facility, blood_type) — the live
+    fitter's caller then falls back to FACILITY_SARIMAX_ORDER (see
+    _fit_and_cache_sarimax)."""
+    row = conn.execute(
+        text(
+            """
+            SELECT p, d, q, seasonal_p, seasonal_d, seasonal_q, seasonal_s, criterion_satisfied
+            FROM facility_sarimax_order WHERE facility_id = :facility_id AND blood_type = :blood_type
+            """
+        ),
+        {"facility_id": facility_id, "blood_type": blood_type},
+    ).mappings().first()
+    return dict(row) if row else None
 
 
 def _read_cached_sarimax(
@@ -972,7 +1069,7 @@ def _read_cached_sarimax(
     cached_rows = conn.execute(
         text(
             """
-            SELECT forecast_date, forecast_units, lower_units, upper_units, trained_through_date
+            SELECT forecast_date, forecast_units, lower_units, upper_units, trained_through_date, model_order
             FROM facility_forecast_cache
             WHERE facility_id = :facility_id AND blood_type = :blood_type AND forecast_date = ANY(:dates)
             """
@@ -992,7 +1089,10 @@ def _read_cached_sarimax(
     }
     live_today = int(daily_series[-1][1])
     checkpoints[0] = {"units": live_today, "lower": live_today, "upper": live_today}
-    return {"checkpoints": checkpoints, "exog_included": True, "model_order": FACILITY_SARIMAX_LABEL}
+    # The stored label (was this a selected or a fallback order?), not a hardcoded
+    # constant — a cache hit must report whichever order actually produced it.
+    model_order = next(iter(by_date.values()))["model_order"]
+    return {"checkpoints": checkpoints, "exog_included": True, "model_order": model_order}
 
 
 def _fit_and_cache_sarimax(
@@ -1003,8 +1103,22 @@ def _fit_and_cache_sarimax(
     partway keeps every type it already finished. The fit itself holds no DB
     connection. The write is an upsert, so a concurrent writer can never raise
     IntegrityError. Returns None if the fit is unusable (caller falls back to the
-    linear trend for this type)."""
-    result = _fit_sarimax_facility_forecast(daily_series, today)
+    linear trend for this type).
+
+    Uses this (facility, blood_type)'s selected order from facility_sarimax_order
+    if one has been chosen (see _run_order_selection_for_facility); otherwise
+    falls back to the fixed FACILITY_SARIMAX_ORDER, labeled " [fallback]" so a
+    fallback forecast is never mistaken for a selected one."""
+    with engine.connect() as conn:
+        selected = _get_selected_order(conn, facility_id, blood_type)
+    if selected:
+        order = (selected["p"], selected["d"], selected["q"])
+        seasonal_order = (selected["seasonal_p"], selected["seasonal_d"], selected["seasonal_q"], selected["seasonal_s"])
+        label = _order_label(*order, *seasonal_order, selected=True)
+    else:
+        order, seasonal_order = FACILITY_SARIMAX_ORDER, FACILITY_SARIMAX_SEASONAL_ORDER
+        label = _order_label(*order, *seasonal_order, selected=False)
+    result = _fit_sarimax_facility_forecast(daily_series, today, order=order, seasonal_order=seasonal_order, model_label=label)
     if result is None:
         _SARIMAX_FIT_FAILED.add((facility_id, blood_type, today))
         return None
@@ -1102,6 +1216,328 @@ def _collect_sarimax_results(
     finally:
         lock_conn.close()
     return results, missing
+
+
+def _fit_candidate_order(y: "pd.Series", exog: "pd.DataFrame", p: int, q: int, sp: int, sq: int) -> Optional[dict]:
+    """One candidate in the order-selection grid: fits SARIMAX(p,1,q)x(sp,0,sq,7)
+    with the dengue exog and the same fit settings as the live fitter, and
+    returns its diagnostics, or None if it doesn't converge. Real work — not
+    pure — but isolated so _rank_candidates_and_select (the actual selection
+    RULE) can be unit-tested on fabricated candidate dicts without fitting
+    anything."""
+    import numpy as np  # lazy — see the import comment near the top of this file
+    from scipy.stats import chi2
+    from statsmodels.stats.diagnostic import acorr_ljungbox
+    from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+    order, seasonal_order = (p, 1, q), (sp, 0, sq, 7)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            fit = SARIMAX(
+                y, exog=exog, order=order, seasonal_order=seasonal_order,
+                trend=None, enforce_stationarity=False, enforce_invertibility=False,
+            ).fit(disp=False, maxiter=FACILITY_SARIMAX_MAXITER)
+        if not fit.mle_retvals.get("converged", False):
+            return None
+    except Exception:
+        return None
+
+    burn = max(int(getattr(fit, "loglikelihood_burn", 0)), 1)
+    resid = np.asarray(fit.standardized_forecasts_error[0])[burn:]
+    resid = resid[np.isfinite(resid)]
+    K = p + q + sp + sq  # this candidate's own ARMA parameter count, for the df-correction below
+    lb_p: dict[int, Optional[float]] = {}
+    for lag in SARIMAX_ORDER_GRID_LAGS:
+        dfree = lag - K
+        if dfree <= 0 or len(resid) <= lag:
+            lb_p[lag] = None
+            continue
+        uncorrected_p = float(acorr_ljungbox(resid, lags=[lag], model_df=0)["lb_pvalue"].iloc[0])
+        stat = chi2.isf(uncorrected_p, lag)
+        lb_p[lag] = float(chi2.sf(stat, dfree))
+
+    return {
+        "p": p, "d": 1, "q": q, "seasonal_p": sp, "seasonal_d": 0, "seasonal_q": sq, "seasonal_s": 7,
+        "aic": float(fit.aic), "lb_p": lb_p,
+    }
+
+
+def _rank_candidates_and_select(candidates: list[dict]) -> Optional[dict]:
+    """The selection RULE, pure (no fitting): among `candidates` that CONVERGED
+    (already filtered to non-None by the caller), pick the lowest-AIC one whose
+    Ljung-Box p-value is > 0.05 at EVERY lag in SARIMAX_ORDER_GRID_LAGS (14, 21
+    and 28) — see the module comment above SARIMAX_ORDER_GRID_PQ for why all
+    three, not any one. If none satisfies that, falls back to the lowest-AIC
+    candidate overall, with criterion_satisfied=False. Returns None only if
+    `candidates` is empty (nothing converged)."""
+    if not candidates:
+        return None
+
+    def satisfies(c: dict) -> bool:
+        return all(v is not None and v > 0.05 for v in c["lb_p"].values())
+
+    passers = [c for c in candidates if satisfies(c)]
+    pool, criterion_satisfied = (passers, True) if passers else (candidates, False)
+    winner = min(pool, key=lambda c: c["aic"])
+    return {**winner, "criterion_satisfied": criterion_satisfied, "n_candidates_converged": len(candidates)}
+
+
+def _select_sarimax_order_for_series(y: "pd.Series", exog: "pd.DataFrame") -> Optional[dict]:
+    """Runs the full 36-candidate grid (SARIMAX_ORDER_GRID_PQ x
+    SARIMAX_ORDER_GRID_PQ x SARIMAX_ORDER_GRID_SEASONAL_PQ x
+    SARIMAX_ORDER_GRID_SEASONAL_PQ) against `y`/`exog` and applies the selection
+    rule. ~9 s locally (36 fits); budget several minutes per type on the
+    deployed instance (server/select_orders.py is the intended way to run this
+    against production data — see its module docstring for why). Whatever `y`
+    is gets fit directly: the TRAINING/hold-out split is the caller's job (see
+    _run_order_selection_for_facility, the only caller) — this function has no
+    opinion on which slice of a series it's given."""
+    candidates = [
+        r for p in SARIMAX_ORDER_GRID_PQ for q in SARIMAX_ORDER_GRID_PQ
+        for sp in SARIMAX_ORDER_GRID_SEASONAL_PQ for sq in SARIMAX_ORDER_GRID_SEASONAL_PQ
+        if (r := _fit_candidate_order(y, exog, p, q, sp, sq)) is not None
+    ]
+    return _rank_candidates_and_select(candidates)
+
+
+def _evaluate_order_on_holdout(
+    y_train: "pd.Series", exog_train: "pd.DataFrame", y_holdout: "pd.Series", exog_holdout: "pd.DataFrame",
+    order: tuple[int, int, int], seasonal_order: tuple[int, int, int, int],
+) -> Optional[dict]:
+    """Refits the WINNING order on the training window alone (a single extra
+    fit — the 36 candidates in the grid are diagnosed on their own training
+    residuals and discarded, not kept around) and forecasts
+    ORDER_SELECTION_HOLDOUT_DAYS days into `y_holdout`, which the selection
+    never saw. Returns MAPE/RMSE for this order and for a naive
+    last-training-value-repeated baseline over the identical window (the valid
+    out-of-sample accuracy evidence), plus a Ljung-Box independence check on
+    ONE-STEP-AHEAD hold-out errors (see below) — or None for that check alone
+    if it doesn't come out finite; None for the whole return only if the
+    training refit itself doesn't converge.
+
+    NOT tested here: Ljung-Box on the STATIC (fixed-origin, multi-step)
+    forecast errors used for MAPE/RMSE. That would be invalid — h-step-ahead
+    errors from one fixed origin share the same underlying innovations
+    propagated forward through the ARMA structure and are autocorrelated BY
+    CONSTRUCTION even for a correctly specified model, and n=30 could not
+    support lags 14/21/28 regardless. Instead, `fit.append(y_holdout,
+    exog=exog_holdout, refit=False)` extends the fitted state through the
+    hold-out WITHOUT re-estimating parameters, giving 30 genuine one-step-
+    ahead standardized residuals (each conditioned on all data up to the
+    point before it) — exactly what Ljung-Box needs. Uncorrected (df=lag):
+    nothing was estimated on this data, so no parameter-count correction
+    applies."""
+    import numpy as np  # lazy — see the import comment near the top of this file
+    from statsmodels.stats.diagnostic import acorr_ljungbox
+    from statsmodels.tsa.statespace.sarimax import SARIMAX
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            fit = SARIMAX(
+                y_train, exog=exog_train, order=order, seasonal_order=seasonal_order,
+                trend=None, enforce_stationarity=False, enforce_invertibility=False,
+            ).fit(disp=False, maxiter=FACILITY_SARIMAX_MAXITER)
+        if not fit.mle_retvals.get("converged", False):
+            return None
+        point = fit.get_forecast(steps=len(y_holdout), exog=exog_holdout).predicted_mean
+    except Exception:
+        return None
+
+    actual = y_holdout.to_numpy()
+    forecast_errors = actual - point.to_numpy()
+    baseline_forecast = np.full(len(actual), y_train.iloc[-1])
+    baseline_errors = actual - baseline_forecast
+
+    def mape(errors: "np.ndarray") -> Optional[float]:
+        # Days with actual == 0 would divide by zero; excluded rather than
+        # inflating or crashing the metric (same convention run_methodology.py
+        # would use if it ever hit a zero-count day, which this data hasn't).
+        nonzero = actual != 0
+        if not nonzero.any():
+            return None
+        return float(np.mean(np.abs(errors[nonzero]) / actual[nonzero]) * 100)
+
+    def rmse(errors: "np.ndarray") -> float:
+        return float(np.sqrt(np.mean(errors ** 2)))
+
+    lb_p_onestep: dict[int, Optional[float]] = {lag: None for lag in SARIMAX_ORDER_GRID_LAGS}
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            extended = fit.append(y_holdout, exog=exog_holdout, refit=False)
+        onestep = np.asarray(extended.standardized_forecasts_error[0])[-len(y_holdout):]
+        onestep = onestep[np.isfinite(onestep)]
+        for lag in SARIMAX_ORDER_GRID_LAGS:
+            if len(onestep) > lag:
+                lb_p_onestep[lag] = float(acorr_ljungbox(onestep, lags=[lag], model_df=0)["lb_pvalue"].iloc[0])
+    except Exception:
+        pass  # the accuracy metrics below still stand on their own; this check is best-effort
+
+    return {
+        "lb_p_onestep": lb_p_onestep, "mape": mape(forecast_errors), "rmse": rmse(forecast_errors),
+        "baseline_mape": mape(baseline_errors), "baseline_rmse": rmse(baseline_errors),
+    }
+
+
+def _run_order_selection_for_facility(facility_id: int, max_types: Optional[int] = None) -> None:
+    """Offline order selection for one facility's blood types: trains on the
+    series minus the last ORDER_SELECTION_HOLDOUT_DAYS days, selects by AIC +
+    in-sample Ljung-Box on that training window ALONE, then evaluates the
+    winner on the held-out days it never saw (see _evaluate_order_on_holdout).
+    Never called from a request.
+
+    Two callers, two `max_types` values:
+      - server/select_orders.py, the PRIMARY path — run manually against the
+        shared database from a real machine, so Render's CPU budget never
+        enters into it at all. Passes max_types=None: every eligible type,
+        every run.
+      - upload_historical_inventory_snapshots's BackgroundTasks trigger —
+        passes MAX_ORDER_SELECTIONS_PER_BACKGROUND_RUN (2), so an unattended
+        facility (nobody ever running the script for it) still makes bounded
+        progress after each upload instead of one very long background task.
+        Types with NO existing selection are processed before types being
+        re-selected, so first coverage of all 8 comes before any refresh of
+        an already-selected type — an unattended facility converges to "every
+        type has SOME selection" within ceil(8 / 2) = 4 uploads, then starts
+        refreshing older selections 2 at a time on further uploads.
+
+    Reuses the forecast path's pattern: a SEPARATE pg_try_advisory_lock
+    (_ORDER_SELECTION_LOCK_NAMESPACE, never blocking — if another run is already
+    in progress for this facility, e.g. two uploads in quick succession, this
+    call simply does nothing and returns) and a commit PER TYPE, so a run that
+    is interrupted (deploy restart, the instance sleeping) keeps every type it
+    already finished; the remaining types stay on whatever they had before
+    (a prior selection, or the fixed-order fallback) until the next trigger.
+    There is no separate resumption path — this function is the only place
+    selection ever runs, so "resumable" here means exactly that: partial
+    progress survives, the next trigger continues.
+
+    A type with fewer than ORDER_SELECTION_MIN_DAYS days of history, whose
+    36-candidate training grid converges nowhere, or whose winning order fails
+    to refit on the hold-out, is left as it was (no row written) rather than
+    storing a meaningless or partial selection."""
+    lock_conn = engine.connect()
+    try:
+        if not lock_conn.execute(
+            text("SELECT pg_try_advisory_lock(:ns, :fid)"), {"ns": _ORDER_SELECTION_LOCK_NAMESPACE, "fid": facility_id}
+        ).scalar():
+            return
+        try:
+            import pandas as pd  # lazy — see the import comment near the top of this file
+
+            today = business_today()
+            with engine.connect() as conn:
+                history_rows = conn.execute(
+                    text("SELECT snapshot_date, blood_type, units FROM inventory_snapshots WHERE facility_id = :facility_id"),
+                    {"facility_id": facility_id},
+                ).mappings().all()
+                already_selected = set(conn.execute(
+                    text("SELECT blood_type FROM facility_sarimax_order WHERE facility_id = :facility_id"),
+                    {"facility_id": facility_id},
+                ).scalars())
+            if not history_rows:
+                return
+            observed_dates = {row["snapshot_date"] for row in history_rows}
+            raw_units_by_type: dict[str, dict[date, int]] = {}
+            for row in history_rows:
+                raw_units_by_type.setdefault(row["blood_type"], {})[row["snapshot_date"]] = row["units"]
+
+            # Never-selected types first (see the docstring above), then a
+            # deterministic order within each group.
+            blood_types = sorted(raw_units_by_type, key=lambda bt: (bt in already_selected, bt))
+            if max_types is not None:
+                blood_types = blood_types[:max_types]
+
+            for blood_type in blood_types:
+                daily_series = _resample_daily_series(raw_units_by_type[blood_type], observed_dates, today)
+                if len(daily_series) < ORDER_SELECTION_MIN_DAYS or daily_series[-1][0] != today:
+                    continue
+                train_series, holdout_series = daily_series[:-ORDER_SELECTION_HOLDOUT_DAYS], daily_series[-ORDER_SELECTION_HOLDOUT_DAYS:]
+
+                def build(series: list[tuple[date, int]]) -> tuple["pd.Series", "pd.DataFrame"]:
+                    d = [x for x, _ in series]
+                    idx = pd.DatetimeIndex(d)
+                    return (pd.Series([v for _, v in series], index=idx, dtype=float),
+                            pd.DataFrame({"dengue_season": [dengue_season_index(x) for x in d]}, index=idx))
+
+                y_train, exog_train = build(train_series)
+                y_holdout, exog_holdout = build(holdout_series)
+
+                selection = _select_sarimax_order_for_series(y_train, exog_train)
+                if selection is None:
+                    continue  # nothing in the grid converged on the training window; leave it on whatever it had
+                order = (selection["p"], selection["d"], selection["q"])
+                seasonal_order = (selection["seasonal_p"], selection["seasonal_d"], selection["seasonal_q"], selection["seasonal_s"])
+                holdout = _evaluate_order_on_holdout(y_train, exog_train, y_holdout, exog_holdout, order, seasonal_order)
+                if holdout is None:
+                    continue  # the winning order refits fine 36 times over but not a 37th; extremely unlikely, but skip rather than guess
+
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            """
+                            INSERT INTO facility_sarimax_order
+                                (facility_id, blood_type, p, d, q, seasonal_p, seasonal_d, seasonal_q, seasonal_s,
+                                 aic, lb_p_14_in_sample, lb_p_21_in_sample, lb_p_28_in_sample,
+                                 criterion_satisfied, n_candidates_converged,
+                                 lb_p_14_holdout_onestep, lb_p_21_holdout_onestep, lb_p_28_holdout_onestep,
+                                 holdout_mape, holdout_rmse, holdout_baseline_mape, holdout_baseline_rmse,
+                                 trained_through_date, evaluated_through_date, selected_at)
+                            VALUES
+                                (:facility_id, :blood_type, :p, :d, :q, :seasonal_p, :seasonal_d, :seasonal_q, :seasonal_s,
+                                 :aic, :lb_p_14_in_sample, :lb_p_21_in_sample, :lb_p_28_in_sample,
+                                 :criterion_satisfied, :n_candidates_converged,
+                                 :lb_p_14_holdout_onestep, :lb_p_21_holdout_onestep, :lb_p_28_holdout_onestep,
+                                 :holdout_mape, :holdout_rmse, :holdout_baseline_mape, :holdout_baseline_rmse,
+                                 :trained_through_date, :evaluated_through_date, now())
+                            ON CONFLICT (facility_id, blood_type) DO UPDATE SET
+                                p = EXCLUDED.p, d = EXCLUDED.d, q = EXCLUDED.q,
+                                seasonal_p = EXCLUDED.seasonal_p, seasonal_d = EXCLUDED.seasonal_d, seasonal_q = EXCLUDED.seasonal_q,
+                                seasonal_s = EXCLUDED.seasonal_s, aic = EXCLUDED.aic,
+                                lb_p_14_in_sample = EXCLUDED.lb_p_14_in_sample, lb_p_21_in_sample = EXCLUDED.lb_p_21_in_sample,
+                                lb_p_28_in_sample = EXCLUDED.lb_p_28_in_sample,
+                                criterion_satisfied = EXCLUDED.criterion_satisfied,
+                                n_candidates_converged = EXCLUDED.n_candidates_converged,
+                                lb_p_14_holdout_onestep = EXCLUDED.lb_p_14_holdout_onestep,
+                                lb_p_21_holdout_onestep = EXCLUDED.lb_p_21_holdout_onestep,
+                                lb_p_28_holdout_onestep = EXCLUDED.lb_p_28_holdout_onestep,
+                                holdout_mape = EXCLUDED.holdout_mape, holdout_rmse = EXCLUDED.holdout_rmse,
+                                holdout_baseline_mape = EXCLUDED.holdout_baseline_mape,
+                                holdout_baseline_rmse = EXCLUDED.holdout_baseline_rmse,
+                                trained_through_date = EXCLUDED.trained_through_date,
+                                evaluated_through_date = EXCLUDED.evaluated_through_date, selected_at = now()
+                            """
+                        ),
+                        {
+                            "facility_id": facility_id, "blood_type": blood_type,
+                            "p": selection["p"], "d": selection["d"], "q": selection["q"],
+                            "seasonal_p": selection["seasonal_p"], "seasonal_d": selection["seasonal_d"],
+                            "seasonal_q": selection["seasonal_q"], "seasonal_s": selection["seasonal_s"],
+                            "aic": selection["aic"],
+                            "lb_p_14_in_sample": selection["lb_p"][14], "lb_p_21_in_sample": selection["lb_p"][21],
+                            "lb_p_28_in_sample": selection["lb_p"][28],
+                            "criterion_satisfied": selection["criterion_satisfied"],
+                            "n_candidates_converged": selection["n_candidates_converged"],
+                            "lb_p_14_holdout_onestep": holdout["lb_p_onestep"][14],
+                            "lb_p_21_holdout_onestep": holdout["lb_p_onestep"][21],
+                            "lb_p_28_holdout_onestep": holdout["lb_p_onestep"][28],
+                            "holdout_mape": holdout["mape"], "holdout_rmse": holdout["rmse"],
+                            "holdout_baseline_mape": holdout["baseline_mape"], "holdout_baseline_rmse": holdout["baseline_rmse"],
+                            "trained_through_date": train_series[-1][0], "evaluated_through_date": today,
+                        },
+                    )
+                    # The newly selected order should be used the NEXT time this type is
+                    # forecast, not held back until the daily cache boundary — same
+                    # invalidation _invalidate_facility_forecast_cache uses elsewhere.
+                    _invalidate_facility_forecast_cache(conn, facility_id, [blood_type])
+        finally:
+            lock_conn.execute(
+                text("SELECT pg_advisory_unlock(:ns, :fid)"), {"ns": _ORDER_SELECTION_LOCK_NAMESPACE, "fid": facility_id}
+            )
+    finally:
+        lock_conn.close()
 
 
 def _compute_restock_recommendation(
@@ -2037,6 +2473,13 @@ async def upload_historical_inventory_snapshots(
     file: UploadFile = File(...),
     facility_id: int = Depends(get_acting_facility_id),
     uploaded_by: Optional[int] = Depends(get_acting_user_id),
+    # Defaulted (FastAPI's usual BackgroundTasks param has none) so tests and other
+    # direct Python callers can invoke this function without going through a real
+    # ASGI request; a real HTTP request always gets a real one injected by FastAPI —
+    # verified locally against a running uvicorn instance, not just read from docs,
+    # since the type annotation must stay bare `BackgroundTasks` (not Optional[...])
+    # for FastAPI's injection to recognize it; the `= None` is a runtime-only default.
+    background_tasks: BackgroundTasks = None,
 ):
     """Backfills inventory_snapshots for dates before this facility started
     using BloodLink, from the facility's own past daily/periodic stock
@@ -2054,6 +2497,16 @@ async def upload_historical_inventory_snapshots(
     Re-uploading a date/type already on file updates it in place (a
     corrected export is expected, not a duplicate) — same upsert-by-natural-
     key pattern GET /forecast itself already uses for today's snapshot.
+
+    On success, schedules _run_order_selection_for_facility (bounded to
+    MAX_ORDER_SELECTIONS_PER_BACKGROUND_RUN types) as a BackgroundTask: it runs
+    AFTER this response is sent (so the upload itself stays fast), never inside
+    a request that's waiting on it. This is a safety net for a facility nobody
+    runs server/select_orders.py for, not the primary path — see that script's
+    module docstring for why running it by hand against the shared database is
+    preferred. See _run_order_selection_for_facility for what happens if a run
+    is interrupted partway (per-type commits) or collides with another
+    upload's own run (a non-blocking advisory lock).
     """
     with engine.connect() as conn:
         facility_type = conn.execute(
@@ -2131,6 +2584,9 @@ async def upload_historical_inventory_snapshots(
             text("SELECT count(DISTINCT snapshot_date) FROM inventory_snapshots WHERE facility_id = :facility_id"),
             {"facility_id": facility_id},
         ).scalar()
+
+    if rows_processed and background_tasks is not None:
+        background_tasks.add_task(_run_order_selection_for_facility, facility_id, MAX_ORDER_SELECTIONS_PER_BACKGROUND_RUN)
 
     return {"rows_processed": rows_processed, "errors": errors, "days_of_history": days_of_history, "min_days_required": MIN_DAYS_REQUIRED}
 

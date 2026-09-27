@@ -24,9 +24,9 @@ class Killed(BaseException):
     """Stands in for the process/request dying mid-fit (not an Exception, so nothing swallows it)."""
 
 
-def stub_result(*_):
+def stub_result(*_, model_label=app.FACILITY_SARIMAX_LABEL, **__):
     return {"checkpoints": {c: {"units": 50, "lower": 40, "upper": 60} for c in app.FORECAST_CHECKPOINTS},
-            "exog_included": True, "model_order": app.FACILITY_SARIMAX_LABEL}
+            "exog_included": True, "model_order": model_label}
 
 
 class IncrementalForecastTests(unittest.TestCase):
@@ -80,7 +80,7 @@ class IncrementalForecastTests(unittest.TestCase):
     def test_a_request_killed_partway_keeps_the_types_it_finished(self):
         calls = {"n": 0}
 
-        def dies_on_second(*a):
+        def dies_on_second(*a, **kw):
             calls["n"] += 1
             if calls["n"] == 2:
                 raise Killed()

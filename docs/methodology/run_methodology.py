@@ -1,67 +1,126 @@
-"""Box-Jenkins analysis of the 180-day Northside demonstration series.
+"""Box-Jenkins analysis of Northside's LIVE 420-day demonstration series,
+SYNTHETIC-ONLY (see the export note below), running the SAME per-type order-
+selection grid search the live system uses (main.py:_fit_candidate_order /
+_rank_candidates_and_select, imported directly, not reimplemented) and then
+keeping the SELECTION FIT and the PRODUCTION FIT strictly separate throughout:
 
-GENERATED DEMONSTRATION DATA, not real blood bank records. Every number in
-docs/methodology/PHASE_*.md comes from this script's output (results.json).
-Run from the repo root:
+  SELECTION FIT  = fit on the TRAINING window only (series minus the last 30
+                   days) — what the 36-candidate grid search and its AIC/
+                   Ljung-Box criterion actually judged. This is what
+                   server/select_orders.py / _run_order_selection_for_facility
+                   runs against a live facility.
+  PRODUCTION FIT = fit on the FULL series — what a live forecast request
+                   (_fit_and_cache_sarimax) actually runs, day to day, using
+                   whatever order was selected.
+
+Never present one as the other (see PHASE_3_DIAGNOSTICS.md's "two fits"
+section). A STABILITY check additionally re-runs selection with the training
+window cut a further 30 days shorter, to see whether the winning order for
+each type is sensitive to exactly where the window ends.
+
+EXPORT NOTE: northside_420d_history.csv now ends 2026-09-26 and is entirely
+the uploaded synthetic file (upload_history_id=224) — the one real organic day
+that used to be spliced onto the end (2026-09-27, from live blood_units) has
+been dropped. That splice was a genuine problem: for B- it was a 7.6-standard-
+deviation outlier (JB stat 4138.7, kurtosis 18.15) that vanished entirely once
+removed (see git history / the chat record for the investigation). This report
+does not read facility_sarimax_order (the live table) at all — every order
+here is selected fresh, on this file, so the report is fully self-contained
+and reproducible independent of whatever the live database currently holds.
+
+GENERATED DEMONSTRATION DATA throughout, not real blood bank records. Every
+number in docs/methodology/PHASE_*.md comes from this script's output
+(results.json). Run from the repo root:
     server\\.venv\\Scripts\\python.exe docs\\methodology\\run_methodology.py
-
-The model spec mirrors main._fit_sarimax_facility_forecast exactly:
-SARIMAX(endog, exog=dengue_season, order, seasonal_order, trend=None,
-enforce_stationarity=False, enforce_invertibility=False).fit(maxiter=200),
-with exog = main.dengue_season_index (the LIVE function, binary Jun-Oct).
 """
-import csv, json, sys, time, warnings
+import csv
+import itertools
+import json
+import sys
+import time
+import warnings
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.stats import chi2
 from statsmodels.stats.diagnostic import acorr_ljungbox
 from statsmodels.tsa.stattools import acf, adfuller, pacf
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent / "server"))
-import main as app  # live constants + dengue_season_index
+import main as app  # live constants + dengue_season_index + the grid-search building blocks
 
 warnings.simplefilter("ignore")
-ORDER, SORDER = app.FACILITY_SARIMAX_ORDER, app.FACILITY_SARIMAX_SEASONAL_ORDER
-MAXITER, HOLDOUT = app.FACILITY_SARIMAX_MAXITER, 30
-ALTS = {  # all with the same dengue exog and the same fit settings
-    "A (0,1,1)x(0,0,0,7)": ((0, 1, 1), (0, 0, 0, 7)),
-    "B (0,1,4)x(0,0,0,7)": ((0, 1, 4), (0, 0, 0, 7)),
-    "C (0,1,1)x(1,0,1,7)": ((0, 1, 1), (1, 0, 1, 7)),
-    "D (1,1,1)x(1,0,1,7)": ((1, 1, 1), (1, 0, 1, 7)),
-    "E (0,1,2)x(1,0,1,7)": ((0, 1, 2), (1, 0, 1, 7)),
-}
+MAXITER = app.FACILITY_SARIMAX_MAXITER
+HOLDOUT = app.ORDER_SELECTION_HOLDOUT_DAYS  # 30 — the SAME split the live selection mechanism uses
+STABILITY_EXTRA_CUT = 30  # the stability check's training window ends this many days earlier still
+GRID = list(itertools.product(app.SARIMAX_ORDER_GRID_PQ, app.SARIMAX_ORDER_GRID_PQ,
+                              app.SARIMAX_ORDER_GRID_SEASONAL_PQ, app.SARIMAX_ORDER_GRID_SEASONAL_PQ))
+assert len(GRID) == 36
 
-df = pd.DataFrame(list(csv.DictReader(open(HERE / "northside_180d_history.csv"))))
+df = pd.DataFrame(list(csv.DictReader(open(HERE / "northside_420d_history.csv"))))
 df["snapshot_date"] = pd.to_datetime(df["snapshot_date"])
 df["units"] = df["units"].astype(float)
 wide = df.pivot(index="snapshot_date", columns="blood_type", values="units").sort_index()
-assert len(wide) == 180 and not wide.isna().any().any()
-assert (wide.index == pd.date_range(wide.index[0], periods=180, freq="D")).all(), "gaps in dates"
+N_DAYS = len(wide)
+assert not wide.isna().any().any()
+assert (wide.index == pd.date_range(wide.index[0], periods=N_DAYS, freq="D")).all(), "gaps in dates"
 TYPES = list(wide.columns)
 exog_all = pd.DataFrame({"dengue_season": [app.dengue_season_index(d.date()) for d in wide.index]}, index=wide.index)
 
+out = {"meta": {"days": N_DAYS, "first": str(wide.index[0].date()), "last": str(wide.index[-1].date()),
+                "types": TYPES, "csv": "northside_420d_history.csv", "holdout_days": HOLDOUT,
+                "data_notice": "GENERATED DEMONSTRATION DATA, not real blood bank records; not collected data. "
+                               "The organic 2026-09-27 splice day has been dropped — see the module docstring."}}
 
-def fit(y, x, order, sorder, exog=True):
-    m = SARIMAX(y, exog=x if exog else None, order=order, seasonal_order=sorder, trend=None,
+
+def fit_order(y, x, order, sorder):
+    m = SARIMAX(y, exog=x, order=order, seasonal_order=sorder, trend=None,
                 enforce_stationarity=False, enforce_invertibility=False)
     return m.fit(disp=False, maxiter=MAXITER)
 
 
-out = {"meta": {"days": 180, "first": str(wide.index[0].date()), "last": str(wide.index[-1].date()),
-                "order": ORDER, "seasonal_order": SORDER, "types": TYPES}}
+def params_of(f):
+    return {k: {"coef": float(f.params[k]), "se": float(f.bse[k]), "z": float(f.tvalues[k]), "p": float(f.pvalues[k])}
+            for k in f.params.index}
 
-# data-shape check: is there a binary June-1 step?
-jun1 = pd.Timestamp("2026-06-01")
-out["step_check"] = {
-    t: {"mean_7d_before_jun1": float(wide[t][jun1 - pd.Timedelta(days=7):jun1 - pd.Timedelta(days=1)].mean()),
-        "mean_7d_after_jun1": float(wide[t][jun1:jun1 + pd.Timedelta(days=6)].mean()),
-        "monthly_mean": {k: round(float(v), 1) for k, v in wide[t].groupby(wide.index.strftime("%Y-%m")).mean().items()}}
-    for t in TYPES}
 
-# ---------------- Phase 1 ----------------
+def diagnostics_of(f, K):
+    """Full in-sample diagnostic suite for one fit: Ljung-Box (uncorrected +
+    K-corrected) at 7/14/21/28, Jarque-Bera, heteroskedasticity, residual ACF."""
+    burn = max(int(getattr(f, "loglikelihood_burn", 0)), 1)
+    resid = np.asarray(f.standardized_forecasts_error[0])[burn:]
+    resid = resid[np.isfinite(resid)]
+    lb = {}
+    for lag in (7, 14, 21, 28):
+        res = acorr_ljungbox(resid, lags=[lag], model_df=0)
+        stat, up = float(res["lb_stat"].iloc[0]), float(res["lb_pvalue"].iloc[0])
+        dfree = lag - K
+        corrected = float(chi2.sf(stat, dfree)) if dfree > 0 else None
+        lb[lag] = {"p_uncorrected": up, "p_corrected": corrected}
+    jb = f.test_normality("jarquebera")[0]
+    bv = f.test_heteroskedasticity("breakvar")[0]
+    bd = 1.96 / np.sqrt(len(resid))
+    ra = acf(resid, nlags=28, fft=False)
+    return {"n_resid": len(resid), "burn": burn, "K": K, "ljungbox": lb,
+            "jb": {"stat": float(jb[0]), "p": float(jb[1]), "skew": float(jb[2]), "kurt": float(jb[3])},
+            "breakvar": {"stat": float(bv[0]), "p": float(bv[1])},
+            "resid_acf_bound": bd, "resid_acf_outside": [i for i in range(1, 29) if abs(ra[i]) > bd]}
+
+
+def run_grid(y, x):
+    """The SAME 36-candidate grid, via the SAME live functions
+    (app._fit_candidate_order / app._rank_candidates_and_select) — not a
+    reimplementation. Returns (sorted_by_aic, winner)."""
+    candidates = [c for (p, q, sp, sq) in GRID if (c := app._fit_candidate_order(y, x, p, q, sp, sq)) is not None]
+    winner = app._rank_candidates_and_select(candidates)
+    candidates.sort(key=lambda c: c["aic"])
+    return candidates, winner
+
+
+# ---------------- Phase 1: identification (data only, full series) ----------------
 p1 = {}
 for t in TYPES:
     y = wide[t]
@@ -82,8 +141,6 @@ for t in TYPES:
     ac = acf(d1, nlags=28, fft=False)
     pc = pacf(d1, nlags=28, method="ywm")
     r["bound"] = bound
-    r["acf"] = [float(v) for v in ac[1:]]
-    r["pacf"] = [float(v) for v in pc[1:]]
     r["acf_sig_lags"] = [i for i in range(1, 29) if abs(ac[i]) > bound]
     r["pacf_sig_lags"] = [i for i in range(1, 29) if abs(pc[i]) > bound]
 
@@ -100,77 +157,117 @@ for t in TYPES:
 out["phase1"] = p1
 print("phase1 done", flush=True)
 
-# ---------------- Phase 2 + 3 (full sample) ----------------
-p2, p3 = {}, {}
-for t in TYPES:
-    y, x = wide[t], exog_all
-    t0 = time.time()
-    f = fit(y, x, ORDER, SORDER)
-    r = {"converged": bool(f.mle_retvals.get("converged", False)), "aic": f.aic, "bic": f.bic, "llf": f.llf, "nobs": f.nobs,
-         "params": {k: {"coef": float(f.params[k]), "se": float(f.bse[k]), "z": float(f.tvalues[k]), "p": float(f.pvalues[k])}
-                    for k in f.params.index}}
-    nx = fit(y, None, ORDER, SORDER, exog=False)
-    r["no_exog"] = {"aic": nx.aic, "bic": nx.bic, "converged": bool(nx.mle_retvals.get("converged", False))}
-    r["alts"] = {}
-    for name, (o, so) in ALTS.items():
-        g = fit(y, x, o, so)
-        r["alts"][name] = {"aic": g.aic, "bic": g.bic, "converged": bool(g.mle_retvals.get("converged", False)),
-                           "dengue_p": float(g.pvalues["dengue_season"])}
-    p2[t] = r
-    # diagnostics on the fixed-order fit
-    burn = max(int(getattr(f, "loglikelihood_burn", 0)), 1)
-    resid = np.asarray(f.standardized_forecasts_error[0])[burn:]
-    resid = resid[np.isfinite(resid)]
-    lb = {}
-    for lag in (7, 14, 21, 28):
-        res = acorr_ljungbox(resid, lags=[lag], model_df=0)
-        lb[lag] = {"stat": float(res["lb_stat"].iloc[0]), "p": float(res["lb_pvalue"].iloc[0])}
-    jb = f.test_normality("jarquebera")[0]
-    bv = f.test_heteroskedasticity("breakvar")[0]
-    bd = 1.96 / np.sqrt(len(resid))
-    ra = acf(resid, nlags=28, fft=False)
-    p3[t] = {"n_resid": len(resid), "burn": burn, "ljungbox": lb,
-             "jb": {"stat": float(jb[0]), "p": float(jb[1]), "skew": float(jb[2]), "kurt": float(jb[3])},
-             "breakvar": {"stat": float(bv[0]), "p": float(bv[1])},
-             "resid_acf_bound": bd, "resid_acf_outside": [i for i in range(1, 29) if abs(ra[i]) > bd],
-             "resid_acf": [float(v) for v in ra[1:]]}
-    print("fit", t, f"{time.time() - t0:.1f}s", flush=True)
-out["phase2"], out["phase3"] = p2, p3
+# step-check (data-shape descriptive; unrelated to order)
+jun1 = pd.Timestamp("2026-06-01")
+out["step_check"] = {
+    t: {"mean_7d_before_jun1": float(wide[t][jun1 - pd.Timedelta(days=7):jun1 - pd.Timedelta(days=1)].mean()),
+        "mean_7d_after_jun1": float(wide[t][jun1:jun1 + pd.Timedelta(days=6)].mean())}
+    for t in TYPES}
 
-# ---------------- Phase 4 holdout ----------------
-p4 = {}
+# ---------------- SELECTION FIT + PRODUCTION FIT + Phase 4 holdout ----------------
+selection, production, phase4 = {}, {}, {}
+t0_all = time.time()
 for t in TYPES:
-    y, x = wide[t], exog_all
-    ytr, yte = y.iloc[:-HOLDOUT], y.iloc[-HOLDOUT:]
-    f = fit(ytr, x.iloc[:-HOLDOUT], ORDER, SORDER)
-    fc = f.get_forecast(steps=HOLDOUT, exog=x.iloc[-HOLDOUT:])
+    y_full, x_full = wide[t], exog_all
+    y_tr, x_tr = y_full.iloc[:-HOLDOUT], x_full.iloc[:-HOLDOUT]
+    y_ho, x_ho = y_full.iloc[-HOLDOUT:], x_full.iloc[-HOLDOUT:]
+    t0 = time.time()
+
+    # --- SELECTION FIT: 36-candidate grid on the TRAINING window only ---
+    candidates, winner = run_grid(y_tr, x_tr)
+    order = (winner["p"], winner["d"], winner["q"])
+    sorder = (winner["seasonal_p"], winner["seasonal_d"], winner["seasonal_q"], winner["seasonal_s"])
+    K = winner["p"] + winner["q"] + winner["seasonal_p"] + winner["seasonal_q"]
+    f_sel = fit_order(y_tr, x_tr, order, sorder)  # refit once more to get the full params table
+    top5 = candidates[:5]
+    # "Gap to runner-up" is relative to the WINNER, which is not always the lowest-AIC
+    # candidate overall (the selection rule picks lowest AIC AMONG THOSE THAT PASS Ljung-Box;
+    # a lower-AIC candidate that fails the criterion is not the winner — see PHASE_2's A+ row,
+    # where the two best-AIC candidates both failed and the actual winner ranks 3rd by raw AIC).
+    # So the "pool" the winner was drawn from — the passers, or all 36 if none passed — is what
+    # matters, and the runner-up is the next-best AIC within THAT pool.
+    passers = [c for c in candidates if all(v is not None and v > 0.05 for v in c["lb_p"].values())]
+    pool = sorted(passers if passers else candidates, key=lambda c: c["aic"])
+    aic_gap = (pool[1]["aic"] - pool[0]["aic"]) if len(pool) > 1 else None
+    assert abs(pool[0]["aic"] - winner["aic"]) < 1e-6, "pool[0] must be the winner"
+    selection[t] = {
+        "window": {"start": str(y_tr.index[0].date()), "end": str(y_tr.index[-1].date()), "n_days": len(y_tr)},
+        "order": order, "seasonal_order": sorder, "aic": float(f_sel.aic), "bic": float(f_sel.bic),
+        "params": params_of(f_sel), "criterion_satisfied": winner["criterion_satisfied"],
+        "n_candidates_converged": winner["n_candidates_converged"],
+        "grid_top5": [{"order": (c["p"], c["d"], c["q"]), "seasonal_order": (c["seasonal_p"], c["seasonal_d"], c["seasonal_q"], c["seasonal_s"]),
+                       "aic": c["aic"], "gap_to_winner": c["aic"] - candidates[0]["aic"]} for c in top5],
+        "aic_gap_to_runnerup": aic_gap,
+        "diagnostics": diagnostics_of(f_sel, K),
+    }
+
+    # --- PRODUCTION FIT: the SAME selected order, on the FULL series ---
+    f_prod = fit_order(y_full, x_full, order, sorder)
+    production[t] = {"order": order, "seasonal_order": sorder, "aic": float(f_prod.aic), "bic": float(f_prod.bic),
+                     "params": params_of(f_prod), "diagnostics": diagnostics_of(f_prod, K)}
+
+    # --- Phase 4: forecast the hold-out from the SELECTION fit (reuse f_sel, no refit) ---
+    fc = f_sel.get_forecast(steps=HOLDOUT, exog=x_ho)
     pt = fc.predicted_mean.values
     ci = np.asarray(fc.conf_int(alpha=0.05))
-    act = yte.values
-    naive = np.full(HOLDOUT, ytr.iloc[-1])
-    snaive = np.array([ytr.iloc[-7 + (i % 7)] for i in range(HOLDOUT)])
+    act = y_ho.values
+    naive = np.full(HOLDOUT, y_tr.iloc[-1])
+    snaive = np.array([y_tr.iloc[-7 + (i % 7)] for i in range(HOLDOUT)])
 
-    def m(p):
-        e = act - p
+    def m(pred):
+        e = act - pred
         return {"mape": float(np.mean(np.abs(e) / act) * 100), "rmse": float(np.sqrt(np.mean(e ** 2))), "mae": float(np.mean(np.abs(e)))}
     inside = (act >= ci[:, 0]) & (act <= ci[:, 1])
     width = ci[:, 1] - ci[:, 0]
-    # live-path parity: the real production function on the same training series
-    daily = [(d.date(), int(v)) for d, v in ytr.items()]
-    live = app._fit_sarimax_facility_forecast(daily, ytr.index[-1].date())
+
+    # One-step-ahead hold-out Ljung-Box: fit.append(refit=False), NOT the static multi-step
+    # errors above — those are autocorrelated by construction from a fixed origin and invalid
+    # for this test (see PHASE_3's method note). Reuses f_sel, no refit.
+    lb_onestep = {lag: None for lag in app.SARIMAX_ORDER_GRID_LAGS}
+    try:
+        extended = f_sel.append(y_ho, exog=x_ho, refit=False)
+        onestep = np.asarray(extended.standardized_forecasts_error[0])[-HOLDOUT:]
+        onestep = onestep[np.isfinite(onestep)]
+        for lag in app.SARIMAX_ORDER_GRID_LAGS:
+            if len(onestep) > lag:
+                lb_onestep[lag] = float(acorr_ljungbox(onestep, lags=[lag], model_df=0)["lb_pvalue"].iloc[0])
+    except Exception:
+        pass
+
+    # live-path parity: the real production function, this type's SELECTED order, same training series
+    daily = [(idx.date(), int(v)) for idx, v in y_tr.items()]
+    label = app._order_label(*order, *sorder, selected=True)
+    live = app._fit_sarimax_facility_forecast(daily, y_tr.index[-1].date(), order=order, seasonal_order=sorder, model_label=label)
     parity = None
     if live:
         parity = {str(c): {"live": live["checkpoints"][c]["units"], "mine": int(round(max(0, pt[c - 1])))}
                   for c in app.FORECAST_CHECKPOINTS if c > 0}
-    p4[t] = {"sarimax": m(pt), "naive_last": m(naive), "seasonal_naive_7": m(snaive),
-             "coverage": float(inside.mean()), "n_inside": int(inside.sum()),
-             "width_by_horizon": {str(h): float(width[h - 1]) for h in (1, 5, 10, 15, 20, 25, 30)},
-             "width_mean_wk": [float(width[i:i + 7].mean()) for i in (0, 7, 14, 21)],
-             "mean_width": float(width.mean()), "converged": bool(f.mle_retvals.get("converged", False)),
-             "live_parity": parity,
-             "actual": [float(v) for v in act], "pred": [float(v) for v in pt],
-             "lo": [float(v) for v in ci[:, 0]], "hi": [float(v) for v in ci[:, 1]]}
-    print("holdout", t, flush=True)
-out["phase4"] = p4
+    phase4[t] = {"order": order, "seasonal_order": sorder,
+                 "sarimax": m(pt), "naive_last": m(naive), "seasonal_naive_7": m(snaive),
+                 "coverage": float(inside.mean()), "n_inside": int(inside.sum()),
+                 "width_by_horizon": {str(h): float(width[h - 1]) for h in (1, 5, 10, 15, 20, 25, 30)},
+                 "lb_onestep_holdout": lb_onestep,
+                 "live_parity": parity, "live_parity_match": bool(parity and all(v["live"] == v["mine"] for v in parity.values()))}
+    print(f"{t}: selection+production+phase4 done in {time.time() - t0:.1f}s", flush=True)
+out["selection"], out["production"], out["phase4"] = selection, production, phase4
+print(f"all 8 types: {time.time() - t0_all:.1f}s total", flush=True)
+
+# ---------------- Stability check: training window cut 30 days shorter still ----------------
+stability = {}
+t0 = time.time()
+for t in TYPES:
+    y_short, x_short = wide[t].iloc[:-(HOLDOUT + STABILITY_EXTRA_CUT)], exog_all.iloc[:-(HOLDOUT + STABILITY_EXTRA_CUT)]
+    _, winner_short = run_grid(y_short, x_short)
+    order_391 = selection[t]["order"] + selection[t]["seasonal_order"]
+    order_361 = (winner_short["p"], winner_short["d"], winner_short["q"],
+                winner_short["seasonal_p"], winner_short["seasonal_d"], winner_short["seasonal_q"], winner_short["seasonal_s"])
+    stability[t] = {
+        "window_a": selection[t]["window"],
+        "window_b": {"start": str(y_short.index[0].date()), "end": str(y_short.index[-1].date()), "n_days": len(y_short)},
+        "order_a": order_391, "order_b": order_361, "stable": order_391 == order_361,
+    }
+out["stability"] = stability
+print(f"stability check: {time.time() - t0:.1f}s ->", {t: stability[t]["stable"] for t in TYPES}, flush=True)
+
 json.dump(out, open(HERE / "results.json", "w"), indent=1, default=float)
 print("WROTE results.json")
