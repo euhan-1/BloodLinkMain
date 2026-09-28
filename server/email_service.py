@@ -7,15 +7,22 @@ import urllib.error
 import urllib.request
 from email.message import EmailMessage
 
-# "resend" is the only other recognized value; anything else (unset, typo,
-# empty string) means smtp — smtp is the primary provider now, so a missing
-# or mistyped variable must not silently fall back to the provider we're no
-# longer using.
-EMAIL_PROVIDER = os.environ.get("EMAIL_PROVIDER", "smtp").strip().lower()
+# "resend" and "smtp" are the other two recognized values; anything else
+# (unset, typo, "brevo" itself) means brevo. brevo is the primary provider
+# now — Render blocks outbound SMTP entirely (smtplib fails with
+# [Errno 101] Network is unreachable connecting to smtp.gmail.com:587 from
+# a deployed instance; the SMTP code itself is correct, it just cannot work
+# on this host), so a missing/mistyped variable must not silently fall back
+# to a provider that can never succeed here. The smtp path is kept, not
+# deleted — it's still correct for anywhere that isn't Render.
+EMAIL_PROVIDER = os.environ.get("EMAIL_PROVIDER", "brevo").strip().lower()
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 RESEND_FROM_EMAIL = os.environ.get("RESEND_FROM_EMAIL", "BloodLink <onboarding@resend.dev>")
 RESEND_API_URL = "https://api.resend.com/emails"
+
+BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
+BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
@@ -23,6 +30,11 @@ SMTP_USER = os.environ.get("SMTP_USER", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 MAIL_FROM = os.environ.get("MAIL_FROM", "")
 MAIL_FROM_NAME = os.environ.get("MAIL_FROM_NAME", "BloodLink")
+
+# Shared by both HTTP-based providers (Resend, Brevo) — same value Resend
+# already used before Brevo existed, kept consistent across both rather
+# than picking a different number with no particular reason to differ.
+HTTP_PROVIDER_TIMEOUT_SECONDS = 10
 
 # A live Gmail-style SMTP round trip (connect, EHLO, STARTTLS, EHLO, LOGIN,
 # MAIL/RCPT/DATA, QUIT) normally completes in well under a second per step.
@@ -34,11 +46,12 @@ SMTP_TIMEOUT_SECONDS = 5
 
 
 class EmailSendError(Exception):
-    """Raised when either provider rejects the message or can't be reached.
-    Deliberately never includes the email body, and never the raw SMTP
-    password, in its own message — only the provider's own error detail —
+    """Raised when any of the three providers rejects the message or can't
+    be reached. Deliberately never includes the email body, and never a raw
+    credential, in its own message — only the provider's own error detail —
     so a caller that logs this exception can't accidentally leak a
-    password-reset link, an OTP code, or SMTP_PASSWORD into server logs."""
+    password-reset link, an OTP code, SMTP_PASSWORD, or BREVO_API_KEY into
+    server logs."""
 
 
 def _html_to_plain_text(html_content: str) -> str:
@@ -58,16 +71,22 @@ def _html_to_plain_text(html_content: str) -> str:
 
 def send_email(to: str, subject: str, html: str) -> None:
     """Sends one transactional email via whichever provider EMAIL_PROVIDER
-    selects — "resend" for Resend's HTTP API, anything else (including
-    unset) for SMTP. No SDK dependency for either path: a single
-    urllib.request POST for Resend, stdlib smtplib for SMTP.
+    selects — "resend" or "smtp" for those two explicitly, anything else
+    (including unset) for Brevo, the default (see EMAIL_PROVIDER's own
+    comment for why). No SDK dependency for any of the three: a single
+    urllib.request POST for Resend and for Brevo, stdlib smtplib for SMTP.
 
-    Raises EmailSendError on any failure from either provider. Callers
-    decide whether that should surface to the user; this function itself
-    never logs `html` (which may contain a raw, single-use token or OTP
-    code) or SMTP_PASSWORD.
+    Raises EmailSendError on any failure from any provider. Callers decide
+    whether that should surface to the user; this function itself never
+    logs `html` (which may contain a raw, single-use token or OTP code),
+    SMTP_PASSWORD, or BREVO_API_KEY.
     """
-    provider = "resend" if EMAIL_PROVIDER == "resend" else "smtp"
+    if EMAIL_PROVIDER == "resend":
+        provider = "resend"
+    elif EMAIL_PROVIDER == "smtp":
+        provider = "smtp"
+    else:
+        provider = "brevo"
     # Logged unconditionally, before the attempt — so if the send below
     # raises, the log still answers "which provider did this even try,"
     # which is the actual question the next time mail goes missing.
@@ -75,8 +94,10 @@ def send_email(to: str, subject: str, html: str) -> None:
 
     if provider == "resend":
         _send_via_resend(to, subject, html)
-    else:
+    elif provider == "smtp":
         _send_via_smtp(to, subject, html)
+    else:
+        _send_via_brevo(to, subject, html)
 
 
 def _send_via_resend(to: str, subject: str, html: str) -> None:
@@ -105,7 +126,7 @@ def _send_via_resend(to: str, subject: str, html: str) -> None:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=HTTP_PROVIDER_TIMEOUT_SECONDS) as resp:
             resp.read()
     except urllib.error.HTTPError as e:
         # Resend's error body describes the request (bad "to", bad "from"
@@ -115,6 +136,47 @@ def _send_via_resend(to: str, subject: str, html: str) -> None:
         raise EmailSendError(f"Resend API error {e.code}: {detail}") from e
     except urllib.error.URLError as e:
         raise EmailSendError(f"failed to reach Resend: {e.reason}") from e
+
+
+def _send_via_brevo(to: str, subject: str, html: str) -> None:
+    """Brevo's transactional email API — an HTTP call, so unlike SMTP it
+    isn't blocked by Render's outbound-SMTP restriction. Same shape as
+    _send_via_resend: stdlib urllib, no SDK, the provider's response body
+    included verbatim in EmailSendError on failure (that response body is
+    what made a prior 403 diagnosable — the same reasoning applies here)."""
+    if not BREVO_API_KEY or not MAIL_FROM:
+        raise EmailSendError("BREVO_API_KEY/MAIL_FROM is not configured")
+
+    payload = json.dumps({
+        "sender": {"email": MAIL_FROM, "name": MAIL_FROM_NAME},
+        "to": [{"email": to}],
+        "subject": subject,
+        "htmlContent": html,
+        "textContent": _html_to_plain_text(html),
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        BREVO_API_URL,
+        data=payload,
+        method="POST",
+        headers={
+            "api-key": BREVO_API_KEY,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_PROVIDER_TIMEOUT_SECONDS) as resp:
+            resp.read()
+    except urllib.error.HTTPError as e:
+        # Brevo's error body (e.g. {"code":"unauthorized","message":"..."})
+        # never echoes back htmlContent/textContent, so it's safe to include
+        # verbatim — and it's the only thing that makes a 4xx diagnosable
+        # from the logs alone.
+        detail = e.read().decode("utf-8", errors="replace")
+        raise EmailSendError(f"Brevo API error {e.code}: {detail}") from e
+    except urllib.error.URLError as e:
+        raise EmailSendError(f"failed to reach Brevo: {e.reason}") from e
 
 
 def _send_via_smtp(to: str, subject: str, html: str) -> None:
