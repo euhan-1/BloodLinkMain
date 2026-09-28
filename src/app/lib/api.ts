@@ -225,6 +225,94 @@ export async function resetPassword(token: string, newPassword: string): Promise
   return res.json();
 }
 
+// Typed-code twin of requestPasswordReset/resetPassword above (Step 7) — the
+// two stay live side by side on the backend (server/main.py's
+// forgot_password_otp/reset_password_otp), and the Login screen now uses
+// this pair as its active "Forgot password?" flow. The old link
+// (ResetPasswordScreen, reached via an emailed ?token=... link) still works
+// for anyone with an older email already in their inbox; it isn't retired
+// by switching the UI over to this one.
+export async function requestPasswordResetOtp(email: string): Promise<{ message: string }> {
+  const res = await fetch(`${API_BASE_URL}/auth/forgot-password/otp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json();
+}
+
+export async function resetPasswordOtp(email: string, code: string, newPassword: string): Promise<{ message: string }> {
+  const res = await fetch(`${API_BASE_URL}/auth/reset-password/otp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, code, new_password: newPassword }),
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json();
+}
+
+// Prefill-only — GET /facilities/geocode never errors on a miss, it just
+// returns null coordinates (see server/geocode_service.py), so the caller
+// always falls back to the map's manual-pin flow rather than surfacing a
+// geocoding failure as a form error.
+export async function geocodeAddress(address: string): Promise<[number, number] | null> {
+  const result = await apiGet<{ latitude: number | null; longitude: number | null }>(
+    `/facilities/geocode?address=${encodeURIComponent(address)}`
+  );
+  return result.latitude !== null && result.longitude !== null ? [result.latitude, result.longitude] : null;
+}
+
+export type RegisterFacilityBody = {
+  facility_name: string;
+  facility_type: "hospital" | "bloodbank";
+  address: string;
+  latitude: number;
+  longitude: number;
+  doh_license_number: string;
+  contact_person: string;
+  email: string;
+  phone: string;
+  password: string;
+};
+
+// Same identical-response-regardless-of-outcome shape as requestPasswordReset
+// above — the backend never reveals whether the email was fresh, already
+// mid-registration, or already a real account (see server/main.py's
+// _REGISTRATION_RESPONSE). No session exists yet, so this calls fetch
+// directly rather than apiPost, same reasoning as login/requestPasswordReset.
+export async function registerFacility(body: RegisterFacilityBody): Promise<{ message: string }> {
+  const res = await fetch(`${API_BASE_URL}/facilities/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json();
+}
+
+// Same fetch-direct + identical-response reasoning as registerFacility —
+// no session exists yet, and the backend gives the same generic error for
+// every failure mode (no such pending registration, wrong code, expired,
+// attempt-capped) so this can't be used to probe which one occurred.
+export async function verifyFacilityRegistrationEmail(email: string, code: string): Promise<{ message: string }> {
+  const res = await fetch(`${API_BASE_URL}/facilities/register/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, code }),
+  });
+  if (!res.ok) {
+    throw new Error(await extractErrorMessage(res));
+  }
+  return res.json();
+}
+
 export type CompleteProfileBody = {
   address: string;
   latitude: number;
@@ -319,6 +407,40 @@ export function adminResetAccountPassword(userId: number): Promise<AdminPassword
 // facility already has an account (one account per facility, by design).
 export function adminCreateAccountForFacility(facilityId: number, email: string): Promise<CreateFacilityAccountResult> {
   return apiPost<CreateFacilityAccountResult>(`/admin/facilities/${facilityId}/accounts`, { email });
+}
+
+// Self-registration review queue — see server/main.py's admin_list_registrations.
+// Only ever contains rows that have passed email verification; a merely-
+// submitted (unverified) application never reaches this list.
+export type AdminRegistration = {
+  id: number;
+  facility_name: string;
+  facility_type: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  doh_license_number: string;
+  contact_person: string;
+  email: string;
+  phone: string;
+  created_at: string;
+};
+
+export function adminListRegistrations(): Promise<AdminRegistration[]> {
+  return apiGet<AdminRegistration[]>("/admin/registrations");
+}
+
+export type ApproveRegistrationResult = {
+  facility: { id: number; name: string; facility_type: string; profile_completed: boolean; is_active: boolean };
+  user: { id: number; email: string; facility_id: number; role: string; created_at: string };
+};
+
+export function adminApproveRegistration(registrationId: number): Promise<ApproveRegistrationResult> {
+  return apiPost<ApproveRegistrationResult>(`/admin/registrations/${registrationId}/approve`, {});
+}
+
+export function adminRejectRegistration(registrationId: number, reason: string): Promise<{ message: string }> {
+  return apiPost<{ message: string }>(`/admin/registrations/${registrationId}/reject`, { reason });
 }
 
 // ─── Historical inventory-snapshot backfill (blood banks only — the server

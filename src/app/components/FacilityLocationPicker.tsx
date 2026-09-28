@@ -43,25 +43,55 @@ function LocationClickHandler({ onPick }: { onPick: (lat: number, lng: number) =
   return null;
 }
 
-// Shared by CompleteProfileScreen (first-time onboarding) and
-// EditFacilityProfileModal (Account menu, after the fact) — the exact same
-// address/geocode/map/department/DOH-license fields, just wrapped in
-// different layouts with different submit handling. All state is
-// controlled from the parent so both callers can prefill it differently.
+// Default lookup: calls OSM Nominatim directly from the browser. Browser
+// fetch can't set a custom User-Agent (Chrome/Firefox silently drop it), so
+// this only works for CompleteProfileScreen/EditFacilityProfileModal because
+// their callers are already-logged-in facilities behind an existing
+// relationship with the service, not a fresh anonymous applicant. Kept as
+// the default so both existing callers need zero changes.
+async function lookUpAddressViaNominatim(address: string): Promise<[number, number] | null> {
+  const res = await fetch(
+    `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(address)}`
+  );
+  if (!res.ok) throw new Error("Address lookup failed");
+  const results = await res.json();
+  if (results.length === 0) return null;
+  return [parseFloat(results[0].lat), parseFloat(results[0].lon)];
+}
+
+// Shared by CompleteProfileScreen (first-time onboarding), EditFacilityProfileModal
+// (Account menu, after the fact), and RegisterFacility (self-registration) —
+// the exact same address/geocode/map/department/DOH-license fields, just
+// wrapped in different layouts with different submit handling. All state is
+// controlled from the parent so callers can prefill it differently.
+//
+// lookupAddress defaults to a direct-from-the-browser Nominatim call
+// (lookUpAddressViaNominatim); RegisterFacility overrides it with a call to
+// GET /facilities/geocode instead, which sets a real identifying User-Agent
+// as Nominatim's usage policy asks for — something only a server-side call
+// can do.
 export function FacilityLocationFields({
   address, onAddressChange,
   position, onPositionChange,
   department, onDepartmentChange,
   dohLicense, onDohLicenseChange,
+  lookupAddress = lookUpAddressViaNominatim,
+  showDepartment = true,
 }: {
   address: string;
   onAddressChange: (v: string) => void;
   position: [number, number] | null;
   onPositionChange: (p: [number, number]) => void;
-  department: string;
-  onDepartmentChange: (v: string) => void;
+  department?: string;
+  onDepartmentChange?: (v: string) => void;
   dohLicense: string;
   onDohLicenseChange: (v: string) => void;
+  lookupAddress?: (address: string) => Promise<[number, number] | null>;
+  // false for RegisterFacility: self-registration doesn't collect department
+  // (see facility_registration_requests' column list) — an approved facility
+  // fills it in later via the same post-login CompleteProfile flow an
+  // admin-onboarded facility already goes through.
+  showDepartment?: boolean;
 }) {
   const [geocoding, setGeocoding] = useState(false);
   const [geocodeError, setGeocodeError] = useState<string | null>(null);
@@ -71,19 +101,12 @@ export function FacilityLocationFields({
     setGeocoding(true);
     setGeocodeError(null);
     try {
-      // OSM Nominatim's public search endpoint — free, no API key, rate-limited
-      // to ~1 req/sec which this "look up on click" pattern respects (never
-      // fires on keystroke).
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(address)}`
-      );
-      if (!res.ok) throw new Error("Address lookup failed");
-      const results = await res.json();
-      if (results.length === 0) {
+      const result = await lookupAddress(address);
+      if (result === null) {
         setGeocodeError("No match found — try a more specific address, or drop the pin manually on the map.");
         return;
       }
-      onPositionChange([parseFloat(results[0].lat), parseFloat(results[0].lon)]);
+      onPositionChange(result);
     } catch (err) {
       setGeocodeError(err instanceof Error ? err.message : "Address lookup failed");
     } finally {
@@ -156,18 +179,20 @@ export function FacilityLocationFields({
         )}
       </div>
 
-      <div className="grid sm:grid-cols-2 gap-4">
-        <div>
-          <label className="text-[14px] font-semibold text-foreground block mb-1.5">Department / Branch</label>
-          <input
-            type="text"
-            required
-            value={department}
-            onChange={(e) => onDepartmentChange(e.target.value)}
-            placeholder="e.g. Blood Services Unit"
-            className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
-          />
-        </div>
+      <div className={showDepartment ? "grid sm:grid-cols-2 gap-4" : ""}>
+        {showDepartment && (
+          <div>
+            <label className="text-[14px] font-semibold text-foreground block mb-1.5">Department / Branch</label>
+            <input
+              type="text"
+              required
+              value={department}
+              onChange={(e) => onDepartmentChange?.(e.target.value)}
+              placeholder="e.g. Blood Services Unit"
+              className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+            />
+          </div>
+        )}
         <div>
           <label className="text-[14px] font-semibold text-foreground block mb-1.5">DOH license number</label>
           <input

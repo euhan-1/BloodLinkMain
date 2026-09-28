@@ -1,3 +1,4 @@
+import hashlib
 import math
 import os
 import secrets
@@ -65,6 +66,45 @@ def generate_temp_password() -> str:
     return secrets.token_urlsafe(12)
 
 
+# The 30 weakest passwords from breach-frequency lists (NCSC/HaveIBeenPwned-
+# style "most common passwords") that also happen to be >=10 characters or a
+# plausible >=10-char variant of one — the ones that would otherwise slip
+# past the length + letter-and-digit checks below. Not a general-purpose
+# strength estimator (no zxcvbn-style scoring, no dictionary-and-mutation
+# search) — proportionate to a facility registration form, not a password
+# vault.
+_WEAK_PASSWORDS = frozenset({
+    "password123", "password1234", "password12345", "12345678910",
+    "1234567890", "qwertyuiop12", "qwerty123456", "letmein12345",
+    "welcome12345", "iloveyou1234", "admin1234567", "changeme1234",
+    "abc123456789", "football1234", "baseball1234", "sunshine1234",
+    "princess1234", "dragon123456", "trustno1trustno1", "bloodlink123",
+    "bloodlink1234", "hospital12345", "philippines123",
+})
+
+
+def validate_registration_password(password: str) -> Optional[str]:
+    """Returns an error message if `password` fails the self-registration
+    password policy, or None if it's acceptable.
+
+    Rule: at least 10 characters (longer than the 8-character minimum on
+    the forced-reset/self-service-change flows — those accounts either get
+    a follow-up forced change or are already logged in proving current
+    knowledge; a self-registered account's password is trusted permanently
+    from the moment it's set, with must_change_password=false), containing
+    at least one letter and one digit (blocks pure-digit or pure-letter
+    strings, the cheapest guesses), and not one of a small set of commonly
+    breached passwords.
+    """
+    if len(password) < 10:
+        return "password must be at least 10 characters"
+    if not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
+        return "password must contain at least one letter and one digit"
+    if password.lower() in _WEAK_PASSWORDS:
+        return "this password is too common — please choose a less predictable one"
+    return None
+
+
 def create_password_reset_token(user_id: int, email: str) -> str:
     """A narrowly-scoped token that can only be used against
     POST /auth/change-password — see decode_password_reset_token. Issued
@@ -88,6 +128,28 @@ def decode_password_reset_token(token: str) -> dict:
     if payload.get("purpose") != "password_reset":
         raise ValueError("not a password-reset token")
     return payload
+
+
+OTP_CODE_EXPIRY = timedelta(minutes=10)
+OTP_MAX_ATTEMPTS = 5
+
+
+def generate_otp_code() -> str:
+    """A 6-digit code, zero-padded (e.g. "003942") — secrets.randbelow, not
+    random, for the same reason as generate_temp_password: this is
+    security-sensitive and must not be predictable. Only the code itself; the
+    caller (main.py) hashes it before storing and emails the raw value, same
+    split as create_password_reset_token/the reset link's raw token."""
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def hash_otp_code(code: str) -> str:
+    """SHA-256 — fast on purpose. A 6-digit code has only 1e6 possibilities,
+    so a slow hash (bcrypt) buys nothing an attempt cap (OTP_MAX_ATTEMPTS)
+    doesn't already provide, and this hash runs on every verify request, not
+    just at issuance. Same reasoning and same primitive as the reset link's
+    token_hash."""
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
 
 class AttemptLimiter:

@@ -38,6 +38,7 @@ from sqlalchemy.exc import IntegrityError
 
 import auth
 import email_service
+import geocode_service
 from database import engine
 
 load_dotenv()
@@ -234,11 +235,11 @@ ALLOW_DEV_FACILITY_OVERRIDE = os.environ.get("ALLOW_DEV_FACILITY_OVERRIDE", "fal
 ALLOW_DEV_TEST_TOOLS = os.environ.get("ALLOW_DEV_TEST_TOOLS", "false").strip().lower() == "true"
 
 # The deployed frontend's real origin(s), comma-separated if more than one.
-# Defaults to "*" (any origin) rather than failing closed, since auth here is
-# a Bearer token in a header, not a cookie — CORSMiddleware only refuses "*"
-# when allow_credentials=True, which this app never sets. "*" is a reasonable
-# temporary default before the real frontend URL is known, not a permanent
-# choice: set this env var once it is, so it stops being wide open.
+# Fails CLOSED when unset: no origins allowed, rather than "*" (any origin).
+# An unset env var is a deploy-config mistake, and a wide-open CORS default
+# would hide that mistake behind working-looking traffic; failing closed
+# instead breaks every cross-origin request immediately and visibly, which is
+# the failure direction you want for a system holding real facility data.
 #
 # CORSMiddleware matches allow_origins entries against the browser's Origin
 # header with an EXACT string comparison — no normalization of its own. An
@@ -259,7 +260,14 @@ def _normalize_origin(raw: str) -> str:
     return origin
 
 
-CORS_ALLOWED_ORIGINS = [_normalize_origin(o) for o in os.environ.get("CORS_ALLOWED_ORIGINS", "*").split(",")]
+def _parse_cors_origins(raw: Optional[str]) -> list[str]:
+    """Pure so this can be tested without importing this whole module. Empty
+    or unset -> [] (fail closed), never "*"."""
+    raw = (raw or "").strip()
+    return [_normalize_origin(o) for o in raw.split(",")] if raw else []
+
+
+CORS_ALLOWED_ORIGINS = _parse_cors_origins(os.environ.get("CORS_ALLOWED_ORIGINS"))
 
 # Base URL of the deployed frontend, used only to build the link inside a
 # password-reset email (e.g. "{FRONTEND_BASE_URL}/reset-password?token=...").
@@ -271,6 +279,14 @@ FRONTEND_BASE_URL = os.environ.get("FRONTEND_BASE_URL", "http://localhost:5173")
 # requested — much shorter-lived than a normal session, and long enough that
 # an email arriving a little late still works.
 PASSWORD_RESET_LINK_EXPIRY = timedelta(hours=1)
+
+# Where the "a facility registration is waiting for review" notice goes (see
+# verify_facility_registration_email). Deliberately not validated as
+# non-empty here — an unset value just makes the notification email fail
+# (Resend rejects an empty "to"), caught and logged by the same
+# catch-log-and-continue pattern every other email send already uses, rather
+# than a special case for "not configured" on top of "SMTP unreachable."
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "")
 
 VALID_FACILITY_TYPES = {"hospital", "bloodbank"}
 
@@ -3119,10 +3135,13 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
 
 @app.get("/facilities")
 def list_facilities():
-    """Plain facility list — powers the dev-only facility switcher dropdown."""
+    """Plain facility list — powers the dev-only facility switcher dropdown.
+    Unauthenticated, so a deactivated facility must not appear here at all —
+    is_active is an access gate (see admin_update_facility_status), and this
+    is the one facility-listing endpoint anyone can reach with no login."""
     with engine.connect() as conn:
         rows = conn.execute(
-            text("SELECT id, name, facility_type FROM facilities ORDER BY facility_type, name")
+            text("SELECT id, name, facility_type FROM facilities WHERE is_active ORDER BY facility_type, name")
         ).mappings().all()
     return [dict(row) for row in rows]
 
@@ -3216,6 +3235,287 @@ def complete_facility_profile(body: CompleteProfileBody, facility_id: int = Depe
     if row is None:
         raise HTTPException(status_code=404, detail="facility not found")
     return dict(row)
+
+
+# ─── Facility self-registration ─────────────────────────────────────────────
+# Never creates a live facilities/users row directly (see
+# admin_approve_registration) — only a facility_registration_requests row an
+# administrator reviews after email ownership is proven. Unauthenticated by
+# nature: nobody has an account yet.
+
+@app.get("/facilities/geocode")
+def geocode_facility_address(address: str):
+    """Prefill-only lookup for the registration form's map picker (reuses
+    FacilityLocationFields). Never fails the request — a miss or a geocoder
+    outage just means the applicant places the pin manually, the same
+    required-confirmation step CompleteProfile.tsx already has."""
+    result = geocode_service.geocode_address(address)
+    if result is None:
+        return {"latitude": None, "longitude": None}
+    return {"latitude": result[0], "longitude": result[1]}
+
+
+class RegisterFacilityBody(BaseModel):
+    facility_name: str
+    facility_type: str
+    address: str
+    latitude: float
+    longitude: float
+    doh_license_number: str
+    contact_person: str
+    email: EmailStr
+    phone: str
+    password: str
+
+    @field_validator("facility_name", "address", "doh_license_number", "contact_person", "phone")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("must not be blank")
+        return v.strip()
+
+    @field_validator("facility_type")
+    @classmethod
+    def _facility_type_valid(cls, v: str) -> str:
+        if v not in VALID_FACILITY_TYPES:
+            raise ValueError(f"facility_type must be one of {sorted(VALID_FACILITY_TYPES)}")
+        return v
+
+    @field_validator("latitude")
+    @classmethod
+    def _latitude_in_range(cls, v: float) -> float:
+        if not -90 <= v <= 90:
+            raise ValueError("latitude must be between -90 and 90")
+        return v
+
+    @field_validator("longitude")
+    @classmethod
+    def _longitude_in_range(cls, v: float) -> float:
+        if not -180 <= v <= 180:
+            raise ValueError("longitude must be between -180 and 180")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def _password_policy(cls, v: str) -> str:
+        error = auth.validate_registration_password(v)
+        if error:
+            raise ValueError(error)
+        return v
+
+
+# Identical for every outcome — email already registered, already
+# mid-registration, or brand new — same enumeration-safety reasoning as
+# _FORGOT_PASSWORD_RESPONSE.
+_REGISTRATION_RESPONSE = {
+    "message": "Check your email for a verification code. Once verified, an administrator will review your application."
+}
+
+
+def _send_registration_otp_email(to_email: str, facility_name: str, code: str) -> None:
+    """A typed code, never a link — institutional mail scanners at hospital
+    and government addresses follow links and consume single-use tokens
+    before the recipient ever sees them, which breaks link-based
+    verification for exactly the addresses this form targets."""
+    html = f"""
+    <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
+      <h2 style="color: #8C1B3A;">Verify your BloodLink registration</h2>
+      <p>Thanks for registering <strong>{facility_name}</strong> with BloodLink. Enter this code to verify your email address:</p>
+      <p style="font-size: 28px; font-weight: bold; letter-spacing: 4px; text-align: center; background: #f5f5f5; padding: 12px; border-radius: 6px;">{code}</p>
+      <p style="color: #666; font-size: 13px;">This code expires in 10 minutes. If you didn't request this, you can safely ignore this email.</p>
+    </div>
+    """
+    email_service.send_email(to=to_email, subject="Verify your BloodLink registration", html=html)
+
+
+def _send_registration_existing_account_email(to_email: str) -> None:
+    """Sent instead of a verification code when the email already has a real
+    users row — the on-screen response is identical either way (see
+    _REGISTRATION_RESPONSE), so this email is the only place the distinction
+    is ever visible, and only to whoever actually controls that inbox."""
+    html = f"""
+    <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
+      <h2 style="color: #8C1B3A;">You already have a BloodLink account</h2>
+      <p>Someone tried to register a new BloodLink facility with this email address, but an account already exists for it.</p>
+      <p>If this was you and you've forgotten your password, you can reset it from the sign-in page.</p>
+      <p style="color: #666; font-size: 13px;">If you didn't request this, you can safely ignore this email.</p>
+    </div>
+    """
+    email_service.send_email(to=to_email, subject="BloodLink registration — account already exists", html=html)
+
+
+@app.post("/facilities/register")
+def register_facility(body: RegisterFacilityBody, request: Request):
+    """Starts self-registration: stores a pending
+    facility_registration_requests row (never facilities/users directly) and
+    emails a 6-digit verification code. Resubmitting the same email before
+    verification updates that same row in place — the form re-submit is
+    also how a mistyped email or any other field gets corrected, and it
+    naturally reissues the code too (see _issue_otp). A resubmission after
+    rejection or approval (both archived — see admin_approve_registration
+    and admin_reject_registration) starts a fresh row instead.
+
+    Same identical-response-regardless-of-outcome shape as
+    POST /auth/forgot-password, and the same rate limiter — one abuse
+    concern (don't let this become a way to mail strangers), shared budget.
+    """
+    key = _attempt_key(request, body.email)
+    _raise_if_limited(_FORGOT_LIMITER, key)
+    _FORGOT_LIMITER.record(key)
+
+    with engine.begin() as conn:
+        existing_user = conn.execute(text("SELECT 1 FROM users WHERE email = :email"), {"email": body.email}).first()
+        if existing_user is not None:
+            try:
+                _send_registration_existing_account_email(body.email)
+            except email_service.EmailSendError as e:
+                print(f"[registration] existing-account notice failed for {body.email}: {e}")
+            return _REGISTRATION_RESPONSE
+
+        params = {
+            "facility_name": body.facility_name,
+            "facility_type": body.facility_type,
+            "address": body.address,
+            "latitude": body.latitude,
+            "longitude": body.longitude,
+            "doh_license_number": body.doh_license_number,
+            "contact_person": body.contact_person,
+            "email": body.email,
+            "phone": body.phone,
+            "password_hash": auth.hash_password(body.password),
+        }
+
+        existing_request = conn.execute(
+            text("SELECT id FROM facility_registration_requests WHERE email = :email AND archived_at IS NULL"),
+            {"email": body.email},
+        ).mappings().first()
+
+        if existing_request is not None:
+            registration_id = conn.execute(
+                text(
+                    """
+                    UPDATE facility_registration_requests SET
+                        facility_name = :facility_name, facility_type = :facility_type, address = :address,
+                        latitude = :latitude, longitude = :longitude, doh_license_number = :doh_license_number,
+                        contact_person = :contact_person, phone = :phone, password_hash = :password_hash,
+                        status = 'submitted'
+                    WHERE id = :id
+                    RETURNING id
+                    """
+                ),
+                {**params, "id": existing_request["id"]},
+            ).scalar_one()
+        else:
+            registration_id = conn.execute(
+                text(
+                    """
+                    INSERT INTO facility_registration_requests
+                        (facility_name, facility_type, address, latitude, longitude, doh_license_number,
+                         contact_person, email, phone, password_hash)
+                    VALUES
+                        (:facility_name, :facility_type, :address, :latitude, :longitude, :doh_license_number,
+                         :contact_person, :email, :phone, :password_hash)
+                    RETURNING id
+                    """
+                ),
+                params,
+            ).scalar_one()
+
+        code = _issue_otp(conn, "registration_email_verify", body.email, registration_request_id=registration_id)
+
+    try:
+        _send_registration_otp_email(body.email, body.facility_name, code)
+    except email_service.EmailSendError as e:
+        print(f"[registration] verification email failed for registration_id={registration_id}: {e}")
+
+    return _REGISTRATION_RESPONSE
+
+
+class VerifyRegistrationEmailBody(BaseModel):
+    email: EmailStr
+    code: str
+
+
+# Generic on every outcome — no pending registration for this email, an
+# expired/wrong/already-used code, or an attempt-capped one — same
+# enumeration-safety reasoning as everywhere else in this file. The only way
+# to tell any of these apart is by controlling the inbox the code was
+# actually sent to.
+_VERIFICATION_FAILED_DETAIL = "this verification code is invalid or has expired"
+_VERIFICATION_SUCCESS_RESPONSE = {
+    "message": "Email verified. Your application is now pending administrator review."
+}
+
+
+@app.post("/facilities/register/verify")
+def verify_facility_registration_email(body: VerifyRegistrationEmailBody):
+    """Gates submitted -> email_verified — the queue admin_list_registrations
+    reads from only ever includes rows that have passed this. Idempotent for
+    an already-verified row (a double-submit or a browser back/forward
+    shouldn't show an error for a code that already did its job).
+
+    Deliberately never raises INSIDE the `with engine.begin()` block: an
+    exception there rolls back the whole transaction, which would silently
+    undo the attempts += 1 _verify_otp just wrote on a wrong guess — the
+    attempt cap would never actually accumulate. `verified` is resolved
+    first, the transaction always commits normally, and the HTTPException
+    (if any) is raised only after.
+
+    The admin notification email fires exactly once — on the actual
+    submitted -> email_verified transition, tracked by
+    `newly_verified_facility_name` staying None on every other outcome
+    (already verified, wrong code, no such registration) — not on every
+    idempotent re-verify of an already-verified row."""
+    newly_verified_facility_name = None
+    with engine.begin() as conn:
+        registration = conn.execute(
+            text(
+                "SELECT id, status FROM facility_registration_requests "
+                "WHERE email = :email AND archived_at IS NULL"
+            ),
+            {"email": body.email},
+        ).mappings().first()
+
+        if registration is None:
+            verified = False
+        elif registration["status"] == "email_verified":
+            verified = True
+        else:
+            verified = _verify_otp(conn, "registration_email_verify", body.code, registration_request_id=registration["id"])
+            if verified:
+                row = conn.execute(
+                    text(
+                        "UPDATE facility_registration_requests SET status = 'email_verified' "
+                        "WHERE id = :id RETURNING facility_name"
+                    ),
+                    {"id": registration["id"]},
+                ).mappings().first()
+                newly_verified_facility_name = row["facility_name"]
+
+    if not verified:
+        raise HTTPException(status_code=400, detail=_VERIFICATION_FAILED_DETAIL)
+
+    if newly_verified_facility_name is not None:
+        try:
+            _send_admin_registration_notice(newly_verified_facility_name)
+        except email_service.EmailSendError as e:
+            print(f"[registration] admin notice failed for registration_id={registration['id']}: {e}")
+
+    return _VERIFICATION_SUCCESS_RESPONSE
+
+
+def _send_admin_registration_notice(facility_name: str) -> None:
+    """Best-effort — see ADMIN_EMAIL's own comment for why an unset value is
+    just a failed send, not a special case. A closed browser tab reaches no
+    one, so the queue itself (GET /admin/registrations) is never the only
+    way an administrator finds out about this."""
+    html = f"""
+    <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
+      <h2 style="color: #8C1B3A;">New facility registration pending review</h2>
+      <p><strong>{facility_name}</strong> has verified its email and is waiting for review in the admin registration queue.</p>
+    </div>
+    """
+    email_service.send_email(to=ADMIN_EMAIL, subject="BloodLink — facility registration pending review", html=html)
 
 
 # Standard donor-recipient compatibility: recipient type -> donor types they
@@ -3332,12 +3632,15 @@ def get_nearby_facilities(
         # profile_completed facilities only — an admin-onboarded blood bank
         # with no confirmed location yet can't be distance-ranked, so it
         # can't appear as a search candidate until it completes its profile.
+        # is_active too: a deactivated blood bank must not be a search result
+        # any more than it can be a request target (see create_request below).
         facility_rows = conn.execute(
             text(
                 """
                 SELECT id, name, facility_type, address, latitude, longitude
                 FROM facilities
-                WHERE facility_type = 'bloodbank' AND id != :acting_facility_id AND profile_completed
+                WHERE facility_type = 'bloodbank' AND id != :acting_facility_id
+                  AND profile_completed AND is_active
                 """
             ),
             {"acting_facility_id": acting_facility_id},
@@ -3419,7 +3722,8 @@ def notify_nearby_hospitals_of_expiring_unit(din: str, acting_facility_id: int =
                 """
                 SELECT id, name, latitude, longitude
                 FROM facilities
-                WHERE facility_type = 'hospital' AND id != :acting_facility_id AND profile_completed
+                WHERE facility_type = 'hospital' AND id != :acting_facility_id
+                  AND profile_completed AND is_active
                 """
             ),
             {"acting_facility_id": acting_facility_id},
@@ -3487,11 +3791,13 @@ def create_request(body: CreateRequestBody, requesting_facility_id: int = Depend
         # stock — so this is re-checked fresh from the DB and rejected outright
         # rather than trusted from the client, same pattern as the
         # emergency_type restriction just above.
-        supplying_facility_type = conn.execute(
-            text("SELECT facility_type FROM facilities WHERE id = :id"), {"id": body.supplying_facility_id}
-        ).scalar()
-        if supplying_facility_type != "bloodbank":
+        supplying_facility = conn.execute(
+            text("SELECT facility_type, is_active FROM facilities WHERE id = :id"), {"id": body.supplying_facility_id}
+        ).mappings().first()
+        if supplying_facility is None or supplying_facility["facility_type"] != "bloodbank":
             raise HTTPException(status_code=400, detail="a facility can only request from a blood bank")
+        if not supplying_facility["is_active"]:
+            raise HTTPException(status_code=400, detail="this facility is not currently accepting requests")
 
         row = conn.execute(
             text(
@@ -3969,14 +4275,19 @@ def _user_response(user: dict, facility: Optional[dict]) -> dict:
     }
 
 
-# Brute-force limits for exactly two endpoints — /auth/login and
-# /auth/forgot-password — and nothing else (no global middleware, so /health and
-# normal API traffic are never throttled). Keyed on client IP + email, not IP
-# alone: behind Vercel/Render the IP can be a shared edge address, and an
-# IP-only key would let one person's typos lock out everyone.
+# Brute-force limits — no global middleware, so /health and normal API
+# traffic are never throttled. Keyed on client IP + email, not IP alone:
+# behind Vercel/Render the IP can be a shared edge address, and an IP-only
+# key would let one person's typos lock out everyone.
 #   login: only FAILED attempts count, 5 per 60s; a success clears the count.
-#   forgot-password: every request counts (the response is identical either
-#   way), 5 per 10 min.
+#   forgot-password / OTP issuance (resend included): every request counts
+#   (the response must look identical either way), 5 per 10 min. OTP issuance
+#   is deliberately the SAME limiter as forgot-password's link flow rather
+#   than a third instance — both exist to stop the same abuse (mailing
+#   strangers from our sender identity), and email verification / password
+#   reset are two different `purpose`s on the same otp_codes table, so the
+#   same rate budget being purpose-agnostic per (ip, email) is the simpler
+#   choice, not a separate knob per purpose that could silently drift apart.
 _LOGIN_LIMITER = auth.AttemptLimiter(limit=5, window=60)
 _FORGOT_LIMITER = auth.AttemptLimiter(limit=5, window=600)
 
@@ -3995,6 +4306,89 @@ def _raise_if_limited(limiter: "auth.AttemptLimiter", key: str) -> None:
             detail="Too many sign-in attempts. Please wait a moment and try again.",
             headers={"Retry-After": str(wait)},
         )
+
+
+# ─── OTP (Step 11) ──────────────────────────────────────────────────────────
+# Shared by registration email verification and password reset (see
+# schema_otp_codes.sql for why one table, not two). _issue_otp and
+# _verify_otp are the only two places that touch otp_codes directly — every
+# call site (registration submission/resend, forgot-password-via-code,
+# registration email-verify) goes through these, never writes the table
+# itself, so "invalidate the prior code on reissue" and "cap attempts before
+# comparing the hash" can't be gotten right in one call site and wrong in
+# another.
+
+def _issue_otp(
+    conn, purpose: str, email: str, *, user_id: Optional[int] = None, registration_request_id: Optional[int] = None
+) -> str:
+    """Invalidates any still-live code for this exact binding, then issues a
+    fresh one. Returns the raw 6-digit code — the caller emails it and never
+    stores it; only its hash lands in the DB (see auth.hash_otp_code)."""
+    binding_column = "user_id" if purpose == "password_reset" else "registration_request_id"
+    binding_value = user_id if purpose == "password_reset" else registration_request_id
+
+    conn.execute(
+        text(
+            f"""
+            UPDATE otp_codes SET used_at = now()
+            WHERE purpose = :purpose AND {binding_column} = :binding_value AND used_at IS NULL
+            """
+        ),
+        {"purpose": purpose, "binding_value": binding_value},
+    )
+
+    code = auth.generate_otp_code()
+    conn.execute(
+        text(
+            """
+            INSERT INTO otp_codes (purpose, registration_request_id, user_id, email, code_hash, expires_at)
+            VALUES (:purpose, :registration_request_id, :user_id, :email, :code_hash, :expires_at)
+            """
+        ),
+        {
+            "purpose": purpose,
+            "registration_request_id": registration_request_id,
+            "user_id": user_id,
+            "email": email,
+            "code_hash": auth.hash_otp_code(code),
+            "expires_at": datetime.now(timezone.utc) + auth.OTP_CODE_EXPIRY,
+        },
+    )
+    return code
+
+
+def _verify_otp(
+    conn, purpose: str, code: str, *, user_id: Optional[int] = None, registration_request_id: Optional[int] = None
+) -> bool:
+    """True and marks the code used_at if `code` matches the latest live code
+    for this binding; False otherwise (wrong code, expired, already used, or
+    already attempt-capped). The attempt cap is checked BEFORE the hash
+    comparison and on every call, including a correct guess that arrives
+    after the cap was already hit by prior wrong ones — a capped code stops
+    accepting guesses at all, it doesn't just stop counting them."""
+    binding_column = "user_id" if purpose == "password_reset" else "registration_request_id"
+    binding_value = user_id if purpose == "password_reset" else registration_request_id
+
+    row = conn.execute(
+        text(
+            f"""
+            SELECT id, code_hash, attempts, expires_at FROM otp_codes
+            WHERE purpose = :purpose AND {binding_column} = :binding_value AND used_at IS NULL
+            ORDER BY created_at DESC LIMIT 1
+            """
+        ),
+        {"purpose": purpose, "binding_value": binding_value},
+    ).mappings().first()
+
+    if row is None or row["expires_at"] < datetime.now(timezone.utc) or row["attempts"] >= auth.OTP_MAX_ATTEMPTS:
+        return False
+
+    if row["code_hash"] != auth.hash_otp_code(code):
+        conn.execute(text("UPDATE otp_codes SET attempts = attempts + 1 WHERE id = :id"), {"id": row["id"]})
+        return False
+
+    conn.execute(text("UPDATE otp_codes SET used_at = now() WHERE id = :id"), {"id": row["id"]})
+    return True
 
 
 @app.post("/auth/login")
@@ -4198,6 +4592,116 @@ def reset_password(body: ResetPasswordBody):
             text("UPDATE password_reset_requests SET used_at = now() WHERE id = :id"),
             {"id": reset_request["id"]},
         )
+
+    return {"message": "Password updated. You can now log in with your new password."}
+
+
+# ─── Password reset via OTP (Step 7) ───────────────────────────────────────
+# A typed-code twin of POST /auth/forgot-password + POST /auth/reset-password
+# above, built to run ALONGSIDE the link flow, not replace it yet — the link
+# flow is left completely untouched here. The reason for building this at
+# all: institutional mail scanners at hospital/government addresses (this
+# app's actual users) follow links and consume single-use tokens before the
+# recipient ever sees them, which likely already breaks the link flow for
+# exactly the accounts that most need it to work. Retiring the link flow is
+# a deliberate separate change once this is confirmed working end to end,
+# not bundled into introducing it.
+
+class ForgotPasswordOtpBody(BaseModel):
+    email: EmailStr
+
+
+_FORGOT_PASSWORD_OTP_RESPONSE = {
+    "message": "If an account with that email exists, a password reset code has been sent."
+}
+
+
+def _send_password_reset_otp_email(to_email: str, facility_name: Optional[str], code: str) -> None:
+    greeting = f"the {facility_name} account" if facility_name else "your BloodLink account"
+    html = f"""
+    <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
+      <h2 style="color: #8C1B3A;">Reset your BloodLink password</h2>
+      <p>We received a request to reset the password for {greeting}. Enter this code to continue:</p>
+      <p style="font-size: 28px; font-weight: bold; letter-spacing: 4px; text-align: center; background: #f5f5f5; padding: 12px; border-radius: 6px;">{code}</p>
+      <p style="color: #666; font-size: 13px;">This code expires in 10 minutes and can only be used once. If you didn't request this, you can safely ignore this email.</p>
+    </div>
+    """
+    email_service.send_email(to=to_email, subject="Your BloodLink password reset code", html=html)
+
+
+@app.post("/auth/forgot-password/otp")
+def forgot_password_otp(body: ForgotPasswordOtpBody, request: Request):
+    """Same eligibility rule and enumeration-safety shape as
+    POST /auth/forgot-password (identical response regardless of outcome) —
+    a 6-digit code instead of a link. Shares _FORGOT_LIMITER with that
+    endpoint: same abuse concern, one budget."""
+    key = _attempt_key(request, body.email)
+    _raise_if_limited(_FORGOT_LIMITER, key)
+    _FORGOT_LIMITER.record(key)
+
+    with engine.begin() as conn:
+        user = conn.execute(
+            text(
+                """
+                SELECT u.id, u.email, u.facility_id, f.name AS facility_name, f.is_active AS facility_is_active
+                FROM users u
+                LEFT JOIN facilities f ON f.id = u.facility_id
+                WHERE u.email = :email
+                """
+            ),
+            {"email": body.email},
+        ).mappings().first()
+
+        eligible = user is not None and user["facility_id"] is not None and user["facility_is_active"] is not False
+        code = _issue_otp(conn, "password_reset", user["email"], user_id=user["id"]) if eligible else None
+
+    if code is not None:
+        try:
+            _send_password_reset_otp_email(user["email"], user["facility_name"], code)
+        except email_service.EmailSendError as e:
+            print(f"[auth] password reset OTP email failed for user_id={user['id']}: {e}")
+
+    return _FORGOT_PASSWORD_OTP_RESPONSE
+
+
+class ResetPasswordOtpBody(BaseModel):
+    email: EmailStr
+    code: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def _password_min_length(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("password must be at least 8 characters")
+        return v
+
+
+@app.post("/auth/reset-password/otp")
+def reset_password_otp(body: ResetPasswordOtpBody):
+    """Completes a reset started by POST /auth/forgot-password/otp. Same
+    8-character minimum as POST /auth/reset-password (the link flow's
+    equivalent) — this is a new channel to an existing endpoint's behavior,
+    not a reason to change the password policy on existing accounts.
+
+    Never raises INSIDE the `with engine.begin()` block, for the same reason
+    verify_facility_registration_email doesn't: an exception there would
+    roll back the attempts += 1 _verify_otp just wrote on a wrong guess, and
+    the attempt cap would never actually accumulate."""
+    with engine.begin() as conn:
+        user = conn.execute(text("SELECT id FROM users WHERE email = :email"), {"email": body.email}).mappings().first()
+        if user is None:
+            verified = False
+        else:
+            verified = _verify_otp(conn, "password_reset", body.code, user_id=user["id"])
+            if verified:
+                conn.execute(
+                    text("UPDATE users SET password_hash = :password_hash WHERE id = :id"),
+                    {"password_hash": auth.hash_password(body.new_password), "id": user["id"]},
+                )
+
+    if not verified:
+        raise HTTPException(status_code=400, detail="this reset code is invalid or has expired")
 
     return {"message": "Password updated. You can now log in with your new password."}
 
@@ -4580,6 +5084,195 @@ def admin_update_facility_status(facility_id: int, body: UpdateFacilityStatusBod
     if row is None:
         raise HTTPException(status_code=404, detail="facility not found")
     return dict(row)
+
+
+# ─── Facility registration review ──────────────────────────────────────────
+# The admin-facing half of self-registration (see register_facility /
+# verify_facility_registration_email). Never touches facilities/users except
+# on approval — a rejected or still-pending request is only ever a
+# facility_registration_requests row.
+
+@app.get("/admin/registrations", dependencies=[Depends(require_admin_role)])
+def admin_list_registrations():
+    """Only email-verified, non-archived requests — a merely-submitted
+    (unverified) row must never reach an administrator, per the whole point
+    of gating on email verification before this queue."""
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT id, facility_name, facility_type, address, latitude, longitude, doh_license_number,
+                       contact_person, email, phone, created_at
+                FROM facility_registration_requests
+                WHERE status = 'email_verified' AND archived_at IS NULL
+                ORDER BY created_at
+                """
+            )
+        ).mappings().all()
+    return [dict(row) for row in rows]
+
+
+def _send_registration_approved_email(to_email: str, facility_name: str) -> None:
+    html = f"""
+    <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
+      <h2 style="color: #8C1B3A;">Your BloodLink registration is approved</h2>
+      <p><strong>{facility_name}</strong> has been approved. You can now sign in with the email and password you registered with.</p>
+    </div>
+    """
+    email_service.send_email(to=to_email, subject="Your BloodLink registration is approved", html=html)
+
+
+def _send_registration_rejected_email(to_email: str, facility_name: str, reason: str) -> None:
+    html = f"""
+    <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
+      <h2 style="color: #8C1B3A;">Your BloodLink registration was not approved</h2>
+      <p>Your registration for <strong>{facility_name}</strong> was not approved for the following reason:</p>
+      <p style="background: #f5f5f5; padding: 12px; border-radius: 6px;">{reason}</p>
+      <p style="color: #666; font-size: 13px;">You're welcome to submit a new registration once this is addressed.</p>
+    </div>
+    """
+    email_service.send_email(to=to_email, subject="Your BloodLink registration was not approved", html=html)
+
+
+@app.post("/admin/registrations/{registration_id}/approve", dependencies=[Depends(require_admin_role)])
+def admin_approve_registration(registration_id: int, admin: dict = Depends(require_admin_role)):
+    """Creates the real facilities + users rows from the request and
+    archives it — the only place either of those ever gets created from a
+    registration. must_change_password is false here, unlike every
+    admin-provisioned account (POST /admin/facilities): the applicant chose
+    this password themselves, proved they own the email it's tied to, and
+    an administrator has now reviewed the DOH license — there's no
+    temporary-password handoff to complete.
+
+    profile_completed is set true immediately: address/coordinates/DOH
+    license were already collected (and just reviewed) at registration, so
+    routing this facility through the post-login CompleteProfile screen
+    would only ask it to re-type what it already gave. department is left
+    null — the one field registration doesn't collect — editable any time
+    via the Account menu's Edit Facility Profile, same field, no forced gate.
+    """
+    with engine.begin() as conn:
+        registration = conn.execute(
+            text("SELECT * FROM facility_registration_requests WHERE id = :id AND archived_at IS NULL"),
+            {"id": registration_id},
+        ).mappings().first()
+        if registration is None:
+            raise HTTPException(status_code=404, detail="registration not found")
+        if registration["status"] != "email_verified":
+            raise HTTPException(status_code=400, detail="this registration hasn't been email-verified yet")
+
+        existing_user = conn.execute(
+            text("SELECT 1 FROM users WHERE email = :email"), {"email": registration["email"]}
+        ).first()
+        if existing_user is not None:
+            raise HTTPException(status_code=409, detail="an account with this email already exists")
+
+        facility = conn.execute(
+            text(
+                """
+                INSERT INTO facilities (name, facility_type, address, latitude, longitude, doh_license_number, profile_completed)
+                VALUES (:name, :facility_type, :address, :latitude, :longitude, :doh_license_number, true)
+                RETURNING id, name, facility_type, profile_completed, is_active
+                """
+            ),
+            {
+                "name": registration["facility_name"],
+                "facility_type": registration["facility_type"],
+                "address": registration["address"],
+                "latitude": registration["latitude"],
+                "longitude": registration["longitude"],
+                "doh_license_number": registration["doh_license_number"],
+            },
+        ).mappings().first()
+
+        conn.execute(
+            text(
+                """
+                INSERT INTO blood_type_thresholds (facility_id, blood_type, minimum_units, maximum_units)
+                VALUES (:facility_id, :blood_type, :minimum_units, :maximum_units)
+                """
+            ),
+            [
+                {"facility_id": facility["id"], "blood_type": bt, "minimum_units": mn, "maximum_units": mx}
+                for bt, mn, mx in DEFAULT_THRESHOLDS
+            ],
+        )
+
+        user = conn.execute(
+            text(
+                """
+                INSERT INTO users (email, password_hash, facility_id, role, must_change_password)
+                VALUES (:email, :password_hash, :facility_id, 'staff', false)
+                RETURNING id, email, facility_id, role, created_at
+                """
+            ),
+            {"email": registration["email"], "password_hash": registration["password_hash"], "facility_id": facility["id"]},
+        ).mappings().first()
+
+        conn.execute(
+            text(
+                """
+                UPDATE facility_registration_requests
+                SET status = 'approved', reviewed_by = :admin_id, reviewed_at = now(), archived_at = now()
+                WHERE id = :id
+                """
+            ),
+            {"admin_id": int(admin["sub"]), "id": registration_id},
+        )
+
+    try:
+        _send_registration_approved_email(registration["email"], facility["name"])
+    except email_service.EmailSendError as e:
+        print(f"[registration] approval email failed for registration_id={registration_id}: {e}")
+
+    return {"facility": dict(facility), "user": dict(user)}
+
+
+class RejectRegistrationBody(BaseModel):
+    reason: str
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("a rejection reason is required")
+        return v.strip()
+
+
+@app.post("/admin/registrations/{registration_id}/reject", dependencies=[Depends(require_admin_role)])
+def admin_reject_registration(registration_id: int, body: RejectRegistrationBody, admin: dict = Depends(require_admin_role)):
+    """Archived, never deleted (see facility_registration_requests'
+    archived_at) — a rejected application stays on file with its reason,
+    the same archive-only philosophy as facilities.is_active."""
+    with engine.begin() as conn:
+        registration = conn.execute(
+            text(
+                "SELECT email, facility_name FROM facility_registration_requests "
+                "WHERE id = :id AND archived_at IS NULL"
+            ),
+            {"id": registration_id},
+        ).mappings().first()
+        if registration is None:
+            raise HTTPException(status_code=404, detail="registration not found")
+
+        conn.execute(
+            text(
+                """
+                UPDATE facility_registration_requests
+                SET status = 'rejected', rejection_reason = :reason, reviewed_by = :admin_id,
+                    reviewed_at = now(), archived_at = now()
+                WHERE id = :id
+                """
+            ),
+            {"reason": body.reason, "admin_id": int(admin["sub"]), "id": registration_id},
+        )
+
+    try:
+        _send_registration_rejected_email(registration["email"], registration["facility_name"], body.reason)
+    except email_service.EmailSendError as e:
+        print(f"[registration] rejection email failed for registration_id={registration_id}: {e}")
+
+    return {"message": "registration rejected"}
 
 
 # ─── Donors (Step 7A) ───────────────────────────────────────────────────────

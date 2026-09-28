@@ -1,14 +1,72 @@
 import { useState, useEffect } from "react";
-import { KeyRound, Plus, UserPlus, X, ChevronDown } from "lucide-react";
+import { KeyRound, Plus, UserPlus, X, ChevronDown, Check, MapPin } from "lucide-react";
 import {
   adminListFacilities, adminCreateFacility, adminSetFacilityActive, adminResetAccountPassword,
   adminCreateAccountForFacility,
+  adminListRegistrations, adminApproveRegistration, adminRejectRegistration,
   type AdminFacility, type AdminFacilityAccount, type CreateFacilityAccountResult, type AdminPasswordResetResult,
+  type AdminRegistration,
 } from "../lib/api";
 import { type SessionUser } from "../lib/session";
 import { STATUS_STYLES } from "../lib/statusTokens";
 import { BloodDropLogo } from "../components/BloodTypeBadge";
 import { AccountMenu } from "../components/AccountMenu";
+
+// ─── Pending Registrations ──────────────────────────────────────────────────
+// Self-registration review queue (Step 6) — every row here has already
+// passed email verification (see server/main.py's admin_list_registrations),
+// so this is purely "check the DOH license and decide," not "is this even
+// a reachable applicant."
+
+function RegistrationsQueue({
+  registrations, approveBusyId, rejectBusyId, onApprove, onReject,
+}: {
+  registrations: AdminRegistration[];
+  approveBusyId: number | null;
+  rejectBusyId: number | null;
+  onApprove: (registration: AdminRegistration) => void;
+  onReject: (registration: AdminRegistration) => void;
+}) {
+  return (
+    <div className="divide-y divide-border">
+      {registrations.map((r) => (
+        <div key={r.id} className="p-5 flex items-start justify-between gap-4">
+          <div className="space-y-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-foreground">{r.facility_name}</span>
+              <span className="text-[12px] text-muted-foreground capitalize">({r.facility_type})</span>
+            </div>
+            <div className="text-[13px] text-muted-foreground flex items-center gap-1">
+              <MapPin size={12} className="shrink-0" /> {r.address}
+            </div>
+            <div className="text-[13px] text-muted-foreground">
+              DOH license <span className="font-mono text-foreground">{r.doh_license_number}</span>
+            </div>
+            <div className="text-[13px] text-muted-foreground">
+              {r.contact_person} — <span className="font-mono">{r.email}</span> — {r.phone}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => onReject(r)}
+              disabled={approveBusyId === r.id || rejectBusyId === r.id}
+              className="h-8 px-3 rounded-md text-[13px] font-semibold border border-status-critical-border text-status-critical-text hover:bg-status-critical-tint transition-colors disabled:opacity-60 flex items-center gap-1.5"
+            >
+              <X size={13} /> {rejectBusyId === r.id ? "…" : "Reject"}
+            </button>
+            <button
+              onClick={() => onApprove(r)}
+              disabled={approveBusyId === r.id || rejectBusyId === r.id}
+              className="h-8 px-3 rounded-md text-[13px] font-semibold bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-60 flex items-center gap-1.5"
+            >
+              <Check size={13} /> {approveBusyId === r.id ? "…" : "Approve"}
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // Shared by both the active-facilities panel and the collapsible archived
 // one below it — same columns, same row actions, just fed a different slice
@@ -141,8 +199,57 @@ export function AdminDashboardScreen({ user, onLogout }: { user: SessionUser; on
 
   const [showArchived, setShowArchived] = useState(false);
 
+  const [registrations, setRegistrations] = useState<AdminRegistration[]>([]);
+  const [regLoading, setRegLoading] = useState(true);
+  const [regLoadError, setRegLoadError] = useState<string | null>(null);
+  const [approveBusyId, setApproveBusyId] = useState<number | null>(null);
+  const [rejectBusyId, setRejectBusyId] = useState<number | null>(null);
+  const [registrationError, setRegistrationError] = useState<string | null>(null);
+
   const activeFacilities = facilities.filter((f) => f.is_active);
   const archivedFacilities = facilities.filter((f) => !f.is_active);
+
+  function loadRegistrations() {
+    setRegLoading(true);
+    setRegLoadError(null);
+    adminListRegistrations()
+      .then(setRegistrations)
+      .catch((err) => setRegLoadError(err instanceof Error ? err.message : "Failed to load registrations"))
+      .finally(() => setRegLoading(false));
+  }
+  useEffect(() => { loadRegistrations(); }, []);
+
+  async function handleApproveRegistration(registration: AdminRegistration) {
+    if (!window.confirm(`Approve ${registration.facility_name}? This creates a live account for ${registration.email}.`)) {
+      return;
+    }
+    setApproveBusyId(registration.id);
+    setRegistrationError(null);
+    try {
+      await adminApproveRegistration(registration.id);
+      loadRegistrations();
+      loadFacilities();
+    } catch (err) {
+      setRegistrationError(err instanceof Error ? err.message : "Failed to approve registration");
+    } finally {
+      setApproveBusyId(null);
+    }
+  }
+
+  async function handleRejectRegistration(registration: AdminRegistration) {
+    const reason = window.prompt(`Reason for rejecting ${registration.facility_name}'s registration (sent to the applicant):`);
+    if (!reason || !reason.trim()) return;
+    setRejectBusyId(registration.id);
+    setRegistrationError(null);
+    try {
+      await adminRejectRegistration(registration.id, reason.trim());
+      loadRegistrations();
+    } catch (err) {
+      setRegistrationError(err instanceof Error ? err.message : "Failed to reject registration");
+    } finally {
+      setRejectBusyId(null);
+    }
+  }
 
   function loadFacilities() {
     setLoading(true);
@@ -242,6 +349,37 @@ export function AdminDashboardScreen({ user, onLogout }: { user: SessionUser; on
       </div>
 
       <div className="max-w-screen-2xl mx-auto px-6 py-6 space-y-6">
+        <div className="bg-card border border-border rounded-xl overflow-hidden">
+          <div className="px-5 py-4 border-b border-border flex items-center justify-between">
+            <h3 className="font-semibold text-foreground">Pending Registrations</h3>
+            <span className="text-[13px] text-muted-foreground">{registrations.length} awaiting review</span>
+          </div>
+          {regLoading && <div className="p-8 text-center text-[14px] text-muted-foreground">Loading…</div>}
+          {!regLoading && regLoadError && (
+            <div className="p-6 text-center text-[14px] text-status-critical-text">{regLoadError}</div>
+          )}
+          {!regLoading && !regLoadError && (
+            <>
+              {registrationError && (
+                <div className="mx-5 mt-4 text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
+                  {registrationError}
+                </div>
+              )}
+              {registrations.length === 0 ? (
+                <div className="p-8 text-center text-[14px] text-muted-foreground">No registrations awaiting review.</div>
+              ) : (
+                <RegistrationsQueue
+                  registrations={registrations}
+                  approveBusyId={approveBusyId}
+                  rejectBusyId={rejectBusyId}
+                  onApprove={handleApproveRegistration}
+                  onReject={handleRejectRegistration}
+                />
+              )}
+            </>
+          )}
+        </div>
+
         <div className="bg-card border border-border rounded-xl p-5">
           <h3 className="font-semibold text-foreground mb-4">Create Facility Account</h3>
           <form onSubmit={handleCreate} className="grid sm:grid-cols-4 gap-3 items-end">

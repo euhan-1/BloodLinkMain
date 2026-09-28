@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Building2, CheckCircle, FlaskConical, RefreshCw, ShieldCheck, Zap } from "lucide-react";
 import {
-  login as apiLogin, changePassword as apiChangePassword, requestPasswordReset, warmBackend,
+  login as apiLogin, changePassword as apiChangePassword, requestPasswordResetOtp, resetPasswordOtp, warmBackend,
 } from "../lib/api";
 import { type SessionUser } from "../lib/session";
 import { BloodDropLogo } from "../components/BloodTypeBadge";
@@ -42,6 +42,17 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
   // ("if an account exists...") on purpose, matching the backend's own
   // refusal to reveal whether the email matched anything.
   const [forgotSent, setForgotSent] = useState(false);
+
+  // Typed-code step (Step 7) — replaces the old "check your email for a
+  // link" terminal state. A clicked-link reset breaks for institutional
+  // mail scanners that consume single-use tokens before the recipient ever
+  // sees them; a typed code has nothing for a scanner to consume.
+  const [resetCode, setResetCode] = useState("");
+  const [resetNewPassword, setResetNewPassword] = useState("");
+  const [resetConfirmPassword, setResetConfirmPassword] = useState("");
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [resetDone, setResetDone] = useState(false);
 
   // Fires the moment this screen mounts, not on submit — so a Render
   // free-tier cold backend is already waking up while someone's still
@@ -98,12 +109,34 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
     setForgotLoading(true);
     setForgotError(null);
     try {
-      await requestPasswordReset(forgotEmail);
+      await requestPasswordResetOtp(forgotEmail);
       setForgotSent(true);
     } catch (err) {
       setForgotError(err instanceof Error ? err.message : "Failed to request a reset");
     } finally {
       setForgotLoading(false);
+    }
+  }
+
+  async function handleResetOtpSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setResetError(null);
+    if (resetNewPassword.length < 8) {
+      setResetError("Password must be at least 8 characters");
+      return;
+    }
+    if (resetNewPassword !== resetConfirmPassword) {
+      setResetError("Passwords don't match");
+      return;
+    }
+    setResetLoading(true);
+    try {
+      await resetPasswordOtp(forgotEmail, resetCode, resetNewPassword);
+      setResetDone(true);
+    } catch (err) {
+      setResetError(err instanceof Error ? err.message : "Failed to reset password");
+    } finally {
+      setResetLoading(false);
     }
   }
 
@@ -159,29 +192,104 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
               onSuccess={onLogin}
             />
           ) : forgotMode ? (
-            forgotSent ? (
+            resetDone ? (
               <>
                 <div className="flex items-center gap-2 mb-2">
                   <CheckCircle size={22} className="text-status-safe-text" />
-                  <h2 className="font-display text-2xl font-bold text-foreground">Check your email</h2>
+                  <h2 className="font-display text-2xl font-bold text-foreground">Password updated</h2>
                 </div>
                 <p className="text-muted-foreground text-sm mb-6">
-                  If an account exists for <strong className="text-foreground">{forgotEmail}</strong>, we've sent a
-                  password reset link to it. The link expires in 1 hour and can only be used once.
+                  You can now log in with your new password.
                 </p>
                 <button
                   type="button"
-                  onClick={() => { setForgotMode(false); setForgotSent(false); setForgotEmail(""); }}
+                  onClick={() => {
+                    setForgotMode(false); setForgotSent(false); setResetDone(false); setForgotEmail("");
+                    setResetCode(""); setResetNewPassword(""); setResetConfirmPassword("");
+                  }}
                   className="w-full h-10 bg-primary text-white text-sm font-semibold rounded-md hover:bg-primary-hover transition-colors"
                 >
                   Back to sign in
                 </button>
               </>
+            ) : forgotSent ? (
+              <>
+                <h2 className="font-display text-2xl font-bold text-foreground mb-1">Enter your reset code</h2>
+                <p className="text-muted-foreground text-sm mb-6">
+                  If an account exists for <strong className="text-foreground">{forgotEmail}</strong>, we've sent a
+                  6-digit code to it. Enter it below along with your new password. The code expires in 10 minutes.
+                </p>
+
+                <form onSubmit={handleResetOtpSubmit} className="space-y-4">
+                  <div>
+                    <label className="text-[14px] font-semibold text-foreground block mb-1.5">Reset code</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]{6}"
+                      maxLength={6}
+                      required
+                      autoComplete="one-time-code"
+                      value={resetCode}
+                      onChange={(e) => setResetCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                      placeholder="000000"
+                      className="w-full h-10 px-3 text-sm tracking-[0.3em] text-center font-mono border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[14px] font-semibold text-foreground block mb-1.5">New password</label>
+                    <input
+                      type="password"
+                      required
+                      autoComplete="new-password"
+                      value={resetNewPassword}
+                      onChange={(e) => setResetNewPassword(e.target.value)}
+                      className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[14px] font-semibold text-foreground block mb-1.5">Confirm new password</label>
+                    <input
+                      type="password"
+                      required
+                      autoComplete="new-password"
+                      value={resetConfirmPassword}
+                      onChange={(e) => setResetConfirmPassword(e.target.value)}
+                      className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+                    />
+                  </div>
+
+                  {resetError && (
+                    <div className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
+                      {resetError}
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={resetLoading || resetCode.length !== 6}
+                    className="w-full h-10 bg-primary text-white text-sm font-semibold rounded-md hover:bg-primary-hover transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+                  >
+                    {resetLoading ? (
+                      <><RefreshCw size={15} className="animate-spin" /> Updating…</>
+                    ) : (
+                      "Update password"
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setForgotSent(false); setResetError(null); setResetCode(""); }}
+                    className="w-full text-[13px] text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    Didn't get a code? Go back
+                  </button>
+                </form>
+              </>
             ) : (
               <>
                 <h2 className="font-display text-2xl font-bold text-foreground mb-1">Reset your password</h2>
                 <p className="text-muted-foreground text-sm mb-6">
-                  Enter the email address on your facility's account and we'll send you a link to reset your password.
+                  Enter the email address on your facility's account and we'll send you a code to reset your password.
                 </p>
 
                 <form onSubmit={handleForgotSubmit} className="space-y-4">
@@ -213,7 +321,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                     {forgotLoading ? (
                       <><RefreshCw size={15} className="animate-spin" /> Sending…</>
                     ) : (
-                      "Send reset link"
+                      "Send reset code"
                     )}
                   </button>
                   <button
@@ -311,12 +419,15 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
               <div className="mt-8 p-4 rounded-lg bg-status-watch-tint border border-status-watch-border flex gap-3">
                 <ShieldCheck size={16} className="text-status-watch shrink-0 mt-0.5" />
                 <p className="text-[13px] text-status-watch-text leading-relaxed">
-                  <strong>Admin-provisioned accounts.</strong> New facilities are onboarded by a BloodLink administrator, who issues a temporary password for first sign-in — there's no self-service registration.
+                  <strong>Verified facilities only.</strong> New registrations are reviewed by a BloodLink administrator, who checks your DOH license before approving access.
                 </p>
               </div>
 
               <p className="mt-6 text-center text-[13px] text-muted-foreground">
-                Need access? Contact your BloodLink administrator.
+                New facility?{" "}
+                <a href="/register" className="text-primary hover:underline hover:underline-offset-2">
+                  Register here
+                </a>
               </p>
             </>
           )}

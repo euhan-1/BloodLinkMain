@@ -21,6 +21,7 @@ const RequestsScreen = lazy(() => import("./screens/Requests").then((m) => ({ de
 const ChatScreen = lazy(() => import("./screens/Donors").then((m) => ({ default: m.ChatScreen })));
 const AdminDashboardScreen = lazy(() => import("./screens/Admin").then((m) => ({ default: m.AdminDashboardScreen })));
 const ResetPasswordScreen = lazy(() => import("./screens/ResetPassword").then((m) => ({ default: m.ResetPasswordScreen })));
+const RegisterFacilityScreen = lazy(() => import("./screens/RegisterFacility").then((m) => ({ default: m.RegisterFacilityScreen })));
 const CompleteProfileScreen = lazy(() => import("./screens/CompleteProfile").then((m) => ({ default: m.CompleteProfileScreen })));
 import { LoginScreen } from "./screens/Login";
 import {
@@ -244,6 +245,16 @@ export default function App() {
       <div style={{ fontFamily: "var(--font-body)" }} className="animate-page-enter">
         <Suspense fallback={<ScreenFallback />}>
           <ResetPasswordScreen />
+        </Suspense>
+      </div>
+    );
+  }
+
+  if (window.location.pathname === "/register") {
+    return (
+      <div style={{ fontFamily: "var(--font-body)" }} className="animate-page-enter">
+        <Suspense fallback={<ScreenFallback />}>
+          <RegisterFacilityScreen />
         </Suspense>
       </div>
     );
