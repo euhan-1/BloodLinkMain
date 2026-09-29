@@ -46,21 +46,26 @@ function RegistrationsQueue({
               {r.contact_person} — <span className="font-mono">{r.email}</span> — {r.phone}
             </div>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={() => onReject(r)}
-              disabled={approveBusyId === r.id || rejectBusyId === r.id}
-              className="h-8 px-3 rounded-md text-[13px] font-semibold border border-status-critical-border text-status-critical-text hover:bg-status-critical-tint transition-colors disabled:opacity-60 flex items-center gap-1.5"
-            >
-              <X size={13} /> {rejectBusyId === r.id ? "…" : "Reject"}
-            </button>
-            <button
-              onClick={() => onApprove(r)}
-              disabled={approveBusyId === r.id || rejectBusyId === r.id}
-              className="h-8 px-3 rounded-md text-[13px] font-semibold bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-60 flex items-center gap-1.5"
-            >
-              <Check size={13} /> {approveBusyId === r.id ? "…" : "Approve"}
-            </button>
+          <div className="flex flex-col items-end gap-2 shrink-0">
+            <span className="text-[12px] text-muted-foreground whitespace-nowrap">
+              Submitted {new Date(r.created_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => onReject(r)}
+                disabled={approveBusyId === r.id || rejectBusyId === r.id}
+                className="h-8 px-3 rounded-md text-[13px] font-semibold border border-status-critical-border text-status-critical-text hover:bg-status-critical-tint transition-colors disabled:opacity-60 flex items-center gap-1.5"
+              >
+                <X size={13} /> {rejectBusyId === r.id ? "…" : "Reject"}
+              </button>
+              <button
+                onClick={() => onApprove(r)}
+                disabled={approveBusyId === r.id || rejectBusyId === r.id}
+                className="h-8 px-3 rounded-md text-[13px] font-semibold bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-60 flex items-center gap-1.5"
+              >
+                <Check size={13} /> {approveBusyId === r.id ? "…" : "Approve"}
+              </button>
+            </div>
           </div>
         </div>
       ))}
