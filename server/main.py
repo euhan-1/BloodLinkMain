@@ -578,55 +578,68 @@ def _apply_historical_undo(conn, upload_id: int, facility_id: int) -> tuple[int,
     return reverted + legacy, []
 
 
+def _inventory_undo_rows(conn, upload_id: int) -> list:
+    """This upload's units, deliberately NOT filtered by facility_id: the tag
+    survives confirm_receipt, so a unit that has since moved to another
+    facility is still found here and reported as transferred rather than
+    silently vanishing from both lists. created_by_upload: the INSERT runs in
+    the same transaction as _start_upload_record, so both now() values are
+    identical exactly when this upload created the unit; otherwise it
+    overwrote a unit that already existed."""
+    return conn.execute(
+        text(
+            """
+            SELECT b.id, b.din, b.blood_type, b.facility_id, b.reserved_for_request_id,
+                   b.created_at = u.uploaded_at AS created_by_upload
+            FROM blood_units b JOIN upload_history u ON u.id = b.upload_history_id
+            WHERE b.upload_history_id = :upload_id
+            ORDER BY b.din
+            """
+        ),
+        {"upload_id": upload_id},
+    ).mappings().all()
+
+
 def _classify_inventory_undo_rows(rows: list, facility_id: int) -> tuple[list[dict], list[dict]]:
     """Split this upload's units into what's still safe to remove and what
-    isn't. Deliberately NOT filtered by facility_id at the query level (see
-    callers) — a fully transferred unit's facility_id has already moved to
-    the receiving facility, so filtering by the uploading facility would
-    silently drop it from both lists instead of correctly reporting it as
-    blocked. reserved_for_request_id alone is enough to detect either case
-    (it's set the moment a supplier confirms release, before the transfer
-    even completes); whether the unit is still physically here or already
-    moved just changes the wording."""
+    isn't. Only a unit the uploading facility still owns, that isn't reserved,
+    and that this upload created is removable. A unit the upload merely
+    updated is left alone: blood_units keeps no record of its values before
+    the upload, so there is nothing to restore it to, and deleting it would
+    destroy stock that predates the upload. blocked[].skip ("transferred" /
+    "modified") feeds the counts in undo_upload's response."""
     eligible, blocked = [], []
     for r in rows:
-        if r["reserved_for_request_id"] is None:
-            eligible.append({"din": r["din"], "blood_type": r["blood_type"]})
+        row = {"id": r["id"], "din": r["din"], "blood_type": r["blood_type"]}
+        if r["facility_id"] != facility_id:
+            blocked.append({**row, "skip": "transferred", "reason": "already transferred to another facility"})
+        elif r["reserved_for_request_id"] is not None:
+            blocked.append({**row, "skip": "transferred", "reason": "reserved for a pending transfer"})
+        elif not r["created_by_upload"]:
+            blocked.append({**row, "skip": "modified", "reason": "existed before this upload; its earlier values weren't recorded, so it was left as is"})
         else:
-            reason = "reserved for a pending transfer" if r["facility_id"] == facility_id else "already transferred to another facility"
-            blocked.append({"din": r["din"], "blood_type": r["blood_type"], "reason": reason})
+            eligible.append(row)
     return eligible, blocked
 
 
 def _preview_inventory_undo(conn, upload_id: int, facility_id: int) -> tuple[list[dict], list[dict]]:
-    rows = conn.execute(
-        text(
-            """
-            SELECT id, din, blood_type, facility_id, reserved_for_request_id FROM blood_units
-            WHERE upload_history_id = :upload_id
-            ORDER BY din
-            """
-        ),
-        {"upload_id": upload_id},
-    ).mappings().all()
-    return _classify_inventory_undo_rows(rows, facility_id)
+    return _classify_inventory_undo_rows(_inventory_undo_rows(conn, upload_id), facility_id)
 
 
 def _apply_inventory_undo(conn, upload_id: int, facility_id: int) -> tuple[int, list[dict]]:
-    rows = conn.execute(
-        text(
-            """
-            SELECT id, din, blood_type, facility_id, reserved_for_request_id FROM blood_units
-            WHERE upload_history_id = :upload_id
-            """
-        ),
-        {"upload_id": upload_id},
-    ).mappings().all()
-    eligible_ids = [r["id"] for r in rows if r["reserved_for_request_id"] is None]
-    _, blocked = _classify_inventory_undo_rows(rows, facility_id)
-    if eligible_ids:
-        conn.execute(text("DELETE FROM blood_units WHERE id = ANY(:ids)"), {"ids": eligible_ids})
-    return len(eligible_ids), blocked
+    eligible, blocked = _classify_inventory_undo_rows(_inventory_undo_rows(conn, upload_id), facility_id)
+    removed = 0
+    if eligible:
+        # facility_id and reservation re-checked in the DELETE itself: defence in
+        # depth so a stale tag can never reach a unit another facility holds.
+        removed = conn.execute(
+            text(
+                "DELETE FROM blood_units WHERE id = ANY(:ids) AND facility_id = :facility_id "
+                "AND upload_history_id = :upload_id AND reserved_for_request_id IS NULL"
+            ),
+            {"ids": [r["id"] for r in eligible], "facility_id": facility_id, "upload_id": upload_id},
+        ).rowcount
+    return removed, blocked
 
 
 def _donor_blast_block_reasons(conn, donor_ids: list[int]) -> dict[int, str]:
@@ -2133,7 +2146,15 @@ def undo_upload(upload_id: int, facility_id: int = Depends(get_acting_facility_i
             {"id": upload_id},
         ).scalar_one()
 
-    return {"removed_count": removed_count, "blocked": blocked, "undone_at": undone_at}
+    result = {"removed_count": removed_count, "blocked": blocked, "undone_at": undone_at}
+    if upload["upload_type"] == "inventory":
+        # modified_left_unchanged, not "restored": prior unit values aren't recorded anywhere.
+        result["counts"] = {
+            "created_removed": removed_count,
+            "modified_left_unchanged": sum(b["skip"] == "modified" for b in blocked),
+            "skipped_transferred": sum(b["skip"] == "transferred" for b in blocked),
+        }
+    return result
 
 
 class CreateInventoryUnitBody(BaseModel):
@@ -4094,7 +4115,9 @@ def confirm_release(request_id: int, facility_id: int = Depends(get_acting_facil
 def confirm_receipt(request_id: int, facility_id: int = Depends(get_acting_facility_id)):
     """Requester confirms receipt: this is the actual transfer — reassigns
     facility_id on the units the supplier reserved, then marks completed.
-    Requires supplier to have confirmed release first (enforced ordering)."""
+    Requires supplier to have confirmed release first (enforced ordering).
+    upload_history_id is kept: undo only removes units the uploading facility
+    still owns, and uses the surviving tag to report these as transferred."""
     with engine.begin() as conn:
         req = conn.execute(text("SELECT * FROM requests WHERE id = :id"), {"id": request_id}).mappings().first()
         if req is None:
