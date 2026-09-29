@@ -52,8 +52,10 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done: `python -m pytest server/tests -q`
-  (138 tests). A red suite is a finding, not a footnote — "known failure" is how
-  a real bug hides.
+  (220 tests plus 31 subtests; use `server/.venv`, system Python lacks pytest).
+  Stock band rules: `node scripts/check_stock_bands.ts` (prints `ok`).
+  A red suite is a finding, not a footnote — "known failure" is how a real
+  bug hides.
 - **Don't report a measurement you didn't take.** Say UNKNOWN. Check that the
   deployed code actually contains the feature before measuring it there.
 - **Check what you fed a statistical test** before believing its result. Use

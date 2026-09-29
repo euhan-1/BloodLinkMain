@@ -82,13 +82,29 @@ export const EXPIRY_STYLES: Record<ExpiryStatus, { badge: string; dot: string; r
   ok: { ...STATUS_STYLES.safe, rowTint: "", label: () => "OK" },
 };
 
-// units/min ratio → status level, the one rule used everywhere stock is
+// units vs. minimum → status level, the one rule used everywhere stock is
 // judged against a minimum (dashboard grid, chart bars, threshold dots).
+// "safe" starts exactly at the minimum, so "Adequate" always means at or above
+// reserve — the same line Emergency Sourcing uses for releasable stock.
+// Everything under the minimum is "watch"; under 60% of it is "critical". A
+// minimum of 0 is always safe: nothing can sit below it.
 export function stockStatus(units: number, min: number): StatusLevel {
-  const ratio = min > 0 ? units / min : units > 0 ? 1 : 0;
-  if (ratio < 0.6) return "critical";
-  if (ratio < 0.9) return "watch";
-  return "safe";
+  if (units >= min) return "safe";
+  if (units < 0.6 * min) return "critical";
+  return "watch";
+}
+
+// Deliberately new words — the old bands were "Low"/"Marginal", and those
+// meant different ranges, so neither is reused.
+export const STOCK_LABELS: Record<StatusLevel, string> = {
+  critical: "Critical",
+  watch: "Below minimum",
+  safe: "Adequate",
+};
+
+// A type the facility declares it doesn't hold (minimum 0) and has none of.
+export function isNotStocked(units: number, min: number): boolean {
+  return min === 0 && units === 0;
 }
 
 // Raw hex twins of the --status-* tokens, for the few spots (SVG/Recharts

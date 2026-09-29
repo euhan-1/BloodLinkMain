@@ -10,6 +10,7 @@ import {
 } from "../lib/api";
 import {
   getExpiryStatus, EXPIRY_STYLES, type StatusLevel, STATUS_STYLES, stockStatus, STATUS_HEX,
+  STOCK_LABELS, isNotStocked, EXPIRED_STYLE,
 } from "../lib/statusTokens";
 import { StatusDot, BloodTypeBadge } from "../components/BloodTypeBadge";
 import { Skeleton } from "../components/Skeleton";
@@ -232,24 +233,36 @@ type DashboardData = ForecastView | ThresholdView;
 // A single blood type's card in the "Status by Type" grid. Split out from
 // the grid's .map so it can hold its own useFlashOnChange — a brief ring
 // pulse plays exactly when this type's status actually flips (e.g. Adequate
-// -> Marginal), not on every render the grid happens to re-render for.
+// -> Below minimum), not on every render the grid happens to re-render for.
 function StatusTypeTile({ bloodType, units, minimumUnits }: { bloodType: string; units: number; minimumUnits: number }) {
   const status = stockStatus(units, minimumUnits);
-  const label = status === "critical" ? "Low" : status === "watch" ? "Marginal" : "Adequate";
+  const notStocked = isNotStocked(units, minimumUnits);
+  const style = notStocked ? EXPIRED_STYLE : STATUS_STYLES[status];
+  const label = notStocked ? "Not stocked" : STOCK_LABELS[status];
   const flash = useFlashOnChange(status);
   return (
     <div
-      className={`rounded-xl border p-4 ${STATUS_STYLES[status].panel} ${flash ? "animate-value-flash-ring" : ""}`}
+      className={`rounded-xl border p-4 ${style.panel} ${flash ? "animate-value-flash-ring" : ""}`}
       style={{ "--flash-ring-color": STATUS_HEX[status] } as React.CSSProperties}
     >
       <div className="flex items-center justify-between mb-1.5">
         <BloodTypeBadge type={bloodType} size="md" />
-        <StatusDot status={status} />
+        {notStocked ? <span className={`inline-block w-2 h-2 rounded-full ${style.dot} mr-1.5`} /> : <StatusDot status={status} />}
       </div>
-      <div className={`text-3xl font-display font-bold leading-tight tabular-nums ${STATUS_STYLES[status].text}`}>{units}</div>
-      <div className={`text-[14px] font-semibold mt-0.5 ${STATUS_STYLES[status].text}`}>{label}</div>
+      <div className={`text-3xl font-display font-bold leading-tight tabular-nums ${style.text}`}>{units}</div>
+      <div className={`text-[14px] font-semibold mt-0.5 ${style.text}`}>{label}</div>
     </div>
   );
+}
+
+// "B- at 15 of 26 minimum units · …" for the hero banner: actual counts, not
+// the band edges, worst ratio first, capped at three so the line stays one
+// line — "+N more" keeps it matching the headline's count.
+function describeStockRows(rows: InventorySummaryRow[]): string {
+  const worstFirst = [...rows].sort((a, b) => a.units / a.minimum_units - b.units / b.minimum_units);
+  const shown = worstFirst.slice(0, 3).map((r) => `${r.blood_type} at ${r.units} of ${r.minimum_units} minimum units`);
+  if (rows.length > 3) shown.push(`+${rows.length - 3} more`);
+  return shown.join(" · ");
 }
 
 // The forecast panels only exist once /forecast has answered, so before that
@@ -447,25 +460,27 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
   });
 
   // One overall read on "are we okay," not four competing numbers — worst
-  // condition present wins: any type below minimum outranks anything running
-  // low, which outranks everything being fine. See stockStatus/STATUS_STYLES.
+  // condition present wins: critically low outranks below minimum, which
+  // outranks everything being fine; the second hero line keeps below-minimum
+  // types visible under a critical headline. Minimum-0 types are always
+  // "safe" (see stockStatus), so they never count here. See STATUS_STYLES.
   const criticalTypes = summary.filter((b) => stockStatus(b.units, b.minimum_units) === "critical");
   const watchTypes = summary.filter((b) => stockStatus(b.units, b.minimum_units) === "watch");
   const heroStatus: StatusLevel =
     criticalTypes.length > 0 ? "critical" : watchTypes.length > 0 || expiringRows.length > 0 ? "watch" : "safe";
   const heroHeadline =
     heroStatus === "critical"
-      ? `${criticalTypes.length} blood type${criticalTypes.length === 1 ? "" : "s"} below minimum`
+      ? `${criticalTypes.length} blood type${criticalTypes.length === 1 ? "" : "s"} critically low`
       : heroStatus === "watch" && watchTypes.length > 0
-      ? `${watchTypes.length} blood type${watchTypes.length === 1 ? "" : "s"} running low`
+      ? `${watchTypes.length} blood type${watchTypes.length === 1 ? "" : "s"} below minimum`
       : heroStatus === "watch"
       ? `${expiringRows.length} unit${expiringRows.length === 1 ? "" : "s"} expiring within 7 days`
       : "Supply steady across all types";
   const heroDetail =
     heroStatus === "critical"
-      ? `${criticalTypes.map((t) => t.blood_type).join(", ")} below minimum threshold`
+      ? describeStockRows(criticalTypes)
       : heroStatus === "watch" && watchTypes.length > 0
-      ? `${watchTypes.map((t) => t.blood_type).join(", ")} approaching minimum — see the breakdown below`
+      ? describeStockRows(watchTypes)
       : heroStatus === "watch"
       ? "See Expiry Warnings below for which units"
       : "No shortages or expiring stock flagged right now";
@@ -515,6 +530,9 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                 {heroHeadline}
               </h2>
               <p className="text-[15px] text-foreground mt-1.5">{heroDetail}</p>
+              {heroStatus === "critical" && watchTypes.length > 0 && (
+                <p className="text-[15px] text-foreground mt-1">Also below minimum: {describeStockRows(watchTypes)}</p>
+              )}
             </div>
 
             <div className="flex items-center gap-6 sm:gap-8 flex-wrap">
