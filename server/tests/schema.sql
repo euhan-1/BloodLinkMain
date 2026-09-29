@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict k0hqeYiE1CH8LwIRU4AVeKSbOhaFLYDMvjSbNxR8yjmwMf1clL9ib2nwVCWUtea
+\restrict 8hDJh7iq2rNf1M8kAxwKMJCvXGhAxePp09fUdmuLIbXxREYIyNkRedyKAcuBpFU
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.11
@@ -541,6 +541,36 @@ ALTER TABLE public.request_messages ALTER COLUMN id ADD GENERATED ALWAYS AS IDEN
 
 
 --
+-- Name: request_unit_failures; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.request_unit_failures (
+    id bigint NOT NULL,
+    request_id bigint NOT NULL,
+    blood_unit_id bigint NOT NULL,
+    din text NOT NULL,
+    expires_date date NOT NULL,
+    reason text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT request_unit_failures_reason_check CHECK ((reason = 'expired_before_receipt'::text))
+);
+
+
+--
+-- Name: request_unit_failures_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.request_unit_failures ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.request_unit_failures_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: requests; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -889,6 +919,22 @@ ALTER TABLE ONLY public.request_messages
 
 
 --
+-- Name: request_unit_failures request_unit_failures_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_unit_failures
+    ADD CONSTRAINT request_unit_failures_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: request_unit_failures request_unit_failures_request_id_blood_unit_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_unit_failures
+    ADD CONSTRAINT request_unit_failures_request_id_blood_unit_id_key UNIQUE (request_id, blood_unit_id);
+
+
+--
 -- Name: requests requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1027,6 +1073,13 @@ CREATE INDEX idx_password_reset_requests_token_hash ON public.password_reset_req
 --
 
 CREATE INDEX idx_request_messages_request_id ON public.request_messages USING btree (request_id);
+
+
+--
+-- Name: idx_request_unit_failures_unit; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_request_unit_failures_unit ON public.request_unit_failures USING btree (blood_unit_id);
 
 
 --
@@ -1251,6 +1304,22 @@ ALTER TABLE ONLY public.request_messages
 
 
 --
+-- Name: request_unit_failures request_unit_failures_blood_unit_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_unit_failures
+    ADD CONSTRAINT request_unit_failures_blood_unit_id_fkey FOREIGN KEY (blood_unit_id) REFERENCES public.blood_units(id);
+
+
+--
+-- Name: request_unit_failures request_unit_failures_request_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_unit_failures
+    ADD CONSTRAINT request_unit_failures_request_id_fkey FOREIGN KEY (request_id) REFERENCES public.requests(id);
+
+
+--
 -- Name: requests requests_requesting_facility_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1294,5 +1363,5 @@ ALTER TABLE ONLY public.users
 -- PostgreSQL database dump complete
 --
 
-\unrestrict k0hqeYiE1CH8LwIRU4AVeKSbOhaFLYDMvjSbNxR8yjmwMf1clL9ib2nwVCWUtea
+\unrestrict 8hDJh7iq2rNf1M8kAxwKMJCvXGhAxePp09fUdmuLIbXxREYIyNkRedyKAcuBpFU
 

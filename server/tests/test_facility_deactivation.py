@@ -16,6 +16,7 @@ Run from the server/ directory:
 
 import unittest
 import uuid
+from datetime import timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import text
@@ -46,6 +47,7 @@ def _cleanup_facility(conn, facility_id: int) -> None:
     conn.execute(text("DELETE FROM notifications WHERE facility_id = :fid"), {"fid": facility_id})
     conn.execute(text("DELETE FROM users WHERE facility_id = :fid"), {"fid": facility_id})
     conn.execute(text("DELETE FROM blood_type_thresholds WHERE facility_id = :fid"), {"fid": facility_id})
+    conn.execute(text("DELETE FROM blood_units WHERE facility_id = :fid"), {"fid": facility_id})
     conn.execute(text("DELETE FROM facilities WHERE id = :fid"), {"fid": facility_id})
 
 
@@ -94,6 +96,34 @@ class FacilityDeactivationTests(unittest.TestCase):
         ids = {r["id"] for r in results}
         self.assertIn(active_bank_id, ids)
         self.assertNotIn(inactive_bank_id, ids)
+
+    def test_nearby_search_skips_a_completed_bloodbank_with_no_coordinates(self):
+        # Before: its None latitude reached _haversine_km and the TypeError
+        # made the search 500 for every facility, not just hid this one.
+        origin_id = self._facility(facility_type="hospital", profile_completed=True, latitude=14.5, longitude=121.0)
+        located_id = self._facility(profile_completed=True, latitude=14.6, longitude=121.1)
+        unpinned_id = self._facility(profile_completed=True, latitude=14.6, longitude=None)
+
+        ids = {r["id"] for r in main.get_nearby_facilities(blood_type="O+", quantity=1, acting_facility_id=origin_id)}
+        self.assertIn(located_id, ids)
+        self.assertNotIn(unpinned_id, ids)
+
+    def test_notify_nearby_hospitals_skips_a_hospital_with_no_coordinates(self):
+        bank_id = self._facility(profile_completed=True, latitude=14.5, longitude=121.0)
+        self._facility(facility_type="hospital", profile_completed=True, latitude=14.6, longitude=121.1)
+        self._facility(facility_type="hospital", profile_completed=True, latitude=None, longitude=121.1)
+        din = f"NOCOORD-{self.tag}"
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO blood_units (din, blood_type, component, location, volume_ml, collected_date, expires_date, facility_id) "
+                     "VALUES (:d, 'O+', 'Packed RBC', 'Fridge A', 280, :col, :exp, :f)"),
+                {"d": din, "col": main.business_today() - timedelta(days=30),
+                 "exp": main.business_today() + timedelta(days=3), "f": bank_id},
+            )
+
+        names = main.notify_nearby_hospitals_of_expiring_unit(din, acting_facility_id=bank_id)["notified_facilities"]
+        self.assertIn(f"Test Facility {self.tag} 1", names)
+        self.assertNotIn(f"Test Facility {self.tag} 2", names)
 
     def test_create_request_rejects_inactive_supplying_facility(self):
         requester_id = self._facility(facility_type="hospital")

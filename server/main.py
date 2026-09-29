@@ -590,7 +590,8 @@ def _inventory_undo_rows(conn, upload_id: int) -> list:
         text(
             """
             SELECT b.id, b.din, b.blood_type, b.facility_id, b.reserved_for_request_id,
-                   b.created_at = u.uploaded_at AS created_by_upload
+                   b.created_at = u.uploaded_at AS created_by_upload,
+                   EXISTS (SELECT 1 FROM request_unit_failures f WHERE f.blood_unit_id = b.id) AS failed_in_transfer
             FROM blood_units b JOIN upload_history u ON u.id = b.upload_history_id
             WHERE b.upload_history_id = :upload_id
             ORDER BY b.din
@@ -603,6 +604,7 @@ def _inventory_undo_rows(conn, upload_id: int) -> list:
 def _classify_inventory_undo_rows(rows: list, facility_id: int) -> tuple[list[dict], list[dict]]:
     """Split this upload's units into what's still safe to remove and what
     isn't. Only a unit the uploading facility still owns, that isn't reserved,
+    wasn't released for a transfer that failed on expiry (see confirm_receipt),
     and that this upload created is removable. A unit the upload merely
     updated is left alone: blood_units keeps no record of its values before
     the upload, so there is nothing to restore it to, and deleting it would
@@ -615,6 +617,8 @@ def _classify_inventory_undo_rows(rows: list, facility_id: int) -> tuple[list[di
             blocked.append({**row, "skip": "transferred", "reason": "already transferred to another facility"})
         elif r["reserved_for_request_id"] is not None:
             blocked.append({**row, "skip": "transferred", "reason": "reserved for a pending transfer"})
+        elif r["failed_in_transfer"]:
+            blocked.append({**row, "skip": "transferred", "reason": "released for a transfer and expired before receipt"})
         elif not r["created_by_upload"]:
             blocked.append({**row, "skip": "modified", "reason": "existed before this upload; its earlier values weren't recorded, so it was left as is"})
         else:
@@ -2300,6 +2304,11 @@ def archive_expired_inventory(facility_id: int = Depends(get_acting_facility_id)
     definition already expired, so it was already excluded from those (see
     /inventory/summary, GET /forecast, /facilities/nearby) by expires_date
     alone. This only changes what GET /inventory shows by default.
+
+    A unit still reserved for a transfer is skipped even if expired: it
+    belongs to that request until confirm_receipt settles it (which records
+    and archives it itself), and archiving it here would let it be moved to
+    the requester as an archived, invisible unit.
     """
     today = business_today()
     with engine.begin() as conn:
@@ -2308,6 +2317,7 @@ def archive_expired_inventory(facility_id: int = Depends(get_acting_facility_id)
                 """
                 UPDATE blood_units SET archived_at = now()
                 WHERE facility_id = :facility_id AND expires_date < :today AND archived_at IS NULL
+                  AND reserved_for_request_id IS NULL
                 """
             ),
             {"facility_id": facility_id, "today": today},
@@ -3655,6 +3665,9 @@ def get_nearby_facilities(
         # can't appear as a search candidate until it completes its profile.
         # is_active too: a deactivated blood bank must not be a search result
         # any more than it can be a request target (see create_request below).
+        # Coordinates checked explicitly too: nothing in the schema ties them
+        # to profile_completed, and one null row would crash the haversine
+        # for every searcher, not just hide that facility.
         facility_rows = conn.execute(
             text(
                 """
@@ -3662,6 +3675,7 @@ def get_nearby_facilities(
                 FROM facilities
                 WHERE facility_type = 'bloodbank' AND id != :acting_facility_id
                   AND profile_completed AND is_active
+                  AND latitude IS NOT NULL AND longitude IS NOT NULL
                 """
             ),
             {"acting_facility_id": acting_facility_id},
@@ -3745,6 +3759,7 @@ def notify_nearby_hospitals_of_expiring_unit(din: str, acting_facility_id: int =
                 FROM facilities
                 WHERE facility_type = 'hospital' AND id != :acting_facility_id
                   AND profile_completed AND is_active
+                  AND latitude IS NOT NULL AND longitude IS NOT NULL
                 """
             ),
             {"acting_facility_id": acting_facility_id},
@@ -3886,6 +3901,13 @@ def _apply_priority_sort(rows: list[dict]) -> list[dict]:
     return result
 
 
+# Units of a request that expired before receipt (see confirm_receipt), for both request lists.
+_FAILED_UNITS_SQL = """
+    COALESCE((SELECT json_agg(json_build_object('din', f.din, 'expires_date', f.expires_date) ORDER BY f.din)
+              FROM request_unit_failures f WHERE f.request_id = r.id), '[]'::json) AS failed_units
+"""
+
+
 @app.get("/requests")
 def list_requests(facility_id: int = Depends(get_acting_facility_id)):
     """The logged-in user's own facility's outgoing requests, with pending ones
@@ -3894,11 +3916,11 @@ def list_requests(facility_id: int = Depends(get_acting_facility_id)):
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                """
+                f"""
                 SELECT r.id, r.requesting_facility_id, r.supplying_facility_id,
                        r.blood_type, r.quantity, r.emergency_type, r.status, r.created_at,
                        r.supplier_confirmed_at, r.requester_confirmed_at,
-                       sf.name AS supplying_facility_name
+                       sf.name AS supplying_facility_name, {_FAILED_UNITS_SQL}
                 FROM requests r
                 JOIN facilities sf ON sf.id = r.supplying_facility_id
                 WHERE r.requesting_facility_id = :facility_id
@@ -3917,11 +3939,11 @@ def list_incoming_requests(facility_id: int = Depends(get_acting_facility_id)):
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                """
+                f"""
                 SELECT r.id, r.requesting_facility_id, r.supplying_facility_id,
                        r.blood_type, r.quantity, r.emergency_type, r.status, r.created_at,
                        r.supplier_confirmed_at, r.requester_confirmed_at,
-                       rf.name AS requesting_facility_name
+                       rf.name AS requesting_facility_name, {_FAILED_UNITS_SQL}
                 FROM requests r
                 JOIN facilities rf ON rf.id = r.requesting_facility_id
                 WHERE r.supplying_facility_id = :facility_id
@@ -4117,7 +4139,17 @@ def confirm_receipt(request_id: int, facility_id: int = Depends(get_acting_facil
     facility_id on the units the supplier reserved, then marks completed.
     Requires supplier to have confirmed release first (enforced ordering).
     upload_history_id is kept: undo only removes units the uploading facility
-    still owns, and uses the surviving tag to report these as transferred."""
+    still owns, and uses the surviving tag to report these as transferred.
+
+    A reserved unit that expired between release and receipt (expires_date
+    before today's Manila business date) cannot be received: it is not
+    moved, its reservation is cleared, it is archived where it is (at the
+    supplier), and a request_unit_failures row records its DIN, expiry and
+    why. The rest still transfer and the request is 'completed'; if every
+    reserved unit expired, the request is 'failed'. Either way both
+    facilities are notified with the DINs that failed, never a silent
+    short count."""
+    today = business_today()
     with engine.begin() as conn:
         req = conn.execute(text("SELECT * FROM requests WHERE id = :id"), {"id": request_id}).mappings().first()
         if req is None:
@@ -4131,49 +4163,97 @@ def confirm_receipt(request_id: int, facility_id: int = Depends(get_acting_facil
         if req["requester_confirmed_at"] is not None:
             raise HTTPException(status_code=400, detail="receipt already confirmed")
 
-        result = conn.execute(
+        reserved = conn.execute(
             text(
-                """
-                UPDATE blood_units
-                SET facility_id = :requesting_facility_id, reserved_for_request_id = NULL
-                WHERE reserved_for_request_id = :request_id
-                """
+                "SELECT id, din, expires_date FROM blood_units "
+                "WHERE reserved_for_request_id = :request_id ORDER BY din FOR UPDATE"
             ),
-            {"requesting_facility_id": req["requesting_facility_id"], "request_id": request_id},
-        )
-        if result.rowcount != req["quantity"]:
+            {"request_id": request_id},
+        ).mappings().all()
+        if len(reserved) != req["quantity"]:
             # Reserved units went missing between confirm-release and confirm-receipt
             # (shouldn't happen given the guards above, but never silently mark a
-            # transfer "completed" if the unit count doesn't match — raising here
-            # rolls back the facility_id reassignment too, since it's all one txn).
+            # transfer "completed" if the unit count doesn't match).
             raise HTTPException(
                 status_code=409,
                 detail=(
                     f"expected to transfer {req['quantity']} reserved units but found "
-                    f"{result.rowcount}; transfer aborted, nothing changed"
+                    f"{len(reserved)}; transfer aborted, nothing changed"
                 ),
             )
+        received_ids = [u["id"] for u in reserved if u["expires_date"] >= today]
+        expired = [u for u in reserved if u["expires_date"] < today]
+
+        if received_ids:
+            conn.execute(
+                text(
+                    "UPDATE blood_units SET facility_id = :requesting_facility_id, reserved_for_request_id = NULL "
+                    "WHERE id = ANY(:ids)"
+                ),
+                {"requesting_facility_id": req["requesting_facility_id"], "ids": received_ids},
+            )
+        if expired:
+            expired_ids = [u["id"] for u in expired]
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO request_unit_failures (request_id, blood_unit_id, din, expires_date, reason)
+                    SELECT :request_id, id, din, expires_date, 'expired_before_receipt'
+                    FROM blood_units WHERE id = ANY(:ids)
+                    """
+                ),
+                {"request_id": request_id, "ids": expired_ids},
+            )
+            conn.execute(
+                text("UPDATE blood_units SET reserved_for_request_id = NULL, archived_at = now() WHERE id = ANY(:ids)"),
+                {"ids": expired_ids},
+            )
+
+        status = "completed" if received_ids else "failed"
         completion = conn.execute(
             text(
-                "UPDATE requests SET requester_confirmed_at = now(), status = 'completed' "
+                "UPDATE requests SET requester_confirmed_at = now(), status = :status "
                 "WHERE id = :id AND status = 'accepted' AND supplier_confirmed_at IS NOT NULL "
                 "AND requester_confirmed_at IS NULL"
             ),
-            {"id": request_id},
+            {"id": request_id, "status": status},
         )
         if completion.rowcount == 0:
             raise HTTPException(status_code=409, detail="receipt already confirmed or request status changed concurrently")
 
-        requester = conn.execute(
-            text("SELECT name FROM facilities WHERE id = :id"), {"id": req["requesting_facility_id"]}
-        ).mappings().first()
-        _create_notification(
-            conn, req["supplying_facility_id"], "transfer_completed",
-            f"{requester['name']} confirmed receipt — your {req['blood_type']} transfer is complete",
-            f"requests:{request_id}",
-        )
+        names = dict(conn.execute(
+            text("SELECT id, name FROM facilities WHERE id IN (:r, :s)"),
+            {"r": req["requesting_facility_id"], "s": req["supplying_facility_id"]},
+        ).all())
+        requester_name, supplier_name = names[req["requesting_facility_id"]], names[req["supplying_facility_id"]]
+        link = f"requests:{request_id}"
+        if not expired:
+            _create_notification(
+                conn, req["supplying_facility_id"], "transfer_completed",
+                f"{requester_name} confirmed receipt — your {req['blood_type']} transfer is complete",
+                link,
+            )
+        else:
+            failed_text = ", ".join(f"{u['din']} (expired {u['expires_date'].isoformat()})" for u in expired)
+            got = f"{len(received_ids)} of {req['quantity']} {req['blood_type']} units"
+            _create_notification(
+                conn, req["requesting_facility_id"], "transfer_units_failed",
+                f"Received {got} from {supplier_name}. Not received — expired before receipt: {failed_text}",
+                link,
+            )
+            _create_notification(
+                conn, req["supplying_facility_id"], "transfer_units_failed",
+                f"{requester_name} received {got}. Not transferred — expired before receipt, archived at your "
+                f"facility: {failed_text}",
+                link,
+            )
 
-    return {"id": request_id, "status": "completed", "units_transferred": result.rowcount}
+    return {
+        "id": request_id, "status": status, "units_transferred": len(received_ids),
+        "failed_units": [
+            {"din": u["din"], "expires_date": u["expires_date"], "reason": "expired_before_receipt"} for u in expired
+        ],
+    }
 
 
 class SendRequestMessageBody(BaseModel):
@@ -4234,14 +4314,14 @@ def send_request_message(
         req = _require_request_participant(conn, request_id, facility_id)
         # Coordination chat is for coordinating an actual transfer — sending
         # (not reading: history stays visible either way) is gated to
-        # accepted/completed so there's no window where one side can send a
+        # accepted/completed/failed so there's no window where one side can send a
         # message the other side has no way to see or respond to yet (the
         # requester's own view only surfaces a request's chat once it's
         # accepted).
-        if req["status"] not in ("accepted", "completed"):
+        if req["status"] not in ("accepted", "completed", "failed"):
             raise HTTPException(
                 status_code=400,
-                detail=f"cannot send a message on a request with status {req['status']!r} — only accepted or completed requests support messaging",
+                detail=f"cannot send a message on a request with status {req['status']!r} — only accepted, completed or failed requests support messaging",
             )
         row = conn.execute(
             text(

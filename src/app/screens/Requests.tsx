@@ -49,7 +49,36 @@ type RequestRow = {
   requester_confirmed_at: string | null;
   supplying_facility_name?: string;
   requesting_facility_name?: string;
+  failed_units: { din: string; expires_date: string }[];
 };
+
+// Outcome of confirm-receipt, shared by both cards. A reserved unit that expired
+// before receipt was not transferred; the DINs are listed rather than leaving a
+// short count unexplained.
+function ReceiptOutcome({ req, size }: { req: RequestRow; size: 12 | 13 }) {
+  const text = size === 12 ? "text-[12px]" : "text-[13px]";
+  const failed = req.failed_units;
+  if (req.status === "completed" && failed.length === 0) {
+    return (
+      <span className={`flex items-center gap-1 animate-success-pop ${text} font-semibold text-status-safe-text`}>
+        <CheckCircle size={size} /> Completed
+      </span>
+    );
+  }
+  const received = req.quantity - failed.length;
+  return (
+    <div className={text}>
+      <span className={`flex items-center gap-1 font-semibold ${req.status === "failed" ? "text-status-critical-text" : "text-status-watch-text"}`}>
+        <AlertTriangle size={size} />
+        {req.status === "failed" ? "Failed — no units received" : `Completed — ${received} of ${req.quantity} received`}
+      </span>
+      <div className="mt-1 text-muted-foreground">
+        Expired before receipt, not transferred:{" "}
+        {failed.map((u) => `${u.din} (expired ${u.expires_date})`).join(", ")}
+      </div>
+    </div>
+  );
+}
 
 type ActingFacility = { id: number; name: string; facility_type: string };
 
@@ -130,11 +159,7 @@ function IncomingRequestCard({
         <span className="inline-block animate-success-pop text-[12px] font-semibold text-status-watch-text">Released — awaiting requester confirmation</span>
       )}
 
-      {req.status === "completed" && (
-        <span className="flex items-center gap-1 animate-success-pop text-[12px] font-semibold text-status-safe-text">
-          <CheckCircle size={12} /> Completed
-        </span>
-      )}
+      {(req.status === "completed" || req.status === "failed") && <ReceiptOutcome req={req} size={12} />}
 
       {req.status === "declined" && (
         <span className="text-[12px] font-semibold text-muted-foreground">Declined</span>
@@ -176,10 +201,8 @@ function AcceptedRequestCard({
         {req.quantity} units · {EMERGENCY_TYPE_LABELS[req.emergency_type]}
       </div>
 
-      {req.status === "completed" ? (
-        <span className="flex items-center gap-1 animate-success-pop text-[13px] font-semibold text-status-safe-text">
-          <CheckCircle size={13} /> Completed
-        </span>
+      {req.status === "completed" || req.status === "failed" ? (
+        <ReceiptOutcome req={req} size={13} />
       ) : !req.supplier_confirmed_at ? (
         <span className="text-[13px] text-muted-foreground">Waiting for supplier to confirm release</span>
       ) : canConfirmReceipt ? (
@@ -876,7 +899,7 @@ export function RequestsScreen({
                 <div className="text-[13px] text-status-critical-text py-4 text-center">Failed to load: {requestsError}</div>
               )}
               {!requestsLoading && !requestsError && (() => {
-                const accepted = requests.filter((r) => r.status === "accepted" || r.status === "completed");
+                const accepted = requests.filter((r) => r.status === "accepted" || r.status === "completed" || r.status === "failed");
                 if (accepted.length === 0) {
                   return (
                     <div className="text-[13px] text-muted-foreground py-4 text-center">
@@ -983,7 +1006,7 @@ export function RequestsScreen({
                     // see it (the requester's own chat access only opens up once
                     // accepted), so a still-pending request can't send either.
                     const canSend = selectedRequest
-                      ? selectedRequest.status === "accepted" || selectedRequest.status === "completed"
+                      ? ["accepted", "completed", "failed"].includes(selectedRequest.status)
                       : false;
                     const placeholder =
                       selectedRequestId === null

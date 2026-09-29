@@ -22,6 +22,7 @@ TABLE_DOC = {
     "blood_type_thresholds": "Per-facility minimum and maximum stock levels for each blood type; they drive low-stock and overstock status and restock recommendations. Operational configuration.",
     "requests": "Blood transfer requests between two facilities (one requests, one supplies) and their lifecycle from pending to completed. Operational.",
     "request_messages": "The chat thread attached to a transfer request, letting the two facilities coordinate. Operational.",
+    "request_unit_failures": "One row per reserved unit that could not be received because it expired between the supplier's release and the requester's receipt. Records which DIN failed and why, so a short delivery is never unexplained. Operational (audit).",
     "notifications": "In-app notifications shown to a facility (incoming requests, expiring units, forecast shortages, and so on). Operational.",
     "upload_history": "An audit record of each CSV upload (inventory, donors or historical stock), including the raw file and any per-row errors, so an upload can be undone. Operational (audit).",
     "donors": "The donor contact list each facility keeps for outreach. Contains personal data. Operational.",
@@ -94,7 +95,7 @@ D = {
         "blood_type": "The blood type requested.",
         "quantity": "Number of units requested.",
         "emergency_type": "Why it is needed: 'trauma' (urgent) or 'restock' (routine). Free text; no database CHECK.",
-        "status": "Lifecycle state: pending, accepted, declined, cancelled or completed. Free text; no database CHECK. Only pending, declined, cancelled and completed occur in the current data.",
+        "status": "Lifecycle state: pending, accepted, declined, cancelled, completed, or failed (every reserved unit expired before receipt; see request_unit_failures). Completed can still carry failed units. Free text; no database CHECK.",
         "created_at": "When the request was made.",
         "supplier_confirmed_at": "When the supplier confirmed the hand-over; NULL until then.",
         "requester_confirmed_at": "When the requester confirmed receipt; NULL until then. Both confirmations complete the transfer.",
@@ -106,10 +107,19 @@ D = {
         "message": "The message text.",
         "created_at": "When it was sent.",
     },
+    "request_unit_failures": {
+        "id": "Unique identifier of the failure record.",
+        "request_id": "The transfer request the unit was reserved for.",
+        "blood_unit_id": "The unit that was not received. It stays at the supplier, archived.",
+        "din": "The unit's donation identification number at the moment receipt was refused.",
+        "expires_date": "The unit's expiry date at the moment receipt was refused; before that day's business date.",
+        "reason": "Why the unit failed. Only 'expired_before_receipt' exists (database CHECK).",
+        "created_at": "When receipt was confirmed and the failure recorded.",
+    },
     "notifications": {
         "id": "Unique identifier of the notification.",
         "facility_id": "The facility the notification is shown to.",
-        "type": "Category: unit_expiry, incoming_request, request_accepted, request_cancelled, transfer_confirmation_needed, transfer_completed or forecast_shortage.",
+        "type": "Category: unit_expiry, incoming_request, request_accepted, request_cancelled, transfer_confirmation_needed, transfer_completed, transfer_units_failed or forecast_shortage.",
         "message": "The text shown to the user.",
         "link": "The in-app page or record the notification opens (for example 'requests:14' or 'inventory').",
         "read_at": "When the user read it; NULL while unread (currently NULL in every row).",
@@ -333,7 +343,7 @@ deployed; example values are real values from actual rows, with the exceptions d
 
 * **{total} tables** in the `public` schema, {sum(v[1] for v in totals.values())} columns in all, {len(fkrows)} foreign keys. Views: {', '.join(views) or 'none'}.
 * **No unexpected tables.** Every table maps to a feature: identity (`facilities`, `users`, `password_reset_requests`), inventory
-  (`blood_units`, `blood_type_thresholds`, `upload_history`, `inventory_snapshot_write_log`), transfers (`requests`, `request_messages`), notification
+  (`blood_units`, `blood_type_thresholds`, `upload_history`, `inventory_snapshot_write_log`), transfers (`requests`, `request_messages`, `request_unit_failures`), notification
   (`notifications`), donor outreach (`donors`, `blasts`, `blast_messages`, `blast_replies`) and forecasting (`inventory_snapshots`,
   `facility_forecast_cache`, `forecast_alert_state`, `synthetic_inventory_snapshots`, `synthetic_forecast_cache`). The ones easiest to
   overlook are `forecast_alert_state` (alert de-duplication), `upload_history` (audit; holds the raw CSV text and drives undo), `inventory_snapshot_write_log` (lets undo restore overwritten snapshots) and the
@@ -384,7 +394,7 @@ Which tables exist to support the forecasting research rather than day-to-day bl
 | inventory_snapshots | Mixed | Operational counts, but also the series the forecast is fitted on. At the time of generation, 1,200 of its 1,320 rows came from one historical-stock CSV upload of a generated demonstration file; the rest are the app's own daily snapshots. It should not be described as a record of real supply. |
 
 Every other table (`inventory_snapshot_write_log`, `facilities`, `users`, `password_reset_requests`, `blood_units`, `blood_type_thresholds`, `requests`,
-`request_messages`, `notifications`, `upload_history`, `donors`, `blasts`, `blast_messages`, `blast_replies`) is operational. In the
+`request_messages`, `request_unit_failures`, `notifications`, `upload_history`, `donors`, `blasts`, `blast_messages`, `blast_replies`) is operational. In the
 paper, `blood_units` is the system's record of physical inventory; the `synthetic_*` tables are a research and demonstration
 apparatus and should not be presented as equivalent to it. The current database also holds demo and test operational rows
 (demo facilities and accounts), so even the operational tables contain demonstration content in this deployment.
