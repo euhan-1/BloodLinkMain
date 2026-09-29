@@ -533,12 +533,14 @@ export function RequestsScreen({
             {/* Blood type compatibility notice */}
             {(() => {
               const compatible = (bloodCompatibility[searchType] ?? []).filter((t) => t !== searchType);
+              // Only claim "no exact match" once the list has loaded and nothing in it is available.
+              const noExactMatch = !banksLoading && !banksError && !banks.some((b) => b.available);
               return compatible.length > 0 ? (
                 <div className="bg-info-tint border border-info-border rounded-xl px-4 py-3 flex gap-3">
                   <AlertTriangle size={15} className="text-info shrink-0 mt-0.5" />
                   <div>
                     <div className="text-[13px] font-semibold text-info-text mb-1">
-                      No exact match? Compatible alternatives:
+                      {noExactMatch ? "No exact match. Compatible alternatives:" : "Compatible alternatives if needed:"}
                     </div>
                     <div className="flex flex-wrap gap-1.5">
                       {compatible.map((t) => (
