@@ -35,8 +35,11 @@ class AdminRegistrationsTests(unittest.TestCase):
     def setUp(self):
         self.tag = uuid.uuid4().hex[:8]
         self.email = f"regadmin-{self.tag}@example.com"
-        with engine.connect() as conn:
-            admin_id = conn.execute(text("SELECT id FROM users WHERE role = 'admin' LIMIT 1")).scalar()
+        with engine.begin() as conn:
+            admin_id = conn.execute(text(
+                "INSERT INTO users (email, password_hash, role) VALUES ('test-admin@example.com', 'x', 'admin') "
+                "ON CONFLICT (email) DO UPDATE SET role = 'admin' RETURNING id"
+            )).scalar()
         # matches require_admin_role's decoded-token shape; reviewed_by is a
         # real FK to users(id), so this needs an actual admin row to point at.
         self.admin = {"sub": str(admin_id)}

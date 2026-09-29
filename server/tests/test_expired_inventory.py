@@ -162,10 +162,11 @@ class ShortageDetectionUsesUsableOnlyStockTests(unittest.TestCase):
 
     def setUp(self):
         with engine.begin() as conn:
-            self.minimum = conn.execute(
-                text("SELECT minimum_units FROM blood_type_thresholds WHERE blood_type = 'O+'")
-            ).scalar()
             self.facility_id = _make_facility(conn, "__test_shortage__", facility_type="hospital")
+            self.minimum = conn.execute(
+                text("SELECT minimum_units FROM blood_type_thresholds WHERE blood_type = 'O+' AND facility_id = :f"),
+                {"f": self.facility_id},
+            ).scalar()
             # Raw count comfortably clears minimum, but every single unit is
             # expired — usable count is 0, so this must still read as a
             # shortage if the fix is correct.

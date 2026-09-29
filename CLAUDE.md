@@ -51,8 +51,15 @@ requests, SARIMAX demand forecasting, donor broadcast.
 
 ## Working expectations
 
-- Run the full suite before reporting done: `python -m pytest server/tests -q`
-  (220 tests plus 31 subtests; use `server/.venv`, system Python lacks pytest).
+- Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
+  local scratch Postgres: `python -m pytest server/tests -q` (221 tests plus
+  31 subtests; use `server/.venv`, system Python lacks pytest). Never run
+  tests via `python -m unittest` — that skips conftest and hits `.env`'s
+  production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
+  refuses to run without it or against a non-local host, overrides
+  `DATABASE_URL`, and rebuilds the public schema from `server/tests/schema.sql`
+  (a `pg_dump --schema-only` of production; regenerate after a migration).
+  Never run the suite against production.
   Stock band rules: `node scripts/check_stock_bands.ts` (prints `ok`).
   A red suite is a finding, not a footnote — "known failure" is how a real
   bug hides.
