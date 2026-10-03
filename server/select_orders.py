@@ -6,7 +6,8 @@ is a safety net for a facility nobody runs this for, bounded to 2 types per
 upload so an unattended facility still converges over repeated uploads — it is
 NOT how this is meant to be run day to day. Running it here, on your own
 machine, means Render's CPU (and its 512 MB / free-tier idle-sleep budget) never
-enters into it: 36 candidates/type x ~8-9s/type locally is the whole cost, paid
+enters into it: the grid is 72 candidates per type, and that fit time locally
+is the whole cost (per-type timing UNMEASURED since the grid changed), paid
 once, deliberately, not inside a request or an unattended background task.
 
 Usage (from server/):

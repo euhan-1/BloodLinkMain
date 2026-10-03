@@ -481,8 +481,9 @@ export function createInventoryUnit(body: CreateInventoryUnitBody): Promise<Inve
   return apiPost<InventoryApiRow>("/inventory", body);
 }
 
-// ─── Blood-type thresholds — still global across facilities, not a
-// per-facility policy table (see /inventory/summary's docstring server-side).
+// ─── Blood-type thresholds — per-facility: blood_type_thresholds is keyed
+// (facility_id, blood_type), and the server scopes reads and PUT /thresholds/{blood_type}
+// to the logged-in user's own facility (see /inventory/summary's docstring server-side).
 
 export type ThresholdRow = { blood_type: string; minimum_units: number; maximum_units: number };
 

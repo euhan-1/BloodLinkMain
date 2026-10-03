@@ -29,10 +29,10 @@ export function InventoryScreen() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadHistoryRefreshKey, setUploadHistoryRefreshKey] = useState(0);
 
-  // Minimum/maximum safe-stock levels per type — still global across
-  // facilities, not a per-facility policy (see /inventory/summary
-  // server-side), but editable here so a facility isn't stuck with the
-  // seeded placeholder values forever.
+  // Minimum/maximum safe-stock levels per type — per-facility (see
+  // /inventory/summary server-side; blood_type_thresholds is keyed
+  // (facility_id, blood_type)), and editable here so a facility isn't stuck
+  // with the seeded placeholder values forever.
   const [thresholds, setThresholds] = useState<Record<string, ThresholdRow>>({});
   const [editingType, setEditingType] = useState<string | null>(null);
   const [editMin, setEditMin] = useState("");

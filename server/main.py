@@ -1527,7 +1527,7 @@ def _evaluate_order_on_holdout(
     start_params: Optional[list[float]] = None, baseline_aic_per_obs: Optional[float] = None,
 ) -> Optional[dict]:
     """Refits the WINNING order on the training window alone (a single extra
-    fit — the 36 candidates in the grid are diagnosed on their own training
+    fit — the 72 candidates in the grid are diagnosed on their own training
     residuals and discarded, not kept around) and forecasts
     ORDER_SELECTION_HOLDOUT_DAYS days into `y_holdout`, which the selection
     never saw. Returns MAPE/RMSE for this order and for a naive
@@ -1646,7 +1646,7 @@ def _run_order_selection_for_facility(facility_id: int, max_types: Optional[int]
     progress survives, the next trigger continues.
 
     A type with fewer than ORDER_SELECTION_MIN_DAYS days of history, whose
-    36-candidate training grid converges nowhere, or whose winning order fails
+    72-candidate training grid converges nowhere, or whose winning order fails
     to refit on the hold-out, is left as it was (no row written) rather than
     storing a meaningless or partial selection."""
     lock_conn = engine.connect()
@@ -1706,7 +1706,9 @@ def _run_order_selection_for_facility(facility_id: int, max_types: Optional[int]
                     start_params=selection["start_params"], baseline_aic_per_obs=selection["aic_per_obs"],
                 )
                 if holdout is None:
-                    continue  # the winning order refits fine 36 times over but not a 37th; extremely unlikely, but skip rather than guess
+                    # the winning order fits during selection but not on the hold-out;
+                    # extremely unlikely, but skip rather than guess
+                    continue
 
                 with engine.begin() as conn:
                     conn.execute(
