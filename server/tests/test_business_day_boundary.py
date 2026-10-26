@@ -82,8 +82,10 @@ class BusinessDayBoundaryTests(unittest.TestCase):
         for label, instant in BOTH:
             with self.subTest(label), freeze(instant):
                 app.get_forecast(facility_id=self.fid)
-                self.assertEqual(q("SELECT snapshot_date, units FROM inventory_snapshots WHERE facility_id=:f", f=self.fid),
-                                 [(MANILA_TODAY, 2)])
+                self.assertEqual(q("SELECT snapshot_date, units FROM inventory_snapshots WHERE facility_id=:f AND blood_type='O+'",
+                                   f=self.fid), [(MANILA_TODAY, 2)])
+                self.assertEqual(q("SELECT DISTINCT snapshot_date FROM inventory_snapshots WHERE facility_id=:f", f=self.fid),
+                                 [(MANILA_TODAY,)])
                 with engine.begin() as c:
                     c.execute(text("DELETE FROM inventory_snapshots WHERE facility_id = :f"), {"f": self.fid})
 
@@ -105,20 +107,28 @@ class BusinessDayBoundaryTests(unittest.TestCase):
         rows = "snapshot_date,blood_type,units\n" + "\n".join(f"{end - timedelta(days=d)},O+,{100 + d % 5}" for d in range(40))
         with engine.begin() as c:  # the fixture units would add snapshot rows; this test wants history only
             c.execute(text("DELETE FROM blood_units WHERE facility_id = :f"), {"f": self.fid})
-        fit = mock.Mock(side_effect=stub_result)
+        # get_forecast now writes all eight types (the other seven as 0 for today only), so the
+        # fitter is also called for those one-day series; the real one returns None for them.
+        # This test is about the 40-day O+ series, so count only fits of a series long enough to fit.
+        fit = mock.Mock(side_effect=lambda series, *a, **kw: (
+            stub_result(series, *a, **kw) if len(series) >= app.SARIMAX_MIN_DAYS_REQUIRED else None))
+
+        def real_fits():
+            return sum(1 for c in fit.call_args_list if len(c.args[0]) >= app.SARIMAX_MIN_DAYS_REQUIRED)
+
         with mock.patch.object(app, "_fit_sarimax_facility_forecast", fit):
             with freeze(JUST_BEFORE_MIDNIGHT):
                 upload(app.upload_historical_inventory_snapshots, self.fid, rows)
                 app.get_forecast(facility_id=self.fid)
-                self.assertEqual(fit.call_count, 1)
+                self.assertEqual(real_fits(), 1)
                 app.get_forecast(facility_id=self.fid)
-                self.assertEqual(fit.call_count, 1, "23:59:55 Manila: still the same business day, cache fresh")
+                self.assertEqual(real_fits(), 1, "23:59:55 Manila: still the same business day, cache fresh")
             with freeze(JUST_AFTER_MIDNIGHT):
                 app.get_forecast(facility_id=self.fid)
-                self.assertEqual(fit.call_count, 2, "00:00:05 Manila: new business day, cache stale (UTC date has not changed yet)")
+                self.assertEqual(real_fits(), 2, "00:00:05 Manila: new business day, cache stale (UTC date has not changed yet)")
             with freeze(JUST_BEFORE_8AM):
                 app.get_forecast(facility_id=self.fid)
-                self.assertEqual(fit.call_count, 2, "07:59:55 Manila: still fresh; it must NOT wait for UTC midnight to refit")
+                self.assertEqual(real_fits(), 2, "07:59:55 Manila: still fresh; it must NOT wait for UTC midnight to refit")
 
 
 if __name__ == "__main__":

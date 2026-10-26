@@ -23,6 +23,7 @@ Set as real environment variables in the hosting platform's dashboard. Never as 
 | `ALLOW_DEV_FACILITY_OVERRIDE` | `false` | must be false — this is a full auth bypass if left on anywhere reachable |
 | `ALLOW_DEV_TEST_TOOLS` | `true` | deliberate choice for this round, so donor-blast reply simulation stays testable |
 | `CORS_ALLOWED_ORIGINS` | unset at first, then the real frontend URL once deployed (step 3 above) | e.g. `https://your-app.vercel.app` |
+| `CRON_SECRET` | a 64-character hex string | `python -c "import secrets; print(secrets.token_hex(32))"` — required by `POST /internal/daily-snapshot`; the endpoint returns 503 while it is unset, so it fails closed |
 
 ## Backend — start command
 

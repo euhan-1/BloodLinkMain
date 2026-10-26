@@ -9,6 +9,7 @@ for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
 
 import csv
 import hashlib
+import hmac
 import io
 import json
 import math
@@ -1392,6 +1393,12 @@ def _collect_sarimax_results(
     missing: list[str] = []
     with engine.connect() as conn:
         for blood_type, series in daily_by_type.items():
+            if len(series) < SARIMAX_MIN_DAYS_REQUIRED:
+                # Can't be fitted yet (the fitter returns None below this), so it must not spend one of
+                # the MAX_SARIMAX_FITS_PER_REQUEST slots or sit in pending_types. Happens once every type
+                # is snapshotted daily: a type with no stock history starts as a one-day series of 0.
+                results[blood_type] = None
+                continue
             cached = _read_cached_sarimax(conn, facility_id, blood_type, series, today)
             if cached is not None:
                 results[blood_type] = cached
@@ -2852,6 +2859,80 @@ async def upload_historical_inventory_snapshots(
     return {"rows_processed": rows_processed, "errors": errors, "days_of_history": days_of_history, "min_days_required": MIN_DAYS_REQUIRED}
 
 
+# ─── Daily inventory snapshot ──────────────────────────────────────────────
+
+def _write_inventory_snapshots(conn, today: date, facility_id: Optional[int] = None) -> list[tuple[int, bool]]:
+    """THE writer of today's inventory_snapshots rows, shared by GET /forecast (one
+    facility) and POST /internal/daily-snapshot (every active facility), so the two
+    can never disagree about what a day's row means.
+
+    Writes ALL eight blood types per facility, a type with no usable units as an
+    explicit 0. Skipping zero rows made a stockout look like an unobserved day, and
+    _resample_daily_series carries the last known level forward over an unobserved
+    day — so a facility that ran out recorded its old stock as still on hand.
+    "Usable" is expires_date >= today alone, the same predicate as /inventory/summary
+    and every other stock count (archived_at only controls what GET /inventory shows;
+    an archived unit is by definition already expired). Last write for the day wins.
+
+    One set-based upsert on (snapshot_date, blood_type, facility_id), ordered so two
+    concurrent callers lock rows in the same order. Returns [(facility_id, inserted)]
+    per row written; inserted is False when it overwrote an existing row for today
+    (xmax = 0 is how Postgres distinguishes the two inside ON CONFLICT ... RETURNING)."""
+    rows = conn.execute(
+        text(
+            """
+            INSERT INTO inventory_snapshots (snapshot_date, blood_type, units, facility_id)
+            SELECT :today, bt.blood_type, COALESCE(c.n, 0), f.id
+            FROM facilities f
+            CROSS JOIN unnest(CAST(:types AS text[])) AS bt(blood_type)
+            LEFT JOIN (
+                SELECT facility_id, blood_type, count(*) AS n
+                FROM blood_units
+                WHERE expires_date >= :today
+                  AND (CAST(:facility_id AS bigint) IS NULL OR facility_id = :facility_id)
+                GROUP BY facility_id, blood_type
+            ) c ON c.facility_id = f.id AND c.blood_type = bt.blood_type
+            WHERE f.is_active AND (CAST(:facility_id AS bigint) IS NULL OR f.id = :facility_id)
+            ORDER BY f.id, bt.blood_type
+            ON CONFLICT (snapshot_date, blood_type, facility_id)
+            DO UPDATE SET units = EXCLUDED.units
+            RETURNING facility_id, (xmax = 0) AS inserted
+            """
+        ),
+        {"today": today, "types": sorted(VALID_BLOOD_TYPES), "facility_id": facility_id},
+    ).all()
+    return [(r.facility_id, r.inserted) for r in rows]
+
+
+@app.post("/internal/daily-snapshot", include_in_schema=False)
+def daily_snapshot(x_cron_secret: Optional[str] = Header(default=None)):
+    """Nightly job (scheduled externally, 23:30 Manila): records today's inventory
+    snapshot for EVERY active facility, hospitals included, so a day nobody opened
+    the dashboard still gets an observation (a real 0 when the shelf is empty).
+    Hospitals are snapshotted but never forecast from.
+
+    Fails closed: 503 if CRON_SECRET is unset or blank, 401 unless X-Cron-Secret
+    matches it. Fits no forecast and archives nothing — one transaction, one upsert,
+    milliseconds. business_today() is read once and used for every write. Idempotent,
+    so a retry (e.g. after a cold-start timeout) is safe."""
+    expected = os.environ.get("CRON_SECRET", "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="daily snapshot job is not configured")
+    # bytes, not str: compare_digest raises TypeError on a non-ASCII str, which would 500
+    if x_cron_secret is None or not hmac.compare_digest(x_cron_secret.encode("utf-8"), expected.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="invalid cron secret")
+
+    today = business_today()
+    with engine.begin() as conn:
+        written = _write_inventory_snapshots(conn, today)
+    return {
+        "snapshot_date": today.isoformat(),
+        "facilities": len({fid for fid, _ in written}),
+        "rows_inserted": sum(1 for _, inserted in written if inserted),
+        "rows_updated": sum(1 for _, inserted in written if not inserted),
+    }
+
+
 @app.get("/forecast")
 def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
     """Dashboard's main data endpoint, scoped to the logged-in user's own
@@ -2865,7 +2946,8 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
     Blood banks: every call records today's real total-per-type USABLE stock
     (expires_date >= today (the Manila business date) only — an expired unit is never counted,
     here or anywhere else stock is treated as available) as a snapshot
-    (idempotent per day, per facility). Three tiers, gated purely on
+    (idempotent per day, per facility; all eight types, a type with no usable
+    units recorded as an explicit 0 — see _write_inventory_snapshots). Three tiers, gated purely on
     how many distinct days of this facility's own real history exist so far:
       - < MIN_DAYS_REQUIRED (3) days: a clearly-labeled SYNTHETIC stand-in —
         the pre-fit SARIMAX(0,1,4)x(1,0,1,7)+dengue model validated in
@@ -2901,20 +2983,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
         if facility_type == "hospital":
             return _build_hospital_threshold_view(conn, facility_id, is_dengue_season, today)
 
-        conn.execute(
-            text(
-                """
-                INSERT INTO inventory_snapshots (snapshot_date, blood_type, units, facility_id)
-                SELECT :today, blood_type, count(*), :facility_id
-                FROM blood_units
-                WHERE facility_id = :facility_id AND expires_date >= :today
-                GROUP BY blood_type
-                ON CONFLICT (snapshot_date, blood_type, facility_id)
-                DO UPDATE SET units = EXCLUDED.units
-                """
-            ),
-            {"today": today, "facility_id": facility_id},
-        )
+        _write_inventory_snapshots(conn, today, facility_id)
 
         history_rows = conn.execute(
             text(

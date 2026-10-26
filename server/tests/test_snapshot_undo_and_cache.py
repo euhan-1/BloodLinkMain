@@ -58,18 +58,31 @@ class SnapshotUndoAndCacheTests(unittest.TestCase):
     def cache_ids(self):
         return sorted(r[0] for r in q("SELECT id FROM facility_forecast_cache WHERE facility_id=:f", f=self.fid))
 
+    def add_units(self, n):
+        """n more unexpired O+ units at this facility."""
+        with engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO blood_units (din, blood_type, component, location, volume_ml, collected_date, expires_date, facility_id) "
+                "SELECT :p || '-' || gs, 'O+', 'Packed RBC', 'Bay', 280, :c, :e, :f FROM generate_series("
+                "(SELECT count(*) FROM blood_units WHERE facility_id=:f) + 1, (SELECT count(*) FROM blood_units WHERE facility_id=:f) + :n) gs"),
+                {"p": f"UC{self.fid}", "c": TODAY - timedelta(days=2), "e": TODAY + timedelta(days=60), "f": self.fid, "n": n})
+
     # ---- Fix 1 -----------------------------------------------------------
     def test_corrected_same_day_reupload_replaces_the_cached_forecast(self):
         wobble = [0, 3, -2, 5, -4, 1, 2]
         v1 = [(d, 100 + wobble[d % 7]) for d in range(1, 41)]
         v2 = [(d, 300 + wobble[d % 7]) for d in range(1, 41)]
         self.hist_upload(csv_for("O+", v1))
+        # Today's snapshot is the real stock now (an empty shelf records 0, no longer "carry yesterday forward"),
+        # so give the facility the stock the old carried-forward day implied: day 1's value, 100 + wobble[1].
+        self.add_units(103)
         first = app.get_forecast(facility_id=self.fid)
         self.assertEqual(first["forecast_source"], "sarimax_facility_history")
         self.assertTrue(self.cache_ids(), "SARIMAX fit should be cached")
 
         self.hist_upload(csv_for("O+", v2))  # corrected export, same day
         self.assertEqual(self.cache_ids(), [], "re-upload must drop the stale cache in the same transaction")
+        self.add_units(200)  # 303 in all = 300 + wobble[1]
         second = app.get_forecast(facility_id=self.fid)
         self.assertGreater(second["series"][-1]["units"], first["series"][-1]["units"] + 100)
 
@@ -82,7 +95,8 @@ class SnapshotUndoAndCacheTests(unittest.TestCase):
         self.assertEqual(self.cache_ids(), [])
         after = app.get_forecast(facility_id=self.fid)
         self.assertNotEqual(after["forecast_source"], "sarimax_facility_history")
-        self.assertEqual(after["days_of_history"], 0)
+        # only the snapshot this very request recorded (all eight types, 0 each: the facility holds no units)
+        self.assertEqual(after["days_of_history"], 1)
 
     def test_stock_change_today_updates_day_0_without_refit_and_unchanged_read_hits_cache(self):
         wobble = [0, 3, -2, 5, -4, 1, 2]

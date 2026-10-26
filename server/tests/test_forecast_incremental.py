@@ -65,7 +65,8 @@ class IncrementalForecastTests(unittest.TestCase):
             self.assertEqual(len(r1["pending_types"]), 3)
             self.assertEqual(r1["series"], [], "no facility total while types are missing")
             self.assertEqual(r1["restock_status"], "pending")
-            self.assertEqual(r1["types_total"], 5)
+            # the 5 uploaded types plus the 3 snapshotted today as explicit 0 (one-day series, never fitted)
+            self.assertEqual(r1["types_total"], 8)
             self.assertTrue(self.lock_is_free(), "the advisory lock must be released after the request")
 
             r2 = app.get_forecast(facility_id=self.fid)
@@ -137,10 +138,56 @@ class IncrementalForecastTests(unittest.TestCase):
         with mock.patch.object(app, "_fit_sarimax_facility_forecast", fit), mock.patch.object(app, "MAX_SARIMAX_FITS_PER_REQUEST", 5):
             r1 = app.get_forecast(facility_id=self.fid)
             self.assertEqual(r1["pending_types"], [])
-            self.assertEqual(sorted(r1["sarimax_fallback_types"]), sorted(TYPES))
+            # all 8: the 5 whose fit returned None, plus the 3 one-day zero series that are never offered to the fitter
+            self.assertEqual(sorted(r1["sarimax_fallback_types"]), sorted(app.VALID_BLOOD_TYPES))
             self.assertEqual(fit.call_count, 5)
             app.get_forecast(facility_id=self.fid)
             self.assertEqual(fit.call_count, 5, "a type that failed today is not refit on every request")
+
+
+class ShortSeriesTypeTests(unittest.TestCase):
+    """A facility past the 30-day gate can still hold a type whose own series is short (it first appeared a
+    few days ago; every type is now snapshotted daily, so a never-stocked type starts as a one-day series of
+    0). The fitter returns None for it, so it must go straight to the linear trend: no fit slot spent, never
+    listed as pending."""
+
+    def setUp(self):
+        with engine.begin() as c:
+            self.fid = c.execute(text("INSERT INTO facilities (name, facility_type, is_active, profile_completed) "
+                                      "VALUES (:n, 'bloodbank', true, true) RETURNING id"), {"n": f"Short {uuid.uuid4().hex[:6]}"}).scalar()
+        rows = ["snapshot_date,blood_type,units"]
+        rows += [f"{TODAY - timedelta(days=d)},{t},{100 + (d * 7) % 5}" for d in range(1, 41) for t in ("O+", "O-")]
+        rows += [f"{TODAY - timedelta(days=d)},B+,{50 - d}" for d in range(1, 6)]  # B+: 5 days of its own history
+        body, _, _ = upload(app.upload_historical_inventory_snapshots, self.fid, "\n".join(rows))
+        self.assertEqual(body["errors"], [])
+
+    def tearDown(self):
+        with engine.begin() as c:
+            for t in ("notifications", "forecast_alert_state", "facility_forecast_cache", "inventory_snapshot_write_log",
+                      "blood_units", "inventory_snapshots", "upload_history"):
+                c.execute(text(f"DELETE FROM {t} WHERE facility_id = :f"), {"f": self.fid})
+            c.execute(text("DELETE FROM facilities WHERE id = :f"), {"f": self.fid})
+        app._SARIMAX_FIT_FAILED.clear()
+
+    def test_short_series_type_uses_the_linear_trend_without_a_fit_slot_or_pending(self):
+        fit = mock.Mock(side_effect=stub_result)
+        with mock.patch.object(app, "_fit_sarimax_facility_forecast", fit):
+            r = app.get_forecast(facility_id=self.fid)
+            self.assertEqual(r["forecast_source"], "sarimax_facility_history")
+            self.assertEqual(fit.call_count, 2, "only the two long series are offered to the fitter")
+            self.assertEqual([len(c.args[0]) >= app.SARIMAX_MIN_DAYS_REQUIRED for c in fit.call_args_list], [True, True])
+            self.assertEqual(r["pending_types"], [], "B+ (and the five types recorded as 0 today) are not pending; "
+                             "with the old code B+ queued behind the two fits and the panel showed 'pending'")
+            self.assertEqual(len(r["series"]), 7, "no pending type, so the facility total is present")
+            self.assertEqual(r["types_total"], 8)
+            self.assertEqual(sorted(r["sarimax_fallback_types"]), sorted(set(app.VALID_BLOOD_TYPES) - {"O+", "O-"}))
+            self.assertIn("B+", r["sarimax_fallback_types"])
+            self.assertEqual(self.cached_types(), ["O+", "O-"], "only fitted types are cached")
+            app.get_forecast(facility_id=self.fid)
+            self.assertEqual(fit.call_count, 2, "nothing left to fit on the next request")
+
+    def cached_types(self):
+        return sorted({r[0] for r in q("SELECT blood_type FROM facility_forecast_cache WHERE facility_id=:f", f=self.fid)})
 
 
 if __name__ == "__main__":
