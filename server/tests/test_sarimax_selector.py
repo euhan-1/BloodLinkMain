@@ -2,27 +2,35 @@
 (sarimax_selector_common.py / train_sarimax_selector.py): feature
 extraction and candidate library validity.
 
-This feature is NOT wired into main.py. train_sarimax_selector.py's own
-evaluation (AI-recommended config vs the fixed default vs a full
-Box-Jenkins search, on held-out synthetic series) did not clear the bar set
-in advance for either check — recommendations never varied across more than
-2 of the 12 candidates, and the AI did not beat the fixed default on
-held-out RMSE/MAPE. Per that script's own STOP condition, no model artifact
-was saved (models/sarimax_selector.joblib does not exist) and main.py still
-hard-codes FACILITY_SARIMAX_ORDER/FACILITY_SARIMAX_SEASONAL_ORDER exactly as
-it did before this work started — see main.py's "NOTE ON THE AI
-MODEL-SELECTION FEATURE" comment just above _fit_sarimax_facility_forecast.
+This feature is NOT wired into main.py. The default run of
+train_sarimax_selector.py stops at its Stage 1 gate: the oracle (per-series
+config selection by forecast error) must beat the fixed default by >= 5% and
+doesn't — 18.983 RMSE / 28.11 MAPE vs the default's 18.506 / 26.94, i.e.
+worse. So no classifier is trained and no artifact is saved
+(models/sarimax_selector.joblib does not exist).
 
-These tests therefore only cover the parts that exist independent of that
-verdict: the pure feature-extraction function and the candidate library's
-own shape/validity. If a future retrain reaches a GO verdict and the
-integration work is redone, this file should grow the "tree loads and
-returns a valid config" / integration / fallback tests the original task
-asked for.
+With --force-stage2 a depth-4 tree does train and recommends 5 of the 12
+candidates on held-out series, but doesn't beat the default (AI 17.241 / 25.12
+vs default 16.882 / 24.61) and lands within 0.3% of the oracle (17.236 /
+25.06). It reaches the ceiling of its label, so the limit is the premise —
+per-series selection on short histories — not the model. Forced artifacts are
+stamped deploy_recommended=False. All figures are from synthetic series, not
+real facility data. main.py still hard-codes
+FACILITY_SARIMAX_ORDER/FACILITY_SARIMAX_SEASONAL_ORDER — see its "NOTE ON THE
+AI MODEL-SELECTION FEATURE" comment above _fit_sarimax_facility_forecast.
 
-Run from the server/ directory:
+These tests therefore cover only what exists independent of that verdict:
+feature extraction, the candidate library's shape, and the JSON-rules export.
+If a future retrain passes the gate and integration is redone, this file
+should grow "tree loads and returns a valid config" / fallback tests.
 
-    .venv\\Scripts\\python.exe -m unittest tests.test_sarimax_selector -v
+Run via the full suite (conftest needs TEST_DATABASE_URL set to a local
+scratch Postgres), from the repo root:
+
+    server\\.venv\\Scripts\\python.exe -m pytest server/tests -q
+
+Not `python -m unittest` — that skips conftest and hits .env's production
+DATABASE_URL.
 """
 
 import math
@@ -103,16 +111,37 @@ class CandidateLibraryTests(unittest.TestCase):
         self.assertEqual(sel.SARIMAX_DEFAULT_SEASONAL_ORDER, (1, 0, 1, 7))
 
 
+class TreeRulesExportTests(unittest.TestCase):
+    """The exported JSON rules must give the same answer as the sklearn tree
+    they came from — the rules are what would run on Render, where
+    scikit-learn isn't installed."""
+
+    def test_rules_match_sklearn_tree(self):
+        import numpy as np
+        from sklearn.tree import DecisionTreeClassifier
+        from train_sarimax_selector import tree_to_rules
+
+        rng = np.random.default_rng(0)
+        X = rng.normal(size=(300, len(FEATURE_NAMES)))
+        y = np.where(X[:, 0] > 0.3, 5, np.where(X[:, 3] > 0, 2, 9))
+        clf = DecisionTreeClassifier(max_depth=4, random_state=0).fit(X, y)
+        rules = {"tree": tree_to_rules(clf, FEATURE_NAMES)}
+        for row, expected in zip(X, clf.predict(X)):
+            got = sel.recommend_candidate_index_from_rules(dict(zip(FEATURE_NAMES, row)), rules)
+            self.assertEqual(got, int(expected))
+
+
 class ModelArtifactNotIntegratedTests(unittest.TestCase):
     """Documents the actual current state as an executable assertion,
     rather than just a comment: no artifact was saved, because the
-    evaluation didn't pass, so there is nothing for main.py to load."""
+    Stage 1 gate failed, so there is nothing for main.py to load."""
 
     def test_no_model_artifact_was_saved(self):
         self.assertFalse(
             sel.DEFAULT_MODEL_PATH.exists(),
-            "A model artifact exists, but the last known evaluation STOPped — "
-            "if this is a fresh, passing retrain, main.py's AI integration needs to be redone "
+            "A model artifact exists, but the Stage 1 gate last failed. It may be a --force-stage2 "
+            "artifact (check deploy_recommended; use --out-dir to keep those out of server/models/), "
+            "or a fresh passing retrain — in which case main.py's AI integration needs to be redone "
             "(see the 'NOTE ON THE AI MODEL-SELECTION FEATURE' comment there) and this test updated.",
         )
 

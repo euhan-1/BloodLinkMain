@@ -340,6 +340,16 @@ def load_selector_model(path: Path = DEFAULT_MODEL_PATH) -> dict:
     return _loaded_model_cache[key]
 
 
+def recommend_candidate_index_from_rules(features: dict[str, float], rules: dict) -> int:
+    """Same answer as recommend_candidate_index, walking the exported JSON
+    rules (train_sarimax_selector.tree_to_rules) — no scikit-learn, so it can
+    run on the 512 MB Render instance."""
+    node = rules["tree"]
+    while "leaf" not in node:
+        node = node["left"] if features[node["feature"]] <= node["threshold"] else node["right"]
+    return node["leaf"]
+
+
 def recommend_candidate_index(features: dict[str, float], bundle: dict) -> int:
     tree = bundle["tree"]
     vector = [features_to_vector(features)]

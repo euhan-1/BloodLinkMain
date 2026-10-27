@@ -42,8 +42,18 @@ Methodology (kept strictly non-leaky — see the per-series data flow below):
 
 Run manually (like every other script in this pipeline):
     .venv\\Scripts\\python.exe train_sarimax_selector.py
+
+Flags:
+  --force-stage2  run Stage 2 even if the Stage 1 gate fails. The gate still
+                  runs and its verdict stands; the artifacts are stamped
+                  deploy_recommended=False. Answers "can we train one", not
+                  "should we deploy it".
+  --quick         much smaller N_* sample sizes — a demo run, not evidence.
+  --out-dir DIR   where the joblib + rules JSON go (default: server/models/).
 """
 
+import argparse
+import json
 import random
 import time
 from datetime import date, timedelta
@@ -66,6 +76,7 @@ from sarimax_selector_common import (
     extract_series_features,
     features_to_vector,
     fit_candidate,
+    recommend_candidate_index_from_rules,
 )
 
 DENGUE_SEASON_MONTHS = {6, 7, 8, 9, 10}  # must match main.py's DENGUE_SEASON_MONTHS
@@ -74,6 +85,11 @@ RANDOM_SEED = 11
 N_GATE_SERIES = 70  # Stage 1 gate sample
 N_TRAIN_SERIES = 220
 N_EVAL_SERIES = 60
+# --quick: a demo run sized to the wall-clock budget. Fewer series alone can't hit
+# it (one long series per batch is the floor), so CV origins drop too — noisier labels.
+QUICK = False
+QUICK_N_GATE, QUICK_N_TRAIN, QUICK_N_EVAL = 16, 32, 16
+QUICK_LABEL_CV_ORIGINS = 2
 
 EVAL_HORIZON = 14  # the true, final held-out horizon every series reserves — UNCHANGED from attempt 2
 # THIRD ATTEMPT — the one lever under test: more and longer rolling-origin CV
@@ -211,7 +227,7 @@ def _deploy_and_score(history_endog, history_exog, final_endog, final_exog, orde
     }, elapsed
 
 
-def _process_one_series(seed: int, params: dict, need_features: bool) -> Optional[dict]:
+def _process_one_series(seed: int, params: dict, need_features: bool, cv_origins: int) -> Optional[dict]:
     """Picklable top-level worker for joblib.Parallel. For one series:
       - selects the forecast-error-best config using ONLY the history
         portion (rolling-origin CV) — this is both the training label AND
@@ -237,7 +253,7 @@ def _process_one_series(seed: int, params: dict, need_features: bool) -> Optiona
 
     cv_result = best_candidate_by_forecast_error(
         hist_endog, hist_exog, library=CANDIDATE_LIBRARY,
-        horizon=LABEL_CV_HORIZON, n_origins=LABEL_CV_ORIGINS, maxiter=LABEL_FIT_MAXITER,
+        horizon=LABEL_CV_HORIZON, n_origins=cv_origins, maxiter=LABEL_FIT_MAXITER,
     )
     if cv_result is None:
         return None
@@ -271,12 +287,13 @@ def _process_one_series(seed: int, params: dict, need_features: bool) -> Optiona
 
 
 def _run_batch(n_series: int, seed_offset: int, need_features: bool) -> list[dict]:
+    label_cv_origins = QUICK_LABEL_CV_ORIGINS if QUICK else LABEL_CV_ORIGINS
     rng = random.Random(RANDOM_SEED + seed_offset)
     param_sets = [sample_series_params(rng) for _ in range(n_series)]
     seeds = [rng.randint(0, 2**31 - 1) for _ in range(n_series)]
     t0 = time.time()
     results = Parallel(n_jobs=-1, verbose=5)(
-        delayed(_process_one_series)(seed, params, need_features) for seed, params in zip(seeds, param_sets)
+        delayed(_process_one_series)(seed, params, need_features, label_cv_origins) for seed, params in zip(seeds, param_sets)
     )
     print(f"processed {n_series} series in {time.time() - t0:.1f}s")
     return [r for r in results if r is not None]
@@ -292,7 +309,7 @@ def _summarize_errors(rows: list[dict], key: str) -> dict:
     }
 
 
-def run_stage1_gate() -> tuple[bool, list[dict]]:
+def run_stage1_gate(force: bool = False) -> tuple[bool, list[str]]:
     print(f"=== STAGE 1 GATE: oracle (forecast-error-selected config) vs fixed default, {N_GATE_SERIES} heterogeneous series ===")
     rows = _run_batch(N_GATE_SERIES, seed_offset=500, need_features=False)
     print(f"{len(rows)}/{N_GATE_SERIES} series survived (had a CV-survivable candidate and a scorable final forecast)")
@@ -327,22 +344,54 @@ def run_stage1_gate() -> tuple[bool, list[dict]]:
     meaningful_margin = beats_default_rmse and beats_default_mape and rmse_margin_pct >= 5.0 and mape_margin_pct >= 5.0
     passed = meaningful_margin and varies
 
+    reasons: list[str] = []
     if not passed:
         print("\nSTOP at Stage 1: the premise doesn't hold on this heterogeneous, non-rigged population.")
         if not (beats_default_rmse and beats_default_mape):
-            print("The oracle (full information, forecast-error selection) doesn't clearly beat the fixed default.")
+            reasons.append("The oracle (full information, forecast-error selection) doesn't clearly beat the fixed default.")
         elif not meaningful_margin:
-            print(f"The oracle beats the default, but only marginally (RMSE {rmse_margin_pct:+.1f}%, MAPE {mape_margin_pct:+.1f}%) — not a meaningful margin.")
+            reasons.append(f"The oracle beats the default, but only marginally (RMSE {rmse_margin_pct:+.1f}%, MAPE {mape_margin_pct:+.1f}%) — not a meaningful margin.")
         if not varies:
-            print(f"The winning config barely varies ({len(label_counts)} distinct) — most series want the same config regardless of their real differences.")
-        print("Per-facility config selection does not appear to genuinely help on this data. NOT training a classifier against this target.")
+            reasons.append(f"The winning config barely varies ({len(label_counts)} distinct) — most series want the same config regardless of their real differences.")
+        for reason in reasons:
+            print(reason)
+        if force:
+            print("\n!!! GATE FAILED — the verdict stands. Stage 2 runs anyway because --force-stage2 was passed. !!!")
+        else:
+            print("Per-facility config selection does not appear to genuinely help on this data. NOT training a classifier against this target.")
     else:
         print(f"\nGATE PASSED: oracle beats default by a meaningful margin (RMSE {rmse_margin_pct:+.1f}%, MAPE {mape_margin_pct:+.1f}%) and the winning config varies ({len(label_counts)} distinct). Proceeding to Stage 2.")
 
-    return passed, rows
+    return passed, reasons
 
 
-def run_stage2_train_and_evaluate():
+def tree_to_rules(clf, feature_names: list[str]) -> dict:
+    """Nested-dict export of a fitted DecisionTreeClassifier: internal nodes
+    {"feature", "threshold", "left" (<=), "right" (>)}, leaves {"leaf": candidate
+    index}. Evaluated by sarimax_selector_common.recommend_candidate_index_from_rules
+    with no scikit-learn import."""
+    t = clf.tree_
+
+    def node(i: int) -> dict:
+        if t.children_left[i] == -1:
+            return {"leaf": int(clf.classes_[int(np.argmax(t.value[i][0]))])}
+        return {
+            "feature": feature_names[t.feature[i]], "threshold": float(t.threshold[i]),
+            "left": node(t.children_left[i]), "right": node(t.children_right[i]),
+        }
+
+    return node(0)
+
+
+def run_stage2_train_and_evaluate(force: bool = False, gate_passed: bool = True,
+                                  gate_reasons: Optional[list[str]] = None, out_dir: Path = MODEL_PATH.parent):
+    if force and not gate_passed:
+        print("\n" + "!" * 78)
+        print("STAGE 2 IS RUNNING DESPITE A FAILED STAGE 1 GATE (--force-stage2).")
+        for reason in gate_reasons or []:
+            print(f"  gate failed because: {reason}")
+        print("Results below show whether a classifier CAN be trained, not that it SHOULD be deployed.")
+        print("!" * 78)
     print(f"\n=== STAGE 2: generating + labeling {N_TRAIN_SERIES} training series (forecast-error rule) ===")
     train_rows = _run_batch(N_TRAIN_SERIES, seed_offset=1000, need_features=True)
     print(f"{len(train_rows)}/{N_TRAIN_SERIES} series labeled successfully")
@@ -404,7 +453,7 @@ def run_stage2_train_and_evaluate():
 
     ai_variety = len(set(r["idx"] for r in ai_results))
     ai_distribution = pd.Series([r["idx"] for r in ai_results]).value_counts()
-    print(f"\nAI recommended {ai_variety} distinct configs across {len(ai_results)} held-out series:")
+    print(f"\nAI recommended {ai_variety} of {len(CANDIDATE_LIBRARY)} candidate configs across {len(ai_results)} held-out series:")
     for idx, count in ai_distribution.items():
         print(f"  [{idx}] {CANDIDATE_LIBRARY[idx]}: recommended for {count} series")
 
@@ -418,29 +467,76 @@ def run_stage2_train_and_evaluate():
     print(f"AI recommendations vary meaningfully (>=3 distinct configs): {varies_meaningfully}  ({ai_variety} distinct)")
 
     passed = varies_meaningfully and (beats_default_rmse or beats_default_mape)
-    if not passed:
+    if not passed and not force:
         print("\nSTOP at Stage 2: the trained classifier does not clear the bar. NOT saving a model artifact, NOT integrating.")
         return None
 
-    print("\nSTAGE 2 PASSED: saving model artifact.")
+    deploy_recommended = passed and gate_passed
+    if passed and gate_passed:
+        print("\nSTAGE 2 PASSED: saving model artifact.")
+    elif passed:
+        print("\nSTAGE 2 CHECK PASSED, but the Stage 1 gate FAILED: saving artifacts for inspection only (--force-stage2).")
+    else:
+        print("\nSTAGE 2 CHECK FAILED: saving artifacts anyway (--force-stage2) for inspection only.")
+    print(f"deploy_recommended = {deploy_recommended}  (gate_passed={gate_passed}, stage2_passed={passed})")
+
+    rules = tree_to_rules(clf, FEATURE_NAMES)
+    # Prove the dependency-free rules match the sklearn tree on every row either
+    # set ever saw, before trusting them.
+    check_rows = [r["features"] for r in train_rows + eval_rows]
+    agree = sum(
+        recommend_candidate_index_from_rules(f, {"tree": rules}) == int(clf.predict([features_to_vector(f)])[0])
+        for f in check_rows
+    )
+    print(f"rules JSON agrees with the sklearn tree on {agree}/{len(check_rows)} series")
+    assert agree == len(check_rows), "exported rules diverge from the sklearn tree"
+
+    stamp = {
+        "deploy_recommended": deploy_recommended, "gate_passed": gate_passed,
+        "stage2_passed": passed, "forced_past_gate": force and not gate_passed,
+        "gate_reasons": gate_reasons or [],
+    }
+    summary = {"ai": ai_summary, "default": default_summary, "oracle": oracle_summary}
     bundle = {
         "tree": clf,
         "feature_names": FEATURE_NAMES,
         "candidate_library": CANDIDATE_LIBRARY,
         "default_index": SARIMAX_DEFAULT_INDEX,
-        "evaluation_summary": {"ai": ai_summary, "default": default_summary, "oracle": oracle_summary},
+        "evaluation_summary": summary,
+        **stamp,
     }
-    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(bundle, MODEL_PATH)
-    print(f"saved {MODEL_PATH}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump(bundle, out_dir / MODEL_PATH.name)
+    rules_path = out_dir / "sarimax_selector_rules.json"
+    rules_path.write_text(json.dumps({
+        "tree": rules,
+        "feature_names": FEATURE_NAMES,
+        "candidate_library": CANDIDATE_LIBRARY,
+        "default_index": SARIMAX_DEFAULT_INDEX,
+        "evaluation_summary": summary,
+        **stamp,
+    }, indent=2), encoding="utf-8")
+    print(f"saved {out_dir / MODEL_PATH.name}\nsaved {rules_path}")
     return bundle
 
 
 def main():
-    gate_passed, _gate_rows = run_stage1_gate()
-    if not gate_passed:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--force-stage2", action="store_true", help="run Stage 2 even if the Stage 1 gate fails")
+    parser.add_argument("--quick", action="store_true", help="much smaller N_* constants (demo run, not evidence)")
+    parser.add_argument("--out-dir", type=Path, default=MODEL_PATH.parent, help="where artifacts are written")
+    args = parser.parse_args()
+
+    if args.quick:
+        global N_GATE_SERIES, N_TRAIN_SERIES, N_EVAL_SERIES, QUICK
+        QUICK = True
+        N_GATE_SERIES, N_TRAIN_SERIES, N_EVAL_SERIES = QUICK_N_GATE, QUICK_N_TRAIN, QUICK_N_EVAL
+        print(f"--quick: N_GATE/TRAIN/EVAL = {N_GATE_SERIES}/{N_TRAIN_SERIES}/{N_EVAL_SERIES} (demo run — too small to be evidence)")
+
+    gate_passed, gate_reasons = run_stage1_gate(force=args.force_stage2)
+    if not gate_passed and not args.force_stage2:
         return
-    run_stage2_train_and_evaluate()
+    run_stage2_train_and_evaluate(args.force_stage2, gate_passed, gate_reasons, args.out_dir)
 
 
 if __name__ == "__main__":

@@ -11,3 +11,5 @@ __pycache__/
 server/tmp/
 .agents/
 skills-lock.json
+*.joblib
+server/models/

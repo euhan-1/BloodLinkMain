@@ -1063,15 +1063,19 @@ def _sarimax_fit_is_sane(fit, n_obs: int, baseline_aic_per_obs: Optional[float])
 
 
 # NOTE ON THE AI MODEL-SELECTION FEATURE: deliberately NOT wired in here.
-# train_sarimax_selector.py builds and evaluates a decision-tree selector
-# that chooses among sarimax_selector_common.CANDIDATE_LIBRARY, but its own
-# evaluation (AI-recommended config vs this fixed default vs a full
-# Box-Jenkins search, on held-out synthetic series) did not clear the bar
-# set in advance — see that script's STOP CONDITION CHECK output. Per that
-# script's own explicit instruction, a selector that doesn't beat this fixed
-# default is not integrated. This function still hard-codes
-# FACILITY_SARIMAX_ORDER/FACILITY_SARIMAX_SEASONAL_ORDER exactly as it did
-# before that work started.
+# train_sarimax_selector.py stops at its Stage 1 gate: per-series selection
+# (the "oracle") must beat this fixed default by >= 5% and it doesn't — on
+# synthetic series it scores 18.983 RMSE / 28.11 MAPE vs the default's
+# 18.506 / 26.94, i.e. worse. So by default no classifier is trained and no
+# artifact is saved. With --force-stage2 a depth-4 tree does train and
+# recommends 5 of the 12 candidates on held-out series, but still doesn't
+# beat the default (17.241 / 25.12 vs 16.882 / 24.61) and lands within 0.3%
+# of the oracle (17.236 / 25.06): it reaches the ceiling of its label, so
+# the limit is the premise (per-series selection on short histories), not the
+# model. Forced artifacts are stamped deploy_recommended=False. All figures
+# are from synthetic series, not real facility data. This function still
+# hard-codes FACILITY_SARIMAX_ORDER/FACILITY_SARIMAX_SEASONAL_ORDER exactly
+# as it did before that work started.
 def _fit_sarimax_facility_forecast(
     daily_series: list[tuple[date, int]], today: date,
     order: tuple[int, int, int] = FACILITY_SARIMAX_ORDER,
