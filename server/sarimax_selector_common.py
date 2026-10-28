@@ -8,13 +8,18 @@ training time and at inference time — two separate implementations that
 drift apart would silently corrupt the tree's learned splits on real data.
 This module never touches the database and never imports main.py (main.py
 imports this, not the other way around).
+
+It must stay importable on the deployed instance, which has no scikit-learn
+and no joblib (requirements-dev.txt only): nothing at module level may import
+either. tests/test_sarimax_selector_import.py enforces that in a subprocess.
 """
 
+import json
+import math
 import warnings
 from pathlib import Path
 from typing import Optional
 
-import joblib
 import numpy as np
 import pandas as pd
 from statsmodels.tsa.stattools import acf, adfuller, pacf
@@ -334,6 +339,8 @@ def load_selector_model(path: Path = DEFAULT_MODEL_PATH) -> dict:
     learned on, even if this module's live CANDIDATE_LIBRARY constant is
     later edited without retraining.
     """
+    import joblib  # dev-only dependency (requirements-dev.txt); the deployed path uses the rules JSON instead
+
     key = str(path)
     if key not in _loaded_model_cache:
         _loaded_model_cache[key] = joblib.load(path)
@@ -343,11 +350,84 @@ def load_selector_model(path: Path = DEFAULT_MODEL_PATH) -> dict:
 def recommend_candidate_index_from_rules(features: dict[str, float], rules: dict) -> int:
     """Same answer as recommend_candidate_index, walking the exported JSON
     rules (train_sarimax_selector.tree_to_rules) — no scikit-learn, so it can
-    run on the 512 MB Render instance."""
+    run on the 512 MB Render instance.
+
+    Raises ValueError if any of the 13 features is NaN/inf. The walk itself
+    would not: `nan <= threshold` is False, so a NaN silently takes the right
+    branch and returns a plausible-looking, arbitrary config."""
+    bad = [name for name in FEATURE_NAMES if not math.isfinite(features[name])]
+    if bad:
+        raise ValueError(f"non-finite feature(s): {', '.join(bad)}")
     node = rules["tree"]
     while "leaf" not in node:
         node = node["left"] if features[node["feature"]] <= node["threshold"] else node["right"]
     return node["leaf"]
+
+
+DEFAULT_RULES_PATH = Path(__file__).parent / "models" / "sarimax_selector_rules.json"
+
+# path -> validated rules, or None when the file was missing/invalid. Failures are cached
+# too: a missing file must cost one stat per process, not one per forecast request.
+_loaded_rules_cache: dict[str, Optional[dict]] = {}
+
+
+def _validate_rules(rules: dict) -> None:
+    """Raises ValueError unless `rules` is a tree this module can walk safely: the
+    feature list matches FEATURE_NAMES exactly (a rules file left stale by a feature
+    change must be rejected, not walked), every node is well formed, and every leaf
+    indexes into the file's own candidate_library."""
+    if rules.get("feature_names") != FEATURE_NAMES:
+        raise ValueError("rules feature_names differ from FEATURE_NAMES (retrain, or the file is stale)")
+    library = rules["candidate_library"]
+    if not library:
+        raise ValueError("empty candidate_library")
+    for order, seasonal in library:
+        if len(order) != 3 or len(seasonal) != 4 or not all(isinstance(v, int) and v >= 0 for v in [*order, *seasonal]):
+            raise ValueError(f"malformed candidate {order}x{seasonal}")
+    stack = [rules["tree"]]
+    while stack:
+        node = stack.pop()
+        if "leaf" in node:
+            if not (isinstance(node["leaf"], int) and 0 <= node["leaf"] < len(library)):
+                raise ValueError(f"leaf {node['leaf']!r} is outside candidate_library (size {len(library)})")
+        else:
+            if node["feature"] not in FEATURE_NAMES or not math.isfinite(node["threshold"]):
+                raise ValueError(f"bad split on {node['feature']!r}")
+            stack += [node["left"], node["right"]]
+
+
+def load_selector_rules(path: Optional[Path] = None) -> Optional[dict]:
+    """The validated rules JSON, or None if it is missing or unusable (a one-line
+    reason is printed, once per process). Never raises. Loaded at most once per path
+    per process, failures included. `path` defaults to DEFAULT_RULES_PATH, read at
+    call time so tests can point it elsewhere."""
+    path = DEFAULT_RULES_PATH if path is None else path
+    key = str(path)
+    if key not in _loaded_rules_cache:
+        try:
+            rules = json.loads(Path(path).read_text(encoding="utf-8"))
+            _validate_rules(rules)
+        except Exception as exc:
+            print(f"[sarimax] AI order rules unavailable ({type(exc).__name__}: {exc}); the default order will be used")
+            rules = None
+        _loaded_rules_cache[key] = rules
+    return _loaded_rules_cache[key]
+
+
+def recommend_order_from_series(values, rules: dict) -> tuple[tuple[int, int, int], tuple[int, int, int, int]]:
+    """(order, seasonal_order) the rules recommend for this daily series: the
+    feature extraction plus the tree walk, milliseconds, no model fit. `values` is
+    every observation available before the forecast, the same quantity the
+    selector was trained on (train_sarimax_selector.py extracts features from the
+    history before its held-out window).
+
+    Raises (ValueError on non-finite features, anything else statsmodels throws);
+    the caller turns every failure into 'use the default order'."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # e.g. SingularMatrixWarning on a constant series
+        features = extract_series_features(values)
+    order, seasonal_order = rules["candidate_library"][recommend_candidate_index_from_rules(features, rules)]
+    return tuple(order), tuple(seasonal_order)
 
 
 def recommend_candidate_index(features: dict[str, float], bundle: dict) -> int:

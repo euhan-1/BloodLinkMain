@@ -159,7 +159,7 @@ Cached per-facility SARIMAX forecast checkpoints, refit at most once a day per f
 | lower_units | numeric | — |  | Lower end of the 95% prediction interval. | 43 |
 | upper_units | numeric | — |  | Upper end of the 95% prediction interval. | 43 |
 | trained_through_date | date | — |  | The last day of history the model was fitted on; the cache is reused only while this equals today. | 2026-09-24 |
-| model_order | text | — |  | Label of the model that produced it (the fixed SARIMAX order plus the dengue regressor). | SARIMAX(0,1,4)x(1,0,1,7)+dengue |
+| model_order | text | — |  | Label of the model that produced it: the SARIMAX order plus the dengue regressor, and how the order was obtained (grid-searched, ai-recommended or default-order). | SARIMAX(0,1,4)x(1,0,1,7)+dengue |
 | generated_at | timestamp with time zone | — |  | When it was computed. | 2026-09-23 17:25:40.823435+00:00 |
 
 Composite unique key (facility_id, blood_type, forecast_date); `UK*` marks a column that is part of one.

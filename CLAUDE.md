@@ -41,8 +41,21 @@ requests, SARIMAX demand forecasting, donor broadcast.
   seasonal P,Q ∈ {0,1}, D=0, s=7), selected on the training window only
   (series minus last 30 days), lowest AIC among candidates passing df-corrected
   Ljung-Box at lags 14/21/28 with K = p+q+P+Q. Stored per (facility, blood type)
-  in `facility_sarimax_order`. Live fitter reads it; fallback is
-  `(0,1,4)x(1,0,1,7)`, labelled as a fallback.
+  in `facility_sarimax_order`.
+- **Which order a fit uses** (`_resolve_order`), in precedence: (1) the grid-searched
+  row; (2) an AI recommendation, a depth-4 decision tree over 13 features of the
+  type's own daily series, walked from `server/models/sarimax_selector_rules.json`
+  (no scikit-learn), computed at fit time and not stored; (3) the fixed default
+  `(0,1,4)x(1,0,1,7)` when the AI can't produce one (rules missing or invalid,
+  non-finite feature, any error). The label names the mechanism, in
+  `facility_forecast_cache.model_order` and `/forecast`'s `sarimax_orders`:
+  ` [grid-searched]`, ` [ai-recommended]`, ` [default-order]` (legacy rows: no
+  suffix = grid-searched, ` [fallback]` = default-order). Labels never claim
+  quality: the tree was measured not to beat the default on synthetic data
+  (`deploy_recommended=false` in the JSON), so no better/optimized/improved
+  wording anywhere. `sarimax_fallback_types` is unrelated: SARIMAX failed and the
+  linear trend was used. `sarimax_selector_common.py` must stay importable
+  without joblib/scikit-learn (`tests/test_sarimax_selector_import.py`).
 - **Uploads are batched** — `INSERT … SELECT … FROM unnest(...)`, never
   row-by-row. Three CSV parsers require exact column names, filter extras, and
   reject on a missing required column.
@@ -52,8 +65,8 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (241 tests plus
-  39 subtests; use `server/.venv`, system Python lacks pytest). Never run
+  local scratch Postgres: `python -m pytest server/tests -q` (280 tests plus
+  84 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
   refuses to run without it or against a non-local host, overrides

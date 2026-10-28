@@ -298,7 +298,9 @@
   "limitations": [
     "Trained and evaluated on synthetic series only (generate_diverse_series); no real facility data.",
     "Labels come from 21-day rolling-origin CV windows, but the live forecast horizon is 30 days.",
-    "2 of the tree's 7 split features (mean_level, n_obs) are set directly by the generator's own length and baseline parameters, so the tree can lean on them in a way a real population may not support."
+    "2 of the tree's 7 split features (mean_level, n_obs) are set directly by the generator's own length and baseline parameters, so the tree can lean on them in a way a real population may not support.",
+    "No held-out evidence exists below 46 days of history: length-45 series cannot form a cross-validation window, so all 14 (8 eval, 6 gate) were excluded. Production's SARIMAX floor is 30 days (SARIMAX_MIN_DAYS_REQUIRED), so the deployed selector issues recommendations for 30-45 days of history with no evaluation behind them.",
+    "Footnote, not a robustness finding: in 1 of 52 held-out series the fixed default order hit this harness's 100-iteration cap (seed 1307257252, 46 days of history); it converges at production's 200 iterations with the Nelder-Mead-then-L-BFGS retry, so it is not a deployed failure mode. The AI order scored on all 52, but one harness-cap case does not show the AI order is more robust."
   ],
   "split_features": [
     "acf7_diff",

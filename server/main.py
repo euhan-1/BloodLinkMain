@@ -110,6 +110,15 @@ SARIMAX_MIN_DAYS_REQUIRED = 30
 FACILITY_SARIMAX_ORDER = (0, 1, 4)
 FACILITY_SARIMAX_SEASONAL_ORDER = (1, 0, 1, 7)
 FACILITY_SARIMAX_LABEL = "SARIMAX(0,1,4)x(1,0,1,7)+dengue"
+# What the response's sarimax_model_label says: only what is true for EVERY type that got a
+# SARIMAX forecast. The order differs per type and per source (grid-searched, AI-recommended,
+# default-order), so it lives in the per-type sarimax_orders map, never in this string.
+FACILITY_SARIMAX_FAMILY_LABEL = "SARIMAX + dengue-season exogenous regressor"
+# How an order was obtained, appended to every stored/reported order label. Deliberately NOT
+# "fallback": sarimax_fallback_types already means "SARIMAX failed, linear trend used".
+# The suffix names a mechanism; it says nothing about forecast quality.
+ORDER_SOURCE_SUFFIX = {"grid": " [grid-searched]", "ai": " [ai-recommended]", "fixed": " [default-order]"}
+_LEGACY_FIXED_SUFFIX = " [fallback]"  # how cache rows written before the rename spell "fixed"
 FACILITY_SARIMAX_MAXITER = 200
 # One GET /forecast fits at most this many blood types, then returns what it has
 # plus a "pending" list; the dashboard polls for the rest. A cold fit is ~12-20 s
@@ -188,7 +197,7 @@ ORDER_SELECTION_HOLDOUT_DAYS = max(FORECAST_CHECKPOINTS)  # 30 — same horizon 
 ORDER_SELECTION_MIN_DAYS = SARIMAX_MIN_DAYS_REQUIRED + ORDER_SELECTION_HOLDOUT_DAYS
 MAX_ORDER_SELECTIONS_PER_BACKGROUND_RUN = 2  # see _run_order_selection_for_facility's max_types
 _ORDER_SELECTION_LOCK_NAMESPACE = 7302  # a SEPARATE advisory-lock namespace from forecast fitting (7301):
-# order selection (minutes per type — see server/select_orders.py, the primary
+# order selection (about 21 s per type locally, 72 fits — see server/select_orders.py, the primary
 # path) and per-request forecast fitting are different operations with
 # different time budgets: sharing one lock would make a slow selection run
 # block ordinary forecast reads from ever fitting a still-missing type, for no
@@ -1062,32 +1071,31 @@ def _sarimax_fit_is_sane(fit, n_obs: int, baseline_aic_per_obs: Optional[float])
     return True, "ok", diagnostics
 
 
-# NOTE ON THE AI MODEL-SELECTION FEATURE: deliberately NOT wired in here.
-# train_sarimax_selector.py stops at its Stage 1 gate: per-series selection
-# (the "oracle") must beat this fixed default by >= 5% and it doesn't — on
-# synthetic series it scores 18.983 RMSE / 28.11 MAPE vs the default's
-# 18.506 / 26.94, i.e. worse. So by default no classifier is trained and no
-# artifact is saved. With --force-stage2 a depth-4 tree does train and
-# recommends 5 of the 12 candidates on held-out series, but still doesn't
-# beat the default (17.241 / 25.12 vs 16.882 / 24.61) and lands within 0.3%
-# of the oracle (17.236 / 25.06): it reaches the ceiling of its label, so
-# the limit is the premise (per-series selection on short histories), not the
-# model. Forced artifacts are stamped deploy_recommended=False. All figures
-# are from synthetic series, not real facility data. This function still
-# hard-codes FACILITY_SARIMAX_ORDER/FACILITY_SARIMAX_SEASONAL_ORDER exactly
-# as it did before that work started.
+# NOTE ON THE AI-RECOMMENDED ORDER (see _resolve_order). A (facility, blood type) with no
+# grid-searched row gets an order recommended by a small decision tree over 13 features of
+# its own daily series, exported as server/models/sarimax_selector_rules.json and walked
+# with no scikit-learn. What is claimed: automation. A series-specific configuration costs a
+# feature extraction and a tree walk, no model fit: median 7.7 ms per type at 155 days and
+# 11.9 ms at 421 days. select_orders.py fits a 72-candidate grid per type: 166.7 s for the 8
+# types of a 420-day series (one run). Both are local measurements; deployed timing is
+# UNKNOWN. What is NOT claimed: that the recommended order forecasts better than the
+# default. It was measured, on synthetic series only, and the result travels with the
+# artifact (deploy_recommended, gate_reasons, limitations and the paired evaluation_summary
+# in the JSON): the Stage 1 gate failed and the tree does not beat the default order there.
+# The rules load regardless of deploy_recommended, deliberately. Any failure to produce a
+# recommendation means the default order, never an error.
 def _fit_sarimax_facility_forecast(
     daily_series: list[tuple[date, int]], today: date,
     order: tuple[int, int, int] = FACILITY_SARIMAX_ORDER,
     seasonal_order: tuple[int, int, int, int] = FACILITY_SARIMAX_SEASONAL_ORDER,
-    model_label: str = FACILITY_SARIMAX_LABEL,
+    model_label: str = FACILITY_SARIMAX_LABEL + ORDER_SOURCE_SUFFIX["fixed"],
     start_params: Optional[list[float]] = None,
     baseline_aic_per_obs: Optional[float] = None,
 ) -> Optional[dict]:
     """Fits `order`/`seasonal_order` (the fixed FACILITY_SARIMAX_ORDER/
-    FACILITY_SARIMAX_SEASONAL_ORDER by default, or a per-type order selected by
-    _select_sarimax_order_for_series — see _fit_and_cache_sarimax, which is the
-    only real caller and decides which) with a dengue-season exogenous
+    FACILITY_SARIMAX_SEASONAL_ORDER by default, or the order _resolve_order picked —
+    a grid-searched row, an AI recommendation, or the fixed constant; see
+    _fit_and_cache_sarimax, which is the only real caller) with a dengue-season exogenous
     regressor on one blood type's own resampled daily series (see
     _resample_daily_series), and forecasts max(FORECAST_CHECKPOINTS) days past
     `today`.
@@ -1110,8 +1118,8 @@ def _fit_sarimax_facility_forecast(
     convergence-failure fix (see the module comment above
     SARIMAX_AIC_PER_OBS_DEGRADATION_THRESHOLD): refitting the SAME series from the
     default start can converge (mle_retvals.converged=True) at a materially worse,
-    non-invertible optimum. None when there's no stored selection yet (the fixed
-    FACILITY_SARIMAX_ORDER fallback never has one) — the fit then starts from
+    non-invertible optimum. None when there's no stored selection (neither the AI-recommended
+    nor the fixed default order ever has one) — the fit then starts from
     statsmodels' own default, same as before this fix.
 
     `baseline_aic_per_obs` — that same selection fit's AIC per training observation
@@ -1231,20 +1239,30 @@ def _fit_sarimax_facility_forecast(
     return {"checkpoints": checkpoints, "exog_included": True, "model_order": model_label}
 
 
-def _order_label(p: int, d: int, q: int, sp: int, sd: int, sq: int, ss: int, *, selected: bool) -> str:
-    """Matches the FACILITY_SARIMAX_LABEL format ("SARIMAX(0,1,4)x(1,0,1,7)+dengue").
-    A fallback (no stored per-type selection, using the fixed constant) is always
-    suffixed " [fallback]" — never presented as if it had been selected for this
-    facility and type."""
-    label = f"SARIMAX({p},{d},{q})x({sp},{sd},{sq},{ss})+dengue"
-    return label if selected else f"{label} [fallback]"
+def _order_label(p: int, d: int, q: int, sp: int, sd: int, sq: int, ss: int, *, source: str) -> str:
+    """"SARIMAX(0,1,4)x(1,0,1,7)+dengue" plus ORDER_SOURCE_SUFFIX[source] ("grid", "ai" or
+    "fixed"). Every label names the mechanism that produced the order, so a stored or
+    reported forecast can always be traced to it; none of them says anything about how
+    good the order is."""
+    return f"SARIMAX({p},{d},{q})x({sp},{sd},{sq},{ss})+dengue{ORDER_SOURCE_SUFFIX[source]}"
+
+
+def _normalize_stored_order_label(label: str) -> str:
+    """Reads a facility_forecast_cache.model_order written by any version of the app
+    into today's spelling. Rows from before the three-way labels have no suffix (that
+    was a grid-searched order) or the legacy " [fallback]" (the fixed constant);
+    everything else already carries one of ORDER_SOURCE_SUFFIX."""
+    if label.endswith(_LEGACY_FIXED_SUFFIX):
+        return label[: -len(_LEGACY_FIXED_SUFFIX)] + ORDER_SOURCE_SUFFIX["fixed"]
+    if label.endswith(tuple(ORDER_SOURCE_SUFFIX.values())):
+        return label
+    return label + ORDER_SOURCE_SUFFIX["grid"]
 
 
 def _get_selected_order(conn, facility_id: int, blood_type: str) -> Optional[dict]:
     """The stored per-type SARIMAX order from facility_sarimax_order, or None if
-    none has been selected yet for this (facility, blood_type) — the live
-    fitter's caller then falls back to FACILITY_SARIMAX_ORDER (see
-    _fit_and_cache_sarimax).
+    none has been selected yet for this (facility, blood_type) — _resolve_order
+    then tries the AI recommendation, then FACILITY_SARIMAX_ORDER.
 
     start_params/selection_aic_per_obs are both None on a row selected before
     those columns existed — the live fitter then falls back to statsmodels' own
@@ -1299,10 +1317,57 @@ def _read_cached_sarimax(
     }
     live_today = int(daily_series[-1][1])
     checkpoints[0] = {"units": live_today, "lower": live_today, "upper": live_today}
-    # The stored label (was this a selected or a fallback order?), not a hardcoded
+    # The stored label (grid-searched, AI-recommended or default-order?), not a hardcoded
     # constant — a cache hit must report whichever order actually produced it.
-    model_order = next(iter(by_date.values()))["model_order"]
+    model_order = _normalize_stored_order_label(next(iter(by_date.values()))["model_order"])
     return {"checkpoints": checkpoints, "exog_included": True, "model_order": model_order}
+
+
+def _ai_recommended_order(values) -> Optional[tuple[tuple[int, int, int], tuple[int, int, int, int]]]:
+    """The AI-recommended (order, seasonal_order) for this daily series, or None for ANY
+    reason it can't produce one: rules file missing/invalid, a non-finite feature (e.g.
+    a constant or all-zero series), a statsmodels error. Never raises — the caller uses
+    the default order. Milliseconds, no fit, so it doesn't count against the fit budget."""
+    try:
+        # lazy, like pandas/statsmodels above: this module imports statsmodels, a startup cost
+        import sarimax_selector_common as selector
+
+        rules = selector.load_selector_rules()
+        if rules is None:
+            return None
+        return selector.recommend_order_from_series(values, rules)
+    except Exception as exc:
+        print(f"[sarimax] AI order unavailable ({type(exc).__name__}: {exc}); using the default order")
+        return None
+
+
+def _resolve_order(facility_id: int, blood_type: str, daily_series: list[tuple[date, int]]) -> dict:
+    """Which order this (facility, blood_type) is fitted with, by precedence: a
+    grid-searched row in facility_sarimax_order, else the AI recommendation computed
+    from this series right now, else the fixed FACILITY_SARIMAX_ORDER. Returns
+    order, seasonal_order, label (carrying the source), start_params and
+    baseline_aic_per_obs (only a grid row has those two).
+
+    The AI recommendation is not stored: it can change as the series grows, and each
+    forecast's label (facility_forecast_cache.model_order) records what produced it."""
+    with engine.connect() as conn:
+        selected = _get_selected_order(conn, facility_id, blood_type)
+    if selected:
+        order = (selected["p"], selected["d"], selected["q"])
+        seasonal_order = (selected["seasonal_p"], selected["seasonal_d"], selected["seasonal_q"], selected["seasonal_s"])
+        source, start_params, baseline = "grid", selected["start_params"], selected["selection_aic_per_obs"]
+    else:
+        start_params = baseline = None
+        recommended = _ai_recommended_order([v for _, v in daily_series])
+        if recommended is not None:
+            (order, seasonal_order), source = recommended, "ai"
+        else:
+            order, seasonal_order, source = FACILITY_SARIMAX_ORDER, FACILITY_SARIMAX_SEASONAL_ORDER, "fixed"
+    return {
+        "order": order, "seasonal_order": seasonal_order, "source": source,
+        "label": _order_label(*order, *seasonal_order, source=source),
+        "start_params": start_params, "baseline_aic_per_obs": baseline,
+    }
 
 
 def _fit_and_cache_sarimax(
@@ -1313,23 +1378,14 @@ def _fit_and_cache_sarimax(
     partway keeps every type it already finished. The fit itself holds no DB
     connection. The write is an upsert, so a concurrent writer can never raise
     IntegrityError. Returns None if the fit is unusable (caller falls back to the
-    linear trend for this type).
+    linear trend for this type — there is no retry with another order, which would
+    add a second fit to the per-request budget).
 
-    Uses this (facility, blood_type)'s selected order from facility_sarimax_order
-    if one has been chosen (see _run_order_selection_for_facility); otherwise
-    falls back to the fixed FACILITY_SARIMAX_ORDER, labeled " [fallback]" so a
-    fallback forecast is never mistaken for a selected one."""
-    with engine.connect() as conn:
-        selected = _get_selected_order(conn, facility_id, blood_type)
-    if selected:
-        order = (selected["p"], selected["d"], selected["q"])
-        seasonal_order = (selected["seasonal_p"], selected["seasonal_d"], selected["seasonal_q"], selected["seasonal_s"])
-        label = _order_label(*order, *seasonal_order, selected=True)
-        start_params, baseline_aic_per_obs = selected["start_params"], selected["selection_aic_per_obs"]
-    else:
-        order, seasonal_order = FACILITY_SARIMAX_ORDER, FACILITY_SARIMAX_SEASONAL_ORDER
-        label = _order_label(*order, *seasonal_order, selected=False)
-        start_params, baseline_aic_per_obs = None, None
+    The order comes from _resolve_order (grid-searched, else AI-recommended, else the
+    fixed default); the label stored with the rows names which."""
+    resolved = _resolve_order(facility_id, blood_type, daily_series)
+    order, seasonal_order, label = resolved["order"], resolved["seasonal_order"], resolved["label"]
+    start_params, baseline_aic_per_obs = resolved["start_params"], resolved["baseline_aic_per_obs"]
     result = _fit_sarimax_facility_forecast(
         daily_series, today, order=order, seasonal_order=seasonal_order, model_label=label,
         start_params=start_params, baseline_aic_per_obs=baseline_aic_per_obs,
@@ -1518,8 +1574,8 @@ def _select_sarimax_order_for_series(y: "pd.Series", exog: "pd.DataFrame") -> Op
     """Runs the full 72-candidate grid (SARIMAX_ORDER_GRID_PQ x
     SARIMAX_ORDER_GRID_PQ x SARIMAX_ORDER_GRID_D x SARIMAX_ORDER_GRID_SEASONAL_PQ
     x SARIMAX_ORDER_GRID_SEASONAL_PQ) against `y`/`exog` and applies the
-    selection rule. ~18 s locally (72 fits); budget several minutes per type on
-    the deployed instance (server/select_orders.py is the intended way to run
+    selection rule. ~18-21 s per type locally (72 fits; 166.7 s for the 8 types of a
+    420-day series, one run); deployed timing UNKNOWN (server/select_orders.py is the intended way to run
     this against production data — see its module docstring for why). Whatever
     `y` is gets fit directly: the TRAINING/hold-out split is the caller's job
     (see _run_order_selection_for_facility, the only caller) — this function
@@ -3174,7 +3230,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
         severity = "critical" if days_until_threshold <= 14 else "warn"
         if method_used == "sarimax":
             reason = (
-                f"{FACILITY_SARIMAX_LABEL} fit on this facility's own {len(daily_series)}-day history "
+                f"{sarimax_result['model_order']} fit on this facility's own {len(daily_series)}-day history "
                 f"for {blood_type}; projected to fall below minimum threshold ({minimum} units) in "
                 f"{round(days_until_threshold)} days"
             )
@@ -3234,7 +3290,14 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
         "types_total": len(by_type),
     }
     if forecast_source == "sarimax_facility_history":
-        response["sarimax_model_label"] = FACILITY_SARIMAX_LABEL
+        # Family + regressor only: the order differs per type, so it is NOT in this string.
+        response["sarimax_model_label"] = FACILITY_SARIMAX_FAMILY_LABEL
+        # {blood_type: "SARIMAX(p,d,q)x(P,D,Q,s)+dengue [grid-searched|ai-recommended|default-order]"}
+        # for every type that has a SARIMAX forecast (fresh fit or cache hit); a linear-trend
+        # type is absent here and listed in sarimax_fallback_types instead.
+        response["sarimax_orders"] = {
+            bt: r["model_order"] for bt, r in sarimax_by_type.items() if r is not None
+        }
         response["sarimax_fallback_types"] = sarimax_fallback_types
     return response
 

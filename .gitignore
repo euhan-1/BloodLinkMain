@@ -12,4 +12,5 @@ server/tmp/
 .agents/
 skills-lock.json
 *.joblib
-server/models/
+server/models/*
+!server/models/sarimax_selector_rules.json

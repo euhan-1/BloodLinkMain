@@ -56,15 +56,18 @@ import argparse
 import json
 import random
 import time
-from datetime import date, timedelta
+import warnings
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 import joblib
 import numpy as np
 import pandas as pd
+import sklearn
 from joblib import Parallel, delayed
 from sklearn.tree import DecisionTreeClassifier, export_text
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 from sarimax_selector_common import (
     CANDIDATE_LIBRARY,
@@ -82,6 +85,7 @@ from sarimax_selector_common import (
 DENGUE_SEASON_MONTHS = {6, 7, 8, 9, 10}  # must match main.py's DENGUE_SEASON_MONTHS
 
 RANDOM_SEED = 11
+GATE_SEED_OFFSET, TRAIN_SEED_OFFSET, EVAL_SEED_OFFSET = 500, 1000, 9000
 N_GATE_SERIES = 70  # Stage 1 gate sample
 N_TRAIN_SERIES = 220
 N_EVAL_SERIES = 60
@@ -280,6 +284,8 @@ def _process_one_series(seed: int, params: dict, need_features: bool, cv_origins
         "final_exog": final_exog,
         "hist_endog": hist_endog,
         "hist_exog": hist_exog,
+        "seed": seed,
+        "length": len(values),
     }
     if need_features:
         result["features"] = extract_series_features(hist_values)
@@ -309,9 +315,70 @@ def _summarize_errors(rows: list[dict], key: str) -> dict:
     }
 
 
+def _scored(errors: Optional[dict]) -> bool:
+    return errors is not None and errors.get("mape") is not None
+
+
+def _paired_summary(eval_rows: list[dict], ai_results: list[dict], diagnose=None) -> dict:
+    """AI vs default vs oracle on ONLY the series all three scored. Comparing each
+    method's mean over whichever series IT happened to score is not a comparison when
+    the sets differ (n=52 vs n=51 once): the difference could be one series. A dropped
+    series is named (seed, length) with the reason per method: "no_forecast" = the fit
+    didn't converge / failed the finite check, or the forecast was non-finite;
+    "mape_undefined" = every held-out actual was zero. `diagnose(row, ai_result, method)`, when
+    given, replaces "no_forecast" with the specific cause (see _diagnose_dropped)."""
+    kept, dropped = [], []
+    for row, ai in zip(eval_rows, ai_results):
+        methods = {"ai": ai["errors"], "default": row["default_errors"], "oracle": row["oracle_errors"]}
+        bad = {
+            m: ((diagnose(row, ai, m) if diagnose else "no_forecast") if e is None else "mape_undefined")
+            for m, e in methods.items() if not _scored(e)
+        }
+        if bad:
+            dropped.append({"seed": row["seed"], "length": row["length"], "unscored": bad})
+        else:
+            kept.append(methods)
+    out = {"basis": "paired", "n_paired": len(kept), "n_eval_series": len(eval_rows), "dropped_series": dropped}
+    for m in ("ai", "default", "oracle"):
+        out[m] = {
+            "n": len(kept),
+            "rmse": float(np.mean([k[m]["rmse"] for k in kept])) if kept else float("nan"),
+            "mape": float(np.mean([k[m]["mape"] for k in kept])) if kept else float("nan"),
+        }
+    return out
+
+
+def _diagnose_dropped(row: dict, ai: dict, method: str) -> str:
+    """Why `method` has no forecast on this series: refits the same config on the same history
+    and reports which gate in fit_candidate/_deploy_and_score rejected it."""
+    order, seasonal_order = {
+        "ai": CANDIDATE_LIBRARY[ai["idx"]], "default": (SARIMAX_DEFAULT_ORDER, SARIMAX_DEFAULT_SEASONAL_ORDER),
+        "oracle": CANDIDATE_LIBRARY[row["label_idx"]],
+    }[method]
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            fit = SARIMAX(row["hist_endog"], exog=row["hist_exog"], order=order, seasonal_order=seasonal_order, trend=None,
+                          enforce_stationarity=False, enforce_invertibility=False).fit(disp=False, maxiter=DEPLOY_FIT_MAXITER)
+    except Exception as exc:
+        return f"fit_raised_{type(exc).__name__}"
+    history_days = len(row["hist_endog"])
+    if not fit.mle_retvals.get("converged", False):
+        return f"optimizer_did_not_converge_in_{DEPLOY_FIT_MAXITER}_iterations ({order}x{seasonal_order} on {history_days} days of history)"
+    if not (np.isfinite(fit.aic) and np.isfinite(fit.bic)):
+        return "non_finite_aic_or_bic"
+    return "forecast_failed_or_non_finite"
+
+
+def _split_features(node: dict) -> list[str]:
+    if "leaf" in node:
+        return []
+    return sorted({node["feature"], *_split_features(node["left"]), *_split_features(node["right"])})
+
+
 def run_stage1_gate(force: bool = False) -> tuple[bool, list[str]]:
     print(f"=== STAGE 1 GATE: oracle (forecast-error-selected config) vs fixed default, {N_GATE_SERIES} heterogeneous series ===")
-    rows = _run_batch(N_GATE_SERIES, seed_offset=500, need_features=False)
+    rows = _run_batch(N_GATE_SERIES, seed_offset=GATE_SEED_OFFSET, need_features=False)
     print(f"{len(rows)}/{N_GATE_SERIES} series survived (had a CV-survivable candidate and a scorable final forecast)")
 
     oracle_summary = _summarize_errors(rows, "oracle_errors")
@@ -384,7 +451,8 @@ def tree_to_rules(clf, feature_names: list[str]) -> dict:
 
 
 def run_stage2_train_and_evaluate(force: bool = False, gate_passed: bool = True,
-                                  gate_reasons: Optional[list[str]] = None, out_dir: Path = MODEL_PATH.parent):
+                                  gate_reasons: Optional[list[str]] = None, out_dir: Path = MODEL_PATH.parent,
+                                  run_started: Optional[float] = None):
     if force and not gate_passed:
         print("\n" + "!" * 78)
         print("STAGE 2 IS RUNNING DESPITE A FAILED STAGE 1 GATE (--force-stage2).")
@@ -393,7 +461,7 @@ def run_stage2_train_and_evaluate(force: bool = False, gate_passed: bool = True,
         print("Results below show whether a classifier CAN be trained, not that it SHOULD be deployed.")
         print("!" * 78)
     print(f"\n=== STAGE 2: generating + labeling {N_TRAIN_SERIES} training series (forecast-error rule) ===")
-    train_rows = _run_batch(N_TRAIN_SERIES, seed_offset=1000, need_features=True)
+    train_rows = _run_batch(N_TRAIN_SERIES, seed_offset=TRAIN_SEED_OFFSET, need_features=True)
     print(f"{len(train_rows)}/{N_TRAIN_SERIES} series labeled successfully")
 
     label_counts = pd.Series([r["label_idx"] for r in train_rows]).value_counts().sort_index()
@@ -422,7 +490,7 @@ def run_stage2_train_and_evaluate(force: bool = False, gate_passed: bool = True,
     print(tree_text)
 
     print(f"\n=== evaluating on {N_EVAL_SERIES} held-out series (never used in training) ===")
-    eval_rows = _run_batch(N_EVAL_SERIES, seed_offset=9000, need_features=True)
+    eval_rows = _run_batch(N_EVAL_SERIES, seed_offset=EVAL_SEED_OFFSET, need_features=True)
     print(f"{len(eval_rows)}/{N_EVAL_SERIES} eval series survived")
 
     library = CANDIDATE_LIBRARY
@@ -445,7 +513,7 @@ def run_stage2_train_and_evaluate(force: bool = False, gate_passed: bool = True,
     default_summary = _summarize_errors(eval_rows, "default_errors")
     default_avg_time = float(np.mean([r["default_time"] for r in eval_rows]))
 
-    print("\n=== EVALUATION RESULTS (held-out synthetic series, final-horizon forecast error) ===")
+    print("\n=== UNPAIRED means (each method over the series IT scored; for reference, NOT a comparison) ===")
     print(f"{'method':<24}{'n':>5}{'RMSE':>10}{'MAPE%':>10}{'avg time/series (s)':>22}")
     print(f"{'AI-recommended':<24}{ai_summary['n']:>5}{ai_summary['rmse']:>10.3f}{ai_summary['mape']:>10.2f}{ai_avg_time:>22.3f}")
     print(f"{'Fixed default':<24}{default_summary['n']:>5}{default_summary['rmse']:>10.3f}{default_summary['mape']:>10.2f}{default_avg_time:>22.3f}")
@@ -457,13 +525,22 @@ def run_stage2_train_and_evaluate(force: bool = False, gate_passed: bool = True,
     for idx, count in ai_distribution.items():
         print(f"  [{idx}] {CANDIDATE_LIBRARY[idx]}: recommended for {count} series")
 
-    beats_default_rmse = ai_summary["rmse"] < default_summary["rmse"]
-    beats_default_mape = ai_summary["mape"] < default_summary["mape"]
+    paired = _paired_summary(eval_rows, ai_results, diagnose=_diagnose_dropped)
+    print(f"\n=== PAIRED (primary): only the {paired['n_paired']}/{paired['n_eval_series']} series all three methods scored ===")
+    for series in paired["dropped_series"]:
+        print(f"  dropped: seed={series['seed']} length={series['length']} unscored={series['unscored']}")
+    print(f"{'method':<24}{'n':>5}{'RMSE':>10}{'MAPE%':>10}")
+    for label, key in (("AI-recommended", "ai"), ("Fixed default", "default"), ("Oracle (full CV search)", "oracle")):
+        print(f"{label:<24}{paired[key]['n']:>5}{paired[key]['rmse']:>10.3f}{paired[key]['mape']:>10.2f}")
+
+    # The stop condition is judged on the paired set, not on the unpaired means above.
+    beats_default_rmse = paired["ai"]["rmse"] < paired["default"]["rmse"]
+    beats_default_mape = paired["ai"]["mape"] < paired["default"]["mape"]
     varies_meaningfully = ai_variety >= 3
 
-    print("\n=== STAGE 2 STOP CONDITION CHECK ===")
-    print(f"AI beats fixed default on RMSE: {beats_default_rmse}  ({ai_summary['rmse']:.3f} vs {default_summary['rmse']:.3f})")
-    print(f"AI beats fixed default on MAPE: {beats_default_mape}  ({ai_summary['mape']:.2f}% vs {default_summary['mape']:.2f}%)")
+    print("\n=== STAGE 2 STOP CONDITION CHECK (paired set) ===")
+    print(f"AI beats fixed default on RMSE: {beats_default_rmse}  ({paired['ai']['rmse']:.3f} vs {paired['default']['rmse']:.3f})")
+    print(f"AI beats fixed default on MAPE: {beats_default_mape}  ({paired['ai']['mape']:.2f}% vs {paired['default']['mape']:.2f}%)")
     print(f"AI recommendations vary meaningfully (>=3 distinct configs): {varies_meaningfully}  ({ai_variety} distinct)")
 
     passed = varies_meaningfully and (beats_default_rmse or beats_default_mape)
@@ -491,12 +568,39 @@ def run_stage2_train_and_evaluate(force: bool = False, gate_passed: bool = True,
     print(f"rules JSON agrees with the sklearn tree on {agree}/{len(check_rows)} series")
     assert agree == len(check_rows), "exported rules diverge from the sklearn tree"
 
+    used_features = _split_features(rules)
+    scale_features = [f for f in used_features if f in ("n_obs", "mean_level")]
+    limitations = [
+        "Trained and evaluated on synthetic series only (generate_diverse_series); no real facility data.",
+        f"Labels come from {LABEL_CV_HORIZON}-day rolling-origin CV windows, but the live forecast horizon is 30 days.",
+        f"{len(scale_features)} of the tree's {len(used_features)} split features ({', '.join(scale_features)}) are set directly by the "
+        "generator's own length and baseline parameters, so the tree can lean on them in a way a real population may not support.",
+        "No held-out evidence exists below 46 days of history: length-45 series cannot form a cross-validation window, so all 14 (8 eval, 6 gate) were excluded. Production's SARIMAX floor is 30 days (SARIMAX_MIN_DAYS_REQUIRED), so the deployed selector issues recommendations for 30-45 days of history with no evaluation behind them.",
+        "Footnote, not a robustness finding: in 1 of 52 held-out series the fixed default order hit this harness's 100-iteration cap (seed 1307257252, 46 days of history); it converges at production's 200 iterations with the Nelder-Mead-then-L-BFGS retry, so it is not a deployed failure mode. The AI order scored on all 52, but one harness-cap case does not show the AI order is more robust.",
+    ]
     stamp = {
         "deploy_recommended": deploy_recommended, "gate_passed": gate_passed,
         "stage2_passed": passed, "forced_past_gate": force and not gate_passed,
         "gate_reasons": gate_reasons or [],
+        "limitations": limitations,
+        "split_features": used_features,
+        # provenance: everything needed to reproduce or to cite this artifact
+        "training": {
+            "quick": QUICK, "random_seed": RANDOM_SEED,
+            "seed_offsets": {"gate": GATE_SEED_OFFSET, "train": TRAIN_SEED_OFFSET, "eval": EVAL_SEED_OFFSET},
+            "n_gate_series": N_GATE_SERIES, "n_train_series": N_TRAIN_SERIES, "n_eval_series": N_EVAL_SERIES,
+            "n_train_labeled": len(train_rows), "n_eval_scored": len(eval_rows),
+            "label_cv_horizon": LABEL_CV_HORIZON, "label_cv_origins": QUICK_LABEL_CV_ORIGINS if QUICK else LABEL_CV_ORIGINS,
+            "eval_horizon": EVAL_HORIZON, "tree_max_depth": TREE_MAX_DEPTH, "tree_min_samples_leaf": TREE_MIN_SAMPLES_LEAF,
+            "data": "synthetic (generate_diverse_series); no real facility data",
+            "trained_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "wall_clock_seconds": round(time.time() - run_started, 1) if run_started is not None else None,
+            "sklearn_version": sklearn.__version__,
+        },
     }
-    summary = {"ai": ai_summary, "default": default_summary, "oracle": oracle_summary}
+    # ai/default/oracle at the top level are the PAIRED numbers (the primary result); each method's
+    # mean over whichever series it alone scored sits beside them under "unpaired".
+    summary = {**paired, "unpaired": {"ai": ai_summary, "default": default_summary, "oracle": oracle_summary}}
     bundle = {
         "tree": clf,
         "feature_names": FEATURE_NAMES,
@@ -533,10 +637,11 @@ def main():
         N_GATE_SERIES, N_TRAIN_SERIES, N_EVAL_SERIES = QUICK_N_GATE, QUICK_N_TRAIN, QUICK_N_EVAL
         print(f"--quick: N_GATE/TRAIN/EVAL = {N_GATE_SERIES}/{N_TRAIN_SERIES}/{N_EVAL_SERIES} (demo run — too small to be evidence)")
 
+    run_started = time.time()  # wall-clock covers the gate and stage 2, recorded in the rules JSON
     gate_passed, gate_reasons = run_stage1_gate(force=args.force_stage2)
     if not gate_passed and not args.force_stage2:
         return
-    run_stage2_train_and_evaluate(args.force_stage2, gate_passed, gate_reasons, args.out_dir)
+    run_stage2_train_and_evaluate(args.force_stage2, gate_passed, gate_reasons, args.out_dir, run_started)
 
 
 if __name__ == "__main__":

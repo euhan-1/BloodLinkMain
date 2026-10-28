@@ -198,7 +198,7 @@ D = {
         "lower_units": "Lower end of the 95% prediction interval.",
         "upper_units": "Upper end of the 95% prediction interval.",
         "trained_through_date": "The last day of history the model was fitted on; the cache is reused only while this equals today.",
-        "model_order": "Label of the model that produced it (the fixed SARIMAX order plus the dengue regressor).",
+        "model_order": "Label of the model that produced it: the SARIMAX order plus the dengue regressor, and how the order was obtained (grid-searched, ai-recommended or default-order).",
         "generated_at": "When it was computed.",
     },
     "forecast_alert_state": {

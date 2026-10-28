@@ -276,7 +276,7 @@ for t in TYPES:
     # this row's own start_params) — parity means matching what the FIXED live call site
     # actually passes, not just its order/seasonal_order.
     daily = [(idx.date(), int(v)) for idx, v in y_tr.items()]
-    label = app._order_label(*order, *sorder, selected=True)
+    label = app._order_label(*order, *sorder, source="grid")
     live = app._fit_sarimax_facility_forecast(
         daily, y_tr.index[-1].date(), order=order, seasonal_order=sorder, model_label=label,
         start_params=winner["start_params"],
