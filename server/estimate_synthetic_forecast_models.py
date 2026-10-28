@@ -28,7 +28,6 @@ import json
 import warnings
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 from sqlalchemy import text
 from statsmodels.tsa.statespace.sarimax import SARIMAX

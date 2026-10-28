@@ -38,6 +38,7 @@ from pathlib import Path
 from sqlalchemy import text
 
 from database import engine
+from script_guard import require_production_write_flag
 
 BLOOD_TYPES = ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"]
 
@@ -135,6 +136,14 @@ def generate_series(threshold: int, start_date: date, rng: random.Random) -> lis
 
 
 def main():
+    require_production_write_flag("generate_synthetic_forecast_data.py", [
+        "run schema_synthetic_forecast_data.sql (CREATE TABLE IF NOT EXISTS synthetic_inventory_snapshots)",
+        "DELETE every row in synthetic_inventory_snapshots",
+        f"INSERT {len(BLOOD_TYPES) * NUM_DAYS} generated rows into synthetic_inventory_snapshots ({len(BLOOD_TYPES)} blood types x {NUM_DAYS} days ending yesterday)",
+        "read blood_type_thresholds (no write)",
+    ])
+    from main import business_today  # lazy: importing main builds the whole app, which the guard above must not wait for
+
     schema_sql = Path(__file__).parent.joinpath("schema_synthetic_forecast_data.sql").read_text()
 
     with engine.begin() as conn:
@@ -144,7 +153,7 @@ def main():
     if not thresholds:
         raise RuntimeError("blood_type_thresholds is empty — run seed_thresholds.py first")
 
-    start_date = date.today() - timedelta(days=NUM_DAYS)
+    start_date = business_today() - timedelta(days=NUM_DAYS)
     rng = random.Random(RANDOM_SEED)
 
     all_rows: list[tuple[date, str, int]] = []

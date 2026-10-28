@@ -65,7 +65,6 @@ function TopNav({
     { key: "dashboard", label: "Dashboard", icon: <Activity size={17} /> },
     { key: "inventory", label: "Inventory", icon: <Package size={17} /> },
     { key: "requests", label: "Requests", icon: <MapPin size={17} /> },
-    ...(user.facility_type !== "hospital" ? [{ key: "chat" as const, label: "Donors", icon: <Phone size={17} /> }] : []),
   ];
 
   return (

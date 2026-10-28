@@ -10,9 +10,8 @@ ahead of today so it stays valid for a long stretch without needing to be
 re-run constantly. Safe to re-run: clears and regenerates from scratch.
 """
 
-import json
 import warnings
-from datetime import date, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -20,6 +19,7 @@ from sqlalchemy import text
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 from database import engine
+from script_guard import require_production_write_flag
 
 BLOOD_TYPES = ["O+", "O-", "A+", "A-", "B+", "B-", "AB+", "AB-"]
 DENGUE_SEASON_MONTHS = {6, 7, 8, 9, 10}  # must match main.py's DENGUE_SEASON_MONTHS
@@ -52,11 +52,19 @@ def _dengue_flag(idx: pd.DatetimeIndex) -> pd.DataFrame:
 
 
 def main():
+    require_production_write_flag("fit_and_cache_synthetic_forecast.py", [
+        "run schema_synthetic_forecast_cache.sql (CREATE TABLE IF NOT EXISTS synthetic_forecast_cache)",
+        "DELETE every row in synthetic_forecast_cache, the table GET /forecast reads for a facility with fewer than 3 days of history",
+        f"INSERT one forecast row per blood type ({len(BLOOD_TYPES)} types) per day from the end of the synthetic series through today + {CACHE_HORIZON_DAYS} days",
+        "read synthetic_inventory_snapshots (no write)",
+    ])
+    from main import business_today  # lazy: importing main builds the whole app, which the guard above must not wait for
+
     schema_sql = Path(__file__).parent.joinpath("schema_synthetic_forecast_cache.sql").read_text()
     with engine.begin() as conn:
         conn.execute(text(schema_sql))
 
-    target_end = date.today() + timedelta(days=CACHE_HORIZON_DAYS)
+    target_end = business_today() + timedelta(days=CACHE_HORIZON_DAYS)
     all_rows = []
 
     for blood_type in BLOOD_TYPES:

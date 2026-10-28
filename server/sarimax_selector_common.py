@@ -1,6 +1,6 @@
 """Shared, DB-free building blocks for the AI-assisted SARIMAX
 model-selection feature: the candidate order library, plain-statistics
-feature extraction, and the artifact load/predict helpers.
+feature extraction, and the rules-file helpers.
 
 Imported by BOTH train_sarimax_selector.py (offline training) and main.py
 (request-time inference) so the exact same feature computation runs at
@@ -49,7 +49,6 @@ CANDIDATE_LIBRARY: list[tuple[tuple[int, int, int], tuple[int, int, int, int]]] 
 ]
 SARIMAX_DEFAULT_INDEX = 5
 SARIMAX_DEFAULT_ORDER, SARIMAX_DEFAULT_SEASONAL_ORDER = CANDIDATE_LIBRARY[SARIMAX_DEFAULT_INDEX]
-SARIMAX_DEFAULT_LABEL = "SARIMAX(0,1,4)x(1,0,1,7)+dengue"
 
 FEATURE_NAMES = [
     "n_obs", "mean_level", "cv", "adf_stat", "adf_pvalue", "d_suggested",
@@ -203,31 +202,6 @@ def fit_candidate(
     return {"aic": float(fit.aic), "bic": float(fit.bic), "fit": fit}
 
 
-def best_candidate_index(
-    endog: pd.Series, exog: pd.DataFrame, library=CANDIDATE_LIBRARY, maxiter: int = 100
-) -> Optional[int]:
-    """Fits every candidate in `library` and returns the index of the
-    best-AIC one. NOT used as the training-label rule as of the second
-    training attempt — a first attempt used this (best-AIC) as the label and
-    hit its own STOP condition: even the best-AIC oracle didn't beat the
-    fixed default on held-out forecast accuracy, i.e. AIC-best-fit-in-sample
-    isn't the same thing as best-out-of-sample-forecast, and training a
-    classifier to predict a label that itself doesn't track the metric that
-    actually matters can't produce something useful. Kept here as a general
-    utility (still a legitimate "which config fits this data best,
-    statistically" question) — see best_candidate_by_forecast_error below
-    for the rule actually used to generate labels now.
-    None if every single candidate failed to fit."""
-    best_idx, best_aic = None, None
-    for i, (order, seasonal_order) in enumerate(library):
-        result = fit_candidate(endog, exog, order, seasonal_order, maxiter=maxiter)
-        if result is None:
-            continue
-        if best_aic is None or result["aic"] < best_aic:
-            best_aic, best_idx = result["aic"], i
-    return best_idx
-
-
 def _forecast_errors(fit, test_endog: pd.Series, test_exog: pd.DataFrame) -> Optional[dict]:
     """Scores one already-fitted model's forecast against real held-out
     values. Returns None (never raises) if the forecast call itself fails or
@@ -320,35 +294,8 @@ def best_candidate_by_forecast_error(
     return best_idx, mean_mape
 
 
-DEFAULT_MODEL_PATH = Path(__file__).parent / "models" / "sarimax_selector.joblib"
-
-_loaded_model_cache: dict[str, dict] = {}
-
-
-def load_selector_model(path: Path = DEFAULT_MODEL_PATH) -> dict:
-    """Loads the saved model bundle once and caches it in this process's
-    memory — callers must not reload per request (see main.py's
-    module-level SARIMAX_SELECTOR_BUNDLE). Raises on any problem (missing
-    file, corrupt artifact); the caller is responsible for catching that and
-    falling back to the fixed default, same as any other SARIMAX fit
-    failure elsewhere in this app.
-
-    The bundle carries its OWN copy of the candidate library it was trained
-    against (bundle["candidate_library"]), not just the tree — so a
-    predicted index is always resolved against what the tree actually
-    learned on, even if this module's live CANDIDATE_LIBRARY constant is
-    later edited without retraining.
-    """
-    import joblib  # dev-only dependency (requirements-dev.txt); the deployed path uses the rules JSON instead
-
-    key = str(path)
-    if key not in _loaded_model_cache:
-        _loaded_model_cache[key] = joblib.load(path)
-    return _loaded_model_cache[key]
-
-
 def recommend_candidate_index_from_rules(features: dict[str, float], rules: dict) -> int:
-    """Same answer as recommend_candidate_index, walking the exported JSON
+    """Same answer as the scikit-learn tree's own predict, walking the exported JSON
     rules (train_sarimax_selector.tree_to_rules) — no scikit-learn, so it can
     run on the 512 MB Render instance.
 
@@ -428,9 +375,3 @@ def recommend_order_from_series(values, rules: dict) -> tuple[tuple[int, int, in
         features = extract_series_features(values)
     order, seasonal_order = rules["candidate_library"][recommend_candidate_index_from_rules(features, rules)]
     return tuple(order), tuple(seasonal_order)
-
-
-def recommend_candidate_index(features: dict[str, float], bundle: dict) -> int:
-    tree = bundle["tree"]
-    vector = [features_to_vector(features)]
-    return int(tree.predict(vector)[0])

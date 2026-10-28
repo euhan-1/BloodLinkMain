@@ -1,6 +1,7 @@
 from sqlalchemy import text
 
 from database import engine
+from script_guard import require_production_write_flag
 
 # Demo/synthetic stock counts per facility per blood type — deterministic (not
 # random) so the resulting Available/Unavailable mix is reproducible. Chosen to
@@ -29,8 +30,8 @@ BULK_INSERT_SQL = """
         'Packed RBC',
         'Bay 1',
         280,
-        CURRENT_DATE - ((gs % 20) || ' days')::interval,
-        CURRENT_DATE + ((90 - (gs % 30)) || ' days')::interval,
+        CAST(:today AS date) - ((gs % 20) || ' days')::interval,
+        CAST(:today AS date) + ((90 - (gs % 30)) || ' days')::interval,
         :facility_id
     FROM generate_series(1, :count) AS gs
 """
@@ -44,14 +45,23 @@ EXPIRED_BATCH_INSERT_SQL = """
         'Packed RBC',
         'Bay 1',
         280,
-        CURRENT_DATE - ((60 + gs) || ' days')::interval,
-        CURRENT_DATE - ((5 + (gs % 5)) || ' days')::interval,
+        CAST(:today AS date) - ((60 + gs) || ' days')::interval,
+        CAST(:today AS date) - ((5 + (gs % 5)) || ' days')::interval,
         :facility_id
     FROM generate_series(1, :count) AS gs
 """
 
 
 def main():
+    total_units = sum(sum(stock.values()) for stock in FACILITY_STOCK.values())
+    require_production_write_flag("seed_facility_inventory.py", [
+        f"INSERT {total_units} demo blood_units across {len(FACILITY_STOCK)} facilities, matched by NAME: " + ", ".join(FACILITY_STOCK),
+        f"INSERT {EXPIRED_TEST_BATCH[2]} deliberately expired {EXPIRED_TEST_BATCH[1]} units at {EXPIRED_TEST_BATCH[0]}",
+        "do nothing if any blood_units DIN already starts with BB- (it skips, it does not update)",
+    ])
+    from main import business_today  # lazy: importing main builds the whole app, which the guard above must not wait for
+
+    today = business_today()
     with engine.begin() as conn:
         existing = conn.execute(
             text("SELECT count(*) FROM blood_units WHERE din LIKE 'BB-%'")
@@ -77,6 +87,7 @@ def main():
                         "blood_type": blood_type,
                         "facility_id": facility_id,
                         "count": count,
+                        "today": today,
                     },
                 )
                 total += count
@@ -91,6 +102,7 @@ def main():
                 "blood_type": expired_type,
                 "facility_id": expired_facility_id,
                 "count": expired_count,
+                "today": today,
             },
         )
         print(f"seeded {expired_count} deliberately-expired {expired_type} units at {expired_facility} (exclusion test)")
