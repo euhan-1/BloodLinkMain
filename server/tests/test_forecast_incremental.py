@@ -190,5 +190,40 @@ class ShortSeriesTypeTests(unittest.TestCase):
         return sorted({r[0] for r in q("SELECT blood_type FROM facility_forecast_cache WHERE facility_id=:f", f=self.fid)})
 
 
+class AlertObservedDaysTests(unittest.TestCase):
+    """The alert says how many days of history were observed, not how many the model was fed."""
+
+    def setUp(self):
+        with engine.begin() as c:
+            self.fid = c.execute(text("INSERT INTO facilities (name, facility_type, is_active, profile_completed) "
+                                      "VALUES (:n, 'bloodbank', true, true) RETURNING id"), {"n": f"Obs {uuid.uuid4().hex[:6]}"}).scalar()
+            c.execute(text("INSERT INTO blood_type_thresholds (facility_id, blood_type, minimum_units, maximum_units) "
+                           "VALUES (:f, 'O+', 70, 200)"), {"f": self.fid})
+        # O+ for 40 days ago..1 day ago, minus a 5-day hole nobody recorded; today is recorded by the app
+        rows = ["snapshot_date,blood_type,units"] + [f"{TODAY - timedelta(days=d)},O+,100" for d in range(1, 41) if not 10 <= d <= 14]
+        body, _, _ = upload(app.upload_historical_inventory_snapshots, self.fid, "\n".join(rows))
+        self.assertEqual(body["errors"], [])
+
+    def tearDown(self):
+        with engine.begin() as c:
+            for t in ("notifications", "forecast_alert_state", "facility_forecast_cache", "inventory_snapshot_write_log",
+                      "blood_units", "inventory_snapshots", "upload_history", "blood_type_thresholds"):
+                c.execute(text(f"DELETE FROM {t} WHERE facility_id = :f"), {"f": self.fid})
+            c.execute(text("DELETE FROM facilities WHERE id = :f"), {"f": self.fid})
+        app._SARIMAX_FIT_FAILED.clear()
+
+    def test_alert_counts_observed_days_not_the_filled_in_series(self):
+        def declining(*_, model_label=app.FACILITY_SARIMAX_LABEL, **__):
+            return {"checkpoints": {c: {"units": 100 if c == 0 else 50, "lower": 40, "upper": 110} for c in app.FORECAST_CHECKPOINTS},
+                    "exog_included": True, "model_order": model_label}
+        with mock.patch.object(app, "_fit_sarimax_facility_forecast", side_effect=declining):
+            r = app.get_forecast(facility_id=self.fid)
+        self.assertEqual(r["days_of_history"], 36)  # 35 uploaded days + today
+        reasons = [a["reason"] for a in r["alerts"] if a["type"] == "O+"]
+        self.assertEqual(len(reasons), 1)
+        self.assertIn("own 36 observed days of history for O+", reasons[0])
+        self.assertNotIn("41", reasons[0])  # the modeled series is 41 days long
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1019,6 +1019,13 @@ def _resample_daily_series(
     return result
 
 
+def _count_observed_days(daily_series: list[tuple[date, int]], observed_dates: set[date]) -> int:
+    """How many days of `daily_series` were actually observed: len(daily_series) also counts the
+    days _resample_daily_series filled in (carried forward) because nobody recorded that day.
+    Equals the API's days_of_history whenever the type starts at the facility's first date."""
+    return sum(1 for d, _ in daily_series if d in observed_dates)
+
+
 def _sarimax_fit_is_sane(fit, n_obs: int, baseline_aic_per_obs: Optional[float]) -> tuple[bool, str, dict]:
     """Whether a completed .fit() call is trustworthy enough to serve or store — not just
     "converged". See the module comment above SARIMAX_AIC_PER_OBS_DEGRADATION_THRESHOLD for
@@ -1091,6 +1098,8 @@ def _fit_sarimax_facility_forecast(
     model_label: str = FACILITY_SARIMAX_LABEL + ORDER_SOURCE_SUFFIX["fixed"],
     start_params: Optional[list[float]] = None,
     baseline_aic_per_obs: Optional[float] = None,
+    log_prefix: str = "",
+    observed_days: Optional[int] = None,
 ) -> Optional[dict]:
     """Fits `order`/`seasonal_order` (the fixed FACILITY_SARIMAX_ORDER/
     FACILITY_SARIMAX_SEASONAL_ORDER by default, or the order _resolve_order picked —
@@ -1163,19 +1172,27 @@ def _fit_sarimax_facility_forecast(
     )
 
     n_obs = len(daily_series)
+    # What the log lines below say: which facility/type (the caller's log_prefix, e.g. "f5 O+"),
+    # which order, and how much of the series was observed rather than filled in.
+    tag = f"{log_prefix} {model_label}".strip()
+    days = f"{observed_days} observed / {n_obs} modeled days" if observed_days is not None else f"{n_obs} modeled days"
 
-    def fit_checked(model, **fit_kwargs) -> Optional[object]:
-        """Fits with `fit_kwargs` and returns the fit only if it's sane per
-        _sarimax_fit_is_sane; None (never raises) on any failure, exactly like the
+    def verdict(reason: str, diag: dict) -> str:
+        delta = diag.get("aic_per_obs_delta_vs_baseline")
+        return reason if delta is None else f"{reason}, aic/obs delta {delta:+.4f} vs limit {SARIMAX_AIC_PER_OBS_DEGRADATION_THRESHOLD}"
+
+    def fit_checked(model, **fit_kwargs) -> tuple[Optional[object], str, dict]:
+        """Fits with `fit_kwargs` and returns (fit, reason, diagnostics), fit only if it's sane
+        per _sarimax_fit_is_sane; None (never raises) on any failure, exactly like the
         rest of this function's contract."""
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 candidate = model.fit(disp=False, maxiter=FACILITY_SARIMAX_MAXITER, **fit_kwargs)
-        except Exception:
-            return None
-        ok, _reason, _diag = _sarimax_fit_is_sane(candidate, n_obs, baseline_aic_per_obs)
-        return candidate if ok else None
+        except Exception as exc:
+            return None, f"fit_raised_{type(exc).__name__}", {}
+        ok, reason, diag = _sarimax_fit_is_sane(candidate, n_obs, baseline_aic_per_obs)
+        return (candidate if ok else None), reason, diag
 
     try:
         model = SARIMAX(
@@ -1186,9 +1203,9 @@ def _fit_sarimax_facility_forecast(
     except Exception:
         return None
 
-    fit = fit_checked(model, start_params=start_params) if start_params is not None else fit_checked(model)
+    fit, reason, diag = fit_checked(model, start_params=start_params) if start_params is not None else fit_checked(model)
     if fit is None:
-        print(f"[sarimax] {model_label} primary fit unsound on a {n_obs}-day series; retrying nm->lbfgs")
+        print(f"[sarimax] {tag} primary fit unsound ({verdict(reason, diag)}) on {days}; retrying nm->lbfgs")
         # nm is only relocating the start point for the lbfgs polish below, not itself
         # the fit that gets judged — Nelder-Mead frequently reports its OWN
         # converged=False at this maxiter while still landing somewhere lbfgs can
@@ -1205,10 +1222,15 @@ def _fit_sarimax_facility_forecast(
                 fit_nm = candidate_nm
         except Exception:
             pass
-        fit = fit_checked(model, start_params=fit_nm.params.values, method="lbfgs") if fit_nm is not None else None
+        fit, reason, diag = (
+            fit_checked(model, start_params=fit_nm.params.values, method="lbfgs") if fit_nm is not None
+            else (None, "nm_params_non_finite", {})
+        )
         if fit is None:
-            print(f"[sarimax] {model_label} retry also unsound on a {n_obs}-day series; falling back to linear trend")
+            print(f"[sarimax] {tag} retry also unsound ({verdict(reason, diag)}) on {days}; falling back to linear trend")
             return None
+        # A rescued type is not a failed one: say so, or the two read the same in the logs.
+        print(f"[sarimax] {tag} retry sound ({verdict(reason, diag)}) on {days}")
 
     try:
         forecast_res = fit.get_forecast(steps=horizon, exog=future_exog)
@@ -1371,7 +1393,8 @@ def _resolve_order(facility_id: int, blood_type: str, daily_series: list[tuple[d
 
 
 def _fit_and_cache_sarimax(
-    facility_id: int, blood_type: str, daily_series: list[tuple[date, int]], today: date
+    facility_id: int, blood_type: str, daily_series: list[tuple[date, int]], today: date,
+    observed_dates: Optional[set[date]] = None,
 ) -> Optional[dict]:
     """Fits one type (~12-20 s on the deployed instance) and commits its
     checkpoint rows in their OWN short transaction, so a request that is killed
@@ -1389,6 +1412,8 @@ def _fit_and_cache_sarimax(
     result = _fit_sarimax_facility_forecast(
         daily_series, today, order=order, seasonal_order=seasonal_order, model_label=label,
         start_params=start_params, baseline_aic_per_obs=baseline_aic_per_obs,
+        log_prefix=f"f{facility_id} {blood_type}",
+        observed_days=None if observed_dates is None else _count_observed_days(daily_series, observed_dates),
     )
     if result is None:
         _SARIMAX_FIT_FAILED.add((facility_id, blood_type, today))
@@ -1438,7 +1463,8 @@ def _fit_and_cache_sarimax(
 
 
 def _collect_sarimax_results(
-    facility_id: int, daily_by_type: dict[str, list[tuple[date, int]]], today: date
+    facility_id: int, daily_by_type: dict[str, list[tuple[date, int]]], today: date,
+    observed_dates: Optional[set[date]] = None,
 ) -> tuple[dict[str, Optional[dict]], list[str]]:
     """Returns ({type: result-or-None}, pending_types). A type with a result is
     ready; one mapped to None had an unusable fit (caller uses the linear trend);
@@ -1484,7 +1510,9 @@ def _collect_sarimax_results(
                         results[blood_type] = cached
                         missing.remove(blood_type)
             for blood_type in list(missing)[:MAX_SARIMAX_FITS_PER_REQUEST]:
-                results[blood_type] = _fit_and_cache_sarimax(facility_id, blood_type, daily_by_type[blood_type], today)
+                results[blood_type] = _fit_and_cache_sarimax(
+                    facility_id, blood_type, daily_by_type[blood_type], today, observed_dates=observed_dates
+                )
                 missing.remove(blood_type)
         finally:
             lock_conn.execute(
@@ -3141,7 +3169,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
         daily_by_type = {
             bt: _resample_daily_series(raw_units_by_type[bt], observed_dates, today) for bt in by_type
         }
-        sarimax_by_type, pending_types = _collect_sarimax_results(facility_id, daily_by_type, today)
+        sarimax_by_type, pending_types = _collect_sarimax_results(facility_id, daily_by_type, today, observed_dates)
 
     for blood_type, points in by_type.items():
         if blood_type in pending_types:
@@ -3230,8 +3258,8 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
         severity = "critical" if days_until_threshold <= 14 else "warn"
         if method_used == "sarimax":
             reason = (
-                f"{sarimax_result['model_order']} fit on this facility's own {len(daily_series)}-day history "
-                f"for {blood_type}; projected to fall below minimum threshold ({minimum} units) in "
+                f"{sarimax_result['model_order']} fit on this facility's own {_count_observed_days(daily_series, observed_dates)} "
+                f"observed days of history for {blood_type}; projected to fall below minimum threshold ({minimum} units) in "
                 f"{round(days_until_threshold)} days"
             )
         else:

@@ -28,6 +28,7 @@ from main import (
     FORECAST_CHECKPOINTS,
     SARIMAX_AIC_PER_OBS_DEGRADATION_THRESHOLD,
     SARIMAX_MIN_DAYS_REQUIRED,
+    _count_observed_days,
     _fit_sarimax_facility_forecast,
     _resample_daily_series,
     _sarimax_fit_is_sane,
@@ -88,6 +89,12 @@ class ResampleDailySeriesTests(unittest.TestCase):
         result = _resample_daily_series(type_rows, observed, d2)
         self.assertEqual(result, [(d0, 5), (d0 + timedelta(days=1), 5), (d2, 5)])
 
+    def test_observed_days_excludes_the_days_that_were_filled_in(self):
+        d0 = date(2026, 1, 1)
+        series = _resample_daily_series({d0: 5}, {d0, d0 + timedelta(days=3)}, d0 + timedelta(days=3))
+        self.assertEqual(len(series), 4)  # d0, two carried-forward days, d3 (a real zero for this type)
+        self.assertEqual(_count_observed_days(series, {d0, d0 + timedelta(days=3)}), 2)
+
     def test_series_starts_at_this_types_own_first_date_not_earlier(self):
         # The facility has been observed since day 0, but this particular
         # type's first-ever row is day 3 — nothing should be invented for
@@ -118,6 +125,36 @@ def _build_realistic_series(n_days: int, end: date) -> list[tuple[date, int]]:
 
 
 class FitSarimaxFacilityForecastTests(unittest.TestCase):
+    def _fit_with_verdicts(self, verdicts, **kwargs):
+        """Runs the real fit with _sarimax_fit_is_sane scripted; returns (result, printed lines)."""
+        today = date(2026, 3, 1)
+        series = _build_realistic_series(45, today)
+        with patch("main._sarimax_fit_is_sane", side_effect=verdicts), patch("builtins.print") as mocked_print:
+            result = _fit_sarimax_facility_forecast(
+                series, today, model_label="X [grid-searched]", baseline_aic_per_obs=5.0, log_prefix="f5 O+", **kwargs
+            )
+        return result, [c.args[0] for c in mocked_print.call_args_list]
+
+    def test_a_rescued_retry_is_logged_as_sound_not_left_looking_like_a_failure(self):
+        result, lines = self._fit_with_verdicts(
+            [(False, "aic_degraded_vs_baseline", {"aic_per_obs_delta_vs_baseline": 0.0523}),
+             (True, "ok", {"aic_per_obs_delta_vs_baseline": 0.0301})], observed_days=40)
+        self.assertIsNotNone(result)
+        self.assertEqual(lines, [
+            "[sarimax] f5 O+ X [grid-searched] primary fit unsound (aic_degraded_vs_baseline, aic/obs delta +0.0523 "
+            "vs limit 0.05) on 40 observed / 45 modeled days; retrying nm->lbfgs",
+            "[sarimax] f5 O+ X [grid-searched] retry sound (ok, aic/obs delta +0.0301 vs limit 0.05) on 40 observed / 45 modeled days",
+        ])
+
+    def test_a_failed_retry_names_the_type_the_reason_and_the_delta(self):
+        result, lines = self._fit_with_verdicts(
+            [(False, "aic_degraded_vs_baseline", {"aic_per_obs_delta_vs_baseline": 0.0523}),
+             (False, "aic_degraded_vs_baseline", {"aic_per_obs_delta_vs_baseline": 0.0716})])
+        self.assertIsNone(result)
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[1], "[sarimax] f5 O+ X [grid-searched] retry also unsound (aic_degraded_vs_baseline, "
+                                   "aic/obs delta +0.0716 vs limit 0.05) on 45 modeled days; falling back to linear trend")
+
     def test_below_threshold_returns_none_without_attempting_a_fit(self):
         today = date(2026, 3, 1)
         series = _build_realistic_series(SARIMAX_MIN_DAYS_REQUIRED - 1, today)
