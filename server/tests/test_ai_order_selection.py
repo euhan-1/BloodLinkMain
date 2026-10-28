@@ -286,6 +286,68 @@ class ResolveOrderTests(RulesFileMixin, unittest.TestCase):
         self.assertEqual(q("SELECT count(*) FROM facility_forecast_cache WHERE facility_id=:f", f=self.fid)[0][0], 0)
 
 
+    # ---- the weekday-pattern guard: a non-seasonal AI order is refused on a series with a weekly rhythm
+    NON_SEASONAL_LEAF = 0  # CANDIDATE_LIBRARY[0] = (0,1,1)x(0,0,0,7)
+
+    def fit_logged(self, series):
+        with mock.patch("builtins.print") as printed:
+            fitter, result = self.fit(series)
+        return fitter.call_args[1], [c.args[0] for c in printed.call_args_list if c.args and "declined" in str(c.args[0])]
+
+    def weekday_series(self):
+        series = self.series(noisy_series(120))
+        eta2, p = app._weekday_pattern(series)
+        self.assertLess(p, 0.001)  # the precondition the tests below rely on
+        return series
+
+    def test_a_non_seasonal_ai_order_is_declined_on_a_series_with_a_weekday_pattern(self):
+        self.use_rules(rules_doc(tree={"leaf": self.NON_SEASONAL_LEAF}))
+        kw, declined = self.fit_logged(self.weekday_series())
+        self.assertEqual((kw["order"], kw["seasonal_order"]), (app.FACILITY_SARIMAX_ORDER, app.FACILITY_SARIMAX_SEASONAL_ORDER))
+        self.assertEqual(kw["model_label"], "SARIMAX(0,1,4)x(1,0,1,7)+dengue [default-order]")
+        self.assertEqual(len(declined), 1)
+        self.assertRegex(declined[0], rf"^\[sarimax\] f{self.fid} O\+ ai order \(0,1,1\)x\(0,0,0,7\) declined: series has a weekday "
+                                      r"pattern \(eta\^2 0\.\d\d, p < 0\.001\) the order ignores; using default$")
+        self.assertEqual({r[0] for r in q("SELECT model_order FROM facility_forecast_cache WHERE facility_id=:f", f=self.fid)},
+                         {"SARIMAX(0,1,4)x(1,0,1,7)+dengue [default-order]"})
+
+    def test_a_non_seasonal_ai_order_is_used_when_the_series_has_no_weekday_pattern(self):
+        self.use_rules(rules_doc(tree={"leaf": self.NON_SEASONAL_LEAF}))
+        series = self.series(np.maximum(0, 80 + np.random.default_rng(5).normal(0, 5, 41)).round())
+        self.assertGreaterEqual(app._weekday_pattern(series)[1], app.WEEKDAY_PATTERN_ALPHA)
+        kw, declined = self.fit_logged(series)
+        self.assertEqual((kw["order"], kw["seasonal_order"]), ((0, 1, 1), (0, 0, 0, 7)))
+        self.assertEqual(kw["model_label"], "SARIMAX(0,1,1)x(0,0,0,7)+dengue [ai-recommended]")
+        self.assertEqual(declined, [])
+
+    def test_a_seasonal_ai_order_is_not_refused_even_with_a_weekday_pattern(self):
+        self.use_rules(rules_doc())  # leaf 7 = (0,1,2)x(1,0,1,7)
+        kw, declined = self.fit_logged(self.weekday_series())
+        self.assertEqual((kw["order"], kw["seasonal_order"]), LEAF_7)
+        self.assertEqual(kw["model_label"], "SARIMAX(0,1,2)x(1,0,1,7)+dengue [ai-recommended]")
+        self.assertEqual(declined, [])
+
+    def test_no_grid_row_and_no_rules_file_is_unchanged_and_the_guard_stays_out_of_it(self):
+        self.use_rules()  # no rules file
+        series = self.weekday_series()
+        with mock.patch.object(app, "_weekday_pattern", side_effect=AssertionError("no AI order, nothing to guard")):
+            kw, declined = self.fit_logged(series)
+        self.assertEqual(kw["model_label"], "SARIMAX(0,1,4)x(1,0,1,7)+dengue [default-order]")
+        self.assertEqual(declined, [])
+
+    def test_a_grid_row_never_reaches_the_guard(self):
+        self.use_rules(rules_doc(tree={"leaf": self.NON_SEASONAL_LEAF}))
+        self.insert_grid_row()
+        series = self.weekday_series()
+        with mock.patch.object(app, "_weekday_pattern", side_effect=AssertionError("grid rows are not guarded")):
+            kw, declined = self.fit_logged(series)
+        self.assertEqual(kw["model_label"], "SARIMAX(1,1,1)x(1,0,1,7)+dengue [grid-searched]")
+
+    def test_the_weekday_test_is_none_when_it_cannot_run(self):
+        self.assertIsNone(app._weekday_pattern(self.series(np.full(41, 50.0))))
+        self.assertIsNone(app._weekday_pattern(self.series(np.array([5.0]))))
+
+
 class ForecastResponseTests(RulesFileMixin, unittest.TestCase):
     """The /forecast response states, per type, which mechanism produced the order."""
 

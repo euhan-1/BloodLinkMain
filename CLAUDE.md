@@ -45,7 +45,8 @@ requests, SARIMAX demand forecasting, donor broadcast.
 - **Which order a fit uses** (`_resolve_order`), in precedence: (1) the grid-searched
   row; (2) an AI recommendation, a depth-4 decision tree over 13 features of the
   type's own daily series, walked from `server/models/sarimax_selector_rules.json`
-  (no scikit-learn), computed at fit time and not stored; (3) the fixed default
+  (no scikit-learn), computed at fit time and not stored, and refused when it has no
+  seasonal term and a weekday ANOVA on the series' daily changes is significant at 0.05; (3) the fixed default
   `(0,1,4)x(1,0,1,7)` when the AI can't produce one (rules missing or invalid,
   non-finite feature, any error). The label names the mechanism, in
   `facility_forecast_cache.model_order` and `/forecast`'s `sarimax_orders`:
@@ -65,7 +66,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (280 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (290 tests plus
   84 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`

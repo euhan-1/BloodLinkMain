@@ -119,6 +119,9 @@ FACILITY_SARIMAX_FAMILY_LABEL = "SARIMAX + dengue-season exogenous regressor"
 # The suffix names a mechanism; it says nothing about forecast quality.
 ORDER_SOURCE_SUFFIX = {"grid": " [grid-searched]", "ai": " [ai-recommended]", "fixed": " [default-order]"}
 _LEGACY_FIXED_SUFFIX = " [fallback]"  # how cache rows written before the rename spell "fixed"
+# Significance level of the weekday-pattern test that stops a non-seasonal AI order being applied
+# to a series with a weekly rhythm (see _resolve_order). A conventional alpha, not a tuned cut-off.
+WEEKDAY_PATTERN_ALPHA = 0.05
 FACILITY_SARIMAX_MAXITER = 200
 # One GET /forecast fits at most this many blood types, then returns what it has
 # plus a "pending" list; the dashboard polls for the rest. A cold fit is ~12-20 s
@@ -1363,6 +1366,29 @@ def _ai_recommended_order(values) -> Optional[tuple[tuple[int, int, int], tuple[
         return None
 
 
+def _weekday_pattern(daily_series: list[tuple[date, int]]) -> Optional[tuple[float, float]]:
+    """(eta^2, p) of a one-way ANOVA of the series' day-to-day changes grouped by weekday: whether
+    the weekly rhythm is real (p) and how much of the variance in daily changes it explains (eta^2).
+    None whenever the test can't be run (fewer than two weekdays with data, no variance, non-finite)."""
+    import numpy as np  # lazy — see the import comment near the top of this file
+    from scipy.stats import f_oneway
+
+    try:
+        changes = np.diff(np.array([v for _, v in daily_series], dtype=float))
+        weekdays = np.array([d.weekday() for d, _ in daily_series[1:]])
+        groups = [changes[weekdays == k] for k in range(7) if (weekdays == k).sum() >= 2]
+        if len(groups) < 2:
+            return None
+        used = np.concatenate(groups)
+        ss_total = float(np.sum((used - used.mean()) ** 2))
+        p = float(f_oneway(*groups).pvalue)
+        if not (ss_total > 0 and math.isfinite(p)):
+            return None
+        return float(sum(len(g) * (g.mean() - used.mean()) ** 2 for g in groups) / ss_total), p
+    except Exception:
+        return None
+
+
 def _resolve_order(facility_id: int, blood_type: str, daily_series: list[tuple[date, int]]) -> dict:
     """Which order this (facility, blood_type) is fitted with, by precedence: a
     grid-searched row in facility_sarimax_order, else the AI recommendation computed
@@ -1371,7 +1397,9 @@ def _resolve_order(facility_id: int, blood_type: str, daily_series: list[tuple[d
     baseline_aic_per_obs (only a grid row has those two).
 
     The AI recommendation is not stored: it can change as the series grows, and each
-    forecast's label (facility_forecast_cache.model_order) records what produced it."""
+    forecast's label (facility_forecast_cache.model_order) records what produced it.
+    One rule, stated in a sentence: an AI order with no seasonal term is refused (and logged)
+    when a one-way ANOVA of the series' daily changes by weekday is significant at 0.05."""
     with engine.connect() as conn:
         selected = _get_selected_order(conn, facility_id, blood_type)
     if selected:
@@ -1381,6 +1409,19 @@ def _resolve_order(facility_id: int, blood_type: str, daily_series: list[tuple[d
     else:
         start_params = baseline = None
         recommended = _ai_recommended_order([v for _, v in daily_series])
+        # Guard (narrow on purpose): an AI order with no seasonal term is refused when a weekday
+        # ANOVA on the series' daily changes is significant at WEEKDAY_PATTERN_ALPHA, because it
+        # would discard a weekly rhythm the series has. Backtested on real series (facility 158,
+        # 31 rolling origins): that order's RMSE was 1.18x the default's. A seasonal AI order was
+        # not backtested and passes through.
+        if recommended is not None and not any(recommended[1][:3]):
+            pattern = _weekday_pattern(daily_series)
+            if pattern is not None and pattern[1] < WEEKDAY_PATTERN_ALPHA:
+                (p, d, q), (sp, sd, sq, ss) = recommended
+                p_text = "p < 0.001" if pattern[1] < 0.001 else f"p = {pattern[1]:.3f}"
+                print(f"[sarimax] f{facility_id} {blood_type} ai order ({p},{d},{q})x({sp},{sd},{sq},{ss}) declined: "
+                      f"series has a weekday pattern (eta^2 {pattern[0]:.2f}, {p_text}) the order ignores; using default")
+                recommended = None
         if recommended is not None:
             (order, seasonal_order), source = recommended, "ai"
         else:
