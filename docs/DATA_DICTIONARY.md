@@ -1,24 +1,24 @@
 # BloodLink Data Dictionary and Schema Reference
 
-Generated 2026-09-26 by `docs/build_data_dictionary.py` from the **live PostgreSQL (Supabase) database** via
+Generated 2026-10-28 by `docs/build_data_dictionary.py` from the **live PostgreSQL (Supabase) database** via
 `information_schema` and `pg_constraint`, not from the `schema_*.sql` files. Data types, lengths, keys and constraints are what is
 deployed; example values are real values from actual rows, with the exceptions described below.
 
 ## Summary
 
-* **19 tables** in the `public` schema, 138 columns in all, 26 foreign keys. Views: none.
-* **No unexpected tables.** Every table maps to a feature: identity (`facilities`, `users`, `password_reset_requests`), inventory
-  (`blood_units`, `blood_type_thresholds`, `upload_history`, `inventory_snapshot_write_log`), transfers (`requests`, `request_messages`), notification
+* **23 tables** in the `public` schema, 199 columns in all, 32 foreign keys. Views: none.
+* **No unexpected tables.** Every table maps to a feature: identity (`facilities`, `users`, `password_reset_requests`, `facility_registration_requests`, `otp_codes`), inventory
+  (`blood_units`, `blood_type_thresholds`, `upload_history`, `inventory_snapshot_write_log`), transfers (`requests`, `request_messages`, `request_unit_failures`), notification
   (`notifications`), donor outreach (`donors`, `blasts`, `blast_messages`, `blast_replies`) and forecasting (`inventory_snapshots`,
-  `facility_forecast_cache`, `forecast_alert_state`, `synthetic_inventory_snapshots`, `synthetic_forecast_cache`). The ones easiest to
-  overlook are `forecast_alert_state` (alert de-duplication), `upload_history` (audit; holds the raw CSV text and drives undo), `inventory_snapshot_write_log` (lets undo restore overwritten snapshots) and the
+  `facility_forecast_cache`, `facility_sarimax_order`, `forecast_alert_state`, `synthetic_inventory_snapshots`, `synthetic_forecast_cache`). The ones easiest to
+  overlook are `facility_sarimax_order` (the SARIMAX order chosen offline per facility and blood type), `forecast_alert_state` (alert de-duplication), `upload_history` (audit; holds the raw CSV text and drives undo), `inventory_snapshot_write_log` (lets undo restore overwritten snapshots) and the
   two `synthetic_*` research tables.
 * **Donor outreach tables:** `blasts` (the campaign), `blast_messages` (one row per donor messaged) and `blast_replies` (donor yes/no
   answers). Full column lists below.
 * **`facilities` carries more than name, type, address, coordinates and `is_active`.** The onboarding migration also added
   `department`, `doh_license_number` and `profile_completed`, so the table has 10 columns.
-* **Referential integrity:** every foreign key is `NO ACTION` on delete (a parent row cannot be deleted while children exist), except the two on `inventory_snapshot_write_log`, which `CASCADE` because it is a pure log.
-  The only CHECK constraint in the schema is `upload_history.upload_type`; enumerations such as `users.role`, `requests.status`
+* **Referential integrity:** every foreign key is `NO ACTION` on delete (a parent row cannot be deleted while children exist), except `facility_sarimax_order.facility_id`, `inventory_snapshot_write_log.facility_id` and `inventory_snapshot_write_log.upload_history_id`, which `CASCADE` because those rows have no meaning without their parent (a pure log and derived selection results).
+  6 CHECK constraints exist, on `facility_registration_requests`, `otp_codes`, `request_unit_failures`, `upload_history`; each is shown under its table. Enumerations such as `users.role`, `requests.status`
   and `facilities.facility_type` are free text validated in application code only.
 
 ## Conventions and privacy
@@ -39,44 +39,44 @@ deployed; example values are real values from actual rows, with the exceptions d
 
 ## blast_messages
 
-One row per message a blast addressed to one donor. Messages are simulated: there is no real SMS provider integration. Operational (donor outreach, part 2 of 3). (28 rows, 5 columns in the live database.)
+One row per message a blast addressed to one donor. Messages are simulated: there is no real SMS provider integration. Operational (donor outreach, part 2 of 3). (0 rows, 5 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
-| id | bigint | 64-bit | PK | Unique identifier of the message record. | 1 |
-| blast_id | bigint | 64-bit | FK | The blast this message was part of (FK to blasts.id). | 1 |
-| donor_id | bigint | 64-bit | FK | The donor it was addressed to (FK to donors.id). | 1 |
-| message_text | text | — |  | The alert text composed for the donor. | [BloodLink Alert] O- donors urgently needed at Riverside Gen… |
-| simulated_sent_at | timestamp with time zone | — |  | When the message was 'sent'. Sending is simulated end to end; nothing leaves the system. | 2026-07-13 21:27:46.422386+00:00 |
+| id | bigint | 64-bit | PK | Unique identifier of the message record. | (table is empty) |
+| blast_id | bigint | 64-bit | FK | The blast this message was part of (FK to blasts.id). | (table is empty) |
+| donor_id | bigint | 64-bit | FK | The donor it was addressed to (FK to donors.id). | (table is empty) |
+| message_text | text | — |  | The alert text composed for the donor. | (table is empty) |
+| simulated_sent_at | timestamp with time zone | — |  | When the message was 'sent'. Sending is simulated end to end; nothing leaves the system. | (table is empty) |
 
 ## blast_replies
 
-A donor's reply (yes/no) to a blast; at most one reply per donor per blast. Operational (donor outreach, part 3 of 3). (9 rows, 5 columns in the live database.)
+A donor's reply (yes/no) to a blast; at most one reply per donor per blast. Operational (donor outreach, part 3 of 3). (0 rows, 5 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
-| id | bigint | 64-bit | PK | Unique identifier of the reply. | 1 |
-| blast_id | bigint | 64-bit | FK + UK* | The blast being answered (FK to blasts.id). | 4 |
-| donor_id | bigint | 64-bit | FK + UK* | The donor who replied (FK to donors.id). | 8 |
-| reply | text | — |  | The donor's answer, 'yes' or 'no'. | yes |
-| replied_at | timestamp with time zone | — |  | When the reply was recorded. | 2026-07-14 07:40:00+00:00 |
+| id | bigint | 64-bit | PK | Unique identifier of the reply. | (table is empty) |
+| blast_id | bigint | 64-bit | FK + UK* | The blast being answered (FK to blasts.id). | (table is empty) |
+| donor_id | bigint | 64-bit | FK + UK* | The donor who replied (FK to donors.id). | (table is empty) |
+| reply | text | — |  | The donor's answer, 'yes' or 'no'. | (table is empty) |
+| replied_at | timestamp with time zone | — |  | When the reply was recorded. | (table is empty) |
 
 Composite unique key (blast_id, donor_id); `UK*` marks a column that is part of one.
 
 ## blasts
 
-Donor outreach campaigns: one row per call for donors of a given blood type, with a target and a deadline. Operational (donor outreach, part 1 of 3). (9 rows, 8 columns in the live database.)
+Donor outreach campaigns: one row per call for donors of a given blood type, with a target and a deadline. Operational (donor outreach, part 1 of 3). (0 rows, 8 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
-| id | bigint | 64-bit | PK | Unique identifier of the outreach blast. | 1 |
-| facility_id | bigint | 64-bit | FK | The facility that launched the blast (FK to facilities.id). | 1 |
-| blood_type | text | — |  | The blood type of donors being called. | O- |
-| target_count | integer | 32-bit |  | How many donors the facility wants to respond. | 5 |
-| time_limit_hours | integer | 32-bit |  | How many hours donors have to respond. | 2 |
-| status | text | — |  | 'active' while open, 'completed' once closed. | active |
-| created_at | timestamp with time zone | — |  | When the blast was launched. | 2026-07-13 21:27:46.422386+00:00 |
-| deadline_at | timestamp with time zone | — |  | When the response window closes. | 2026-07-13 23:27:19.727403+00:00 |
+| id | bigint | 64-bit | PK | Unique identifier of the outreach blast. | (table is empty) |
+| facility_id | bigint | 64-bit | FK | The facility that launched the blast (FK to facilities.id). | (table is empty) |
+| blood_type | text | — |  | The blood type of donors being called. | (table is empty) |
+| target_count | integer | 32-bit |  | How many donors the facility wants to respond. | (table is empty) |
+| time_limit_hours | integer | 32-bit |  | How many hours donors have to respond. | (table is empty) |
+| status | text | — |  | 'active' while open, 'completed' once closed. | (table is empty) |
+| created_at | timestamp with time zone | — |  | When the blast was launched. | (table is empty) |
+| deadline_at | timestamp with time zone | — |  | When the response window closes. | (table is empty) |
 
 ## blood_type_thresholds
 
@@ -93,7 +93,7 @@ Composite primary key (facility_id, blood_type).
 
 ## blood_units
 
-The blood inventory: one row per physical unit (bag/component) identified by its DIN. The core operational table. Operational. (3,166 rows, 14 columns in the live database.)
+The blood inventory: one row per physical unit (bag/component) identified by its DIN. The core operational table. Operational. (5,587 rows, 14 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
@@ -109,22 +109,22 @@ The blood inventory: one row per physical unit (bag/component) identified by its
 | facility_id | bigint | 64-bit | FK | The facility this unit belongs to (FK to facilities.id). | 4 |
 | reserved_for_request_id | bigint | 64-bit | FK | The transfer request this unit is held for; NULL when the unit is free (FK to requests.id). Nullable. | NULL (no row has a value) |
 | last_notified_expiry_status | text | — |  | The last expiry warning level ('near-expiry' or 'critical') already notified, so the same warning is not sent twice; NULL when none sent. Nullable. | critical |
-| upload_history_id | bigint | 64-bit | FK | The CSV upload that created this unit, so the upload can be undone; NULL for units not added by upload (FK to upload_history.id). Nullable. | 22 |
+| upload_history_id | bigint | 64-bit | FK | The CSV upload that created this unit, so the upload can be undone; NULL for units not added by upload (FK to upload_history.id). Nullable. | NULL (no row has a value) |
 | archived_at | timestamp with time zone | — |  | When the unit was archived out of active inventory; NULL while active. Nullable. | NULL (no row has a value) |
 
 ## donors
 
-The donor contact list each facility keeps for outreach. Contains personal data. Operational. (20 rows, 7 columns in the live database.)
+The donor contact list each facility keeps for outreach. Contains personal data. Operational. (0 rows, 7 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
-| id | bigint | 64-bit | PK | Unique identifier of the donor record. | 7 |
-| name | text | — |  | The donor's name. Personal data. | Donor A |
-| blood_type | text | — |  | The donor's blood type, used to pick who to contact for a blast. | O- |
-| phone | text | — | UK* | The donor's contact number. Personal data; unique within a facility. | +1 5*****01 |
-| facility_id | bigint | 64-bit | FK + UK* | The facility that keeps this donor on its list (FK to facilities.id). | 1 |
-| created_at | timestamp with time zone | — |  | When the donor was added. | 2026-07-14 07:34:56.818586+00:00 |
-| upload_history_id | bigint | 64-bit | FK | The CSV upload that added this donor; NULL when added by hand (FK to upload_history.id). Nullable. | NULL (no row has a value) |
+| id | bigint | 64-bit | PK | Unique identifier of the donor record. | (table is empty) |
+| name | text | — |  | The donor's name. Personal data. | (table is empty) |
+| blood_type | text | — |  | The donor's blood type, used to pick who to contact for a blast. | (table is empty) |
+| phone | text | — | UK* | The donor's contact number. Personal data; unique within a facility. | (table is empty) |
+| facility_id | bigint | 64-bit | FK + UK* | The facility that keeps this donor on its list (FK to facilities.id). | (table is empty) |
+| created_at | timestamp with time zone | — |  | When the donor was added. | (table is empty) |
+| upload_history_id | bigint | 64-bit | FK | The CSV upload that added this donor; NULL when added by hand (FK to upload_history.id). Nullable. | (table is empty) |
 
 Composite unique key (facility_id, phone); `UK*` marks a column that is part of one.
 
@@ -147,121 +147,218 @@ Every organisation on the platform (hospitals and blood banks). It is the tenant
 
 ## facility_forecast_cache
 
-Cached per-facility SARIMAX forecast checkpoints, refit at most once a day per facility and blood type, so the dashboard does not refit on every load. Derived cache; forecasting. (112 rows, 10 columns in the live database.)
+Cached per-facility SARIMAX forecast checkpoints, refit at most once a day per facility and blood type, so the dashboard does not refit on every load. Derived cache; forecasting. (98 rows, 10 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
-| id | bigint | 64-bit | PK | Unique identifier of the cached point. | 239 |
-| facility_id | bigint | 64-bit | FK + UK* | The facility the forecast is for (FK to facilities.id). | 158 |
-| blood_type | text | — | UK* | Blood type forecast. | A- |
-| forecast_date | date | — | UK* | The future date this forecast point is for (checkpoints at 0, 5, 10, 15, 20, 25 and 30 days ahead). | 2026-09-24 |
-| forecast_units | numeric | — |  | Predicted stock on that date. | 43 |
-| lower_units | numeric | — |  | Lower end of the 95% prediction interval. | 43 |
-| upper_units | numeric | — |  | Upper end of the 95% prediction interval. | 43 |
-| trained_through_date | date | — |  | The last day of history the model was fitted on; the cache is reused only while this equals today. | 2026-09-24 |
-| model_order | text | — |  | Label of the model that produced it: the SARIMAX order plus the dengue regressor, and how the order was obtained (grid-searched, ai-recommended or default-order). | SARIMAX(0,1,4)x(1,0,1,7)+dengue |
-| generated_at | timestamp with time zone | — |  | When it was computed. | 2026-09-23 17:25:40.823435+00:00 |
+| id | bigint | 64-bit | PK | Unique identifier of the cached point. | 5371 |
+| facility_id | bigint | 64-bit | FK + UK* | The facility the forecast is for (FK to facilities.id). | 5 |
+| blood_type | text | — | UK* | Blood type forecast. | O- |
+| forecast_date | date | — | UK* | The future date this forecast point is for (checkpoints at 0, 5, 10, 15, 20, 25 and 30 days ahead). | 2026-11-27 |
+| forecast_units | numeric | — |  | Predicted stock on that date. | 28 |
+| lower_units | numeric | — |  | Lower end of the 95% prediction interval. | 25 |
+| upper_units | numeric | — |  | Upper end of the 95% prediction interval. | 31 |
+| trained_through_date | date | — |  | The last day of history the model was fitted on; the cache is reused only while this equals today. | 2026-10-28 |
+| model_order | text | — |  | Label of the model that produced it: the SARIMAX order plus the dengue regressor, then in brackets how the order was obtained: [grid-searched] (a facility_sarimax_order row), [ai-recommended] (the decision-tree selector) or [default-order] (the fixed default). The bracket names the mechanism only. Rows written before the brackets existed have no suffix (a grid-searched order) or ' [fallback]' (the default order); the API reports those in today's spelling. | SARIMAX(1,0,2)x(1,0,1,7)+dengue [grid-searched] |
+| generated_at | timestamp with time zone | — |  | When it was computed. | 2026-10-28 02:19:43.089446+00:00 |
 
 Composite unique key (facility_id, blood_type, forecast_date); `UK*` marks a column that is part of one.
 
+## facility_registration_requests
+
+A facility's self-service application to join the platform: organisation details, a contact person and the password they chose (hashed), held until an administrator approves or rejects it. Status runs submitted, then email_verified once the contact confirms a one-time code (see otp_codes), then approved or rejected. Approval creates the facility, its default stock thresholds and its first staff account; either decision archives the request. Contains personal data. Operational (identity). (3 rows, 17 columns in the live database.)
+
+| Field_Name | Data_Type | Length | Key | Description | Example |
+|---|---|---|---|---|---|
+| id | bigint | 64-bit | PK | Unique identifier of the registration request. | 46 |
+| facility_name | text | — |  | The applicant facility's name; becomes facilities.name on approval. | E2E Reject Flow Hospital |
+| facility_type | text | — |  | 'hospital' or 'bloodbank'. Enforced by a CHECK constraint. | hospital |
+| address | text | — |  | Street address entered or picked on the map. | Malvar |
+| latitude | double precision | 53-bit |  | Map latitude of the facility; may be missing if no location was picked. Nullable. | 14.05 |
+| longitude | double precision | 53-bit |  | Map longitude of the facility. Nullable. | 121.15 |
+| doh_license_number | text | — |  | The Department of Health licence number given on the form; not validated. | DOH-E2E-004 |
+| contact_person | text | — |  | Name of the person applying. Personal data. | (personal data; not shown) |
+| email | text | — |  | The applicant's email address, which the one-time code is sent to and which becomes the login on approval. Personal data. Unique among live (not archived) requests. | (personal data; not shown) |
+| phone | text | — |  | The applicant's phone number. Personal data. | +1 5*****01 |
+| password_hash | text | — |  | bcrypt hash of the password chosen at registration, copied to users.password_hash on approval. The password itself is never stored. | $2b$12$... |
+| status | text | — |  | submitted, email_verified, approved or rejected. Enforced by a CHECK constraint. | rejected |
+| rejection_reason | text | — |  | The administrator's stated reason when the request was rejected; NULL otherwise. Free text. Nullable. | (free text; not shown) |
+| reviewed_by | bigint | 64-bit | FK | The administrator account that approved or rejected the request (FK to users.id). Nullable. | 13 |
+| reviewed_at | timestamp with time zone | — |  | When the decision was made; NULL while undecided. Nullable. | 2026-09-28 10:44:05.673415+00:00 |
+| archived_at | timestamp with time zone | — |  | When the request was archived (set on approval or rejection, so a later application with the same email starts a fresh row); NULL while live. Nullable. | 2026-09-28 10:44:05.673415+00:00 |
+| created_at | timestamp with time zone | — |  | When the request was first submitted. | 2026-09-28 10:44:00.148423+00:00 |
+
+CHECK: `CHECK ((status = ANY (ARRAY['submitted'::text, 'email_verified'::text, 'approved'::text, 'rejected'::text])))`. CHECK: `CHECK ((facility_type = ANY (ARRAY['hospital'::text, 'bloodbank'::text])))`.
+
+## facility_sarimax_order
+
+The SARIMAX order chosen offline for each facility and blood type by a grid search on training data only (the series minus its last 30 days), with diagnostics reported separately on a 30-day hold-out the search never saw. A facility and type with no row here is fitted with the AI-recommended order or the fixed default instead (see facility_forecast_cache.model_order). Derived; forecasting. (8 rows, 27 columns in the live database.)
+
+| Field_Name | Data_Type | Length | Key | Description | Example |
+|---|---|---|---|---|---|
+| facility_id | bigint | 64-bit | PK + FK | The facility the order was chosen for (part of the composite primary key). Rows are deleted with the facility (FK to facilities.id). | 5 |
+| blood_type | text | — | PK | Blood type the order was chosen for (part of the composite primary key). | A- |
+| p | smallint | — |  | Non-seasonal autoregressive order of the chosen model. | 1 |
+| d | smallint | — |  | Non-seasonal differencing order of the chosen model. | 0 |
+| q | smallint | — |  | Non-seasonal moving-average order of the chosen model. | 2 |
+| seasonal_p | smallint | — |  | Seasonal autoregressive order. | 1 |
+| seasonal_d | smallint | — |  | Seasonal differencing order; the grid fixes it at 0. | 0 |
+| seasonal_q | smallint | — |  | Seasonal moving-average order. | 1 |
+| seasonal_s | smallint | — |  | Seasonal period in days; 7 (weekly). | 7 |
+| aic | double precision | 53-bit |  | AIC of the chosen model fitted on the training window. | 962.774597001934 |
+| lb_p_14_in_sample | double precision | 53-bit |  | Ljung-Box p-value at lag 14 on the chosen model's in-sample residuals, corrected for the model's ARMA parameters. | 0.0510309727281807 |
+| lb_p_21_in_sample | double precision | 53-bit |  | Same at lag 21. | 0.193014054997755 |
+| lb_p_28_in_sample | double precision | 53-bit |  | Same at lag 28. | 0.0767657102783659 |
+| criterion_satisfied | boolean | — |  | True when the chosen model passed Ljung-Box (p above 0.05) at all three lags; False means no candidate did and the lowest-AIC candidate was kept. | True |
+| n_candidates_converged | smallint | — |  | How many of the grid's candidate models converged and passed the sanity check on the training window. | 67 |
+| lb_p_14_holdout_onestep | double precision | 53-bit |  | Ljung-Box p-value at lag 14 on one-step-ahead errors over the hold-out, with parameters not re-estimated; NULL if not computable. Nullable. | 0.661242638615603 |
+| lb_p_21_holdout_onestep | double precision | 53-bit |  | Same at lag 21. Nullable. | 0.741370245653675 |
+| lb_p_28_holdout_onestep | double precision | 53-bit |  | Same at lag 28. Nullable. | 0.186386890595778 |
+| holdout_mape | double precision | 53-bit |  | Mean absolute percentage error, in percent, of the chosen model's 30-day forecast against the hold-out actuals; NULL if undefined. Nullable. | 5.06872563476744 |
+| holdout_rmse | double precision | 53-bit |  | Root mean squared error, in units, of that forecast. Nullable. | 0.954648565046465 |
+| holdout_baseline_mape | double precision | 53-bit |  | The same percentage error for a naive baseline that repeats the last training value. Nullable. | 7.54085266585267 |
+| holdout_baseline_rmse | double precision | 53-bit |  | The same root mean squared error, in units, for that naive baseline. Nullable. | 1.50554530541816 |
+| trained_through_date | date | — |  | The last day of the training window: the selection day minus the 30-day hold-out. | 2026-08-29 |
+| evaluated_through_date | date | — |  | The last day of the hold-out; the day the selection ran. | 2026-09-28 |
+| selected_at | timestamp with time zone | — |  | When the row was written (UTC). | 2026-09-27 19:36:15.446485+00:00 |
+| start_params | jsonb | — |  | The chosen model's fitted parameters on the training window, used to warm-start the fit on the full series; NULL on rows written before this column existed. Nullable. | [-2.3073161410847987, 0.3467861248855131, 0.0680065838502903… |
+| selection_aic_per_obs | double precision | 53-bit |  | The training-window AIC divided by the number of observations; the baseline the live fit's soundness check compares against. NULL on rows written before this column existed. Nullable. | 2.4560576454131 |
+
+Composite primary key (facility_id, blood_type).
+
 ## forecast_alert_state
 
-Remembers whether a facility and blood type is currently in a forecast-shortage alert, so a notification is raised once when it starts rather than on every refresh. Derived state; forecasting. (3 rows, 4 columns in the live database.)
+Remembers whether a facility and blood type is currently in a forecast-shortage alert, so a notification is raised once when it starts rather than on every refresh. Derived state; forecasting. (8 rows, 4 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
 | facility_id | bigint | 64-bit | PK + FK | The facility (part of the composite primary key) (FK to facilities.id). | 5 |
-| blood_type | text | — | PK | Blood type (part of the composite primary key). | A+ |
+| blood_type | text | — | PK | Blood type (part of the composite primary key). | O+ |
 | alerting | boolean | — |  | True while this facility and type is in a forecast-shortage alert. | False |
-| updated_at | timestamp with time zone | — |  | When the flag last changed. | 2026-09-22 06:16:01.229912+00:00 |
+| updated_at | timestamp with time zone | — |  | When the flag last changed. | 2026-10-11 10:06:05.017687+00:00 |
 
 Composite primary key (facility_id, blood_type).
 
 ## inventory_snapshot_write_log
 
-Append-only log of every value a historical-stock upload wrote into inventory_snapshots, plus the original organic value the first time an upload overwrote one. It exists so undoing an upload can restore what was overwritten and handle overlapping uploads correctly. Operational (audit). (0 rows, 7 columns in the live database.)
+Append-only log of every value a historical-stock upload wrote into inventory_snapshots, plus the original organic value the first time an upload overwrote one. It exists so undoing an upload can restore what was overwritten and handle overlapping uploads correctly. Operational (audit). (24,480 rows, 7 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
-| id | bigint | 64-bit | PK | Unique identifier of the log entry; higher means written later. | (table is empty) |
-| facility_id | bigint | 64-bit | FK | The facility whose snapshot was written. Log entries are deleted with the facility (FK to facilities.id). | (table is empty) |
-| snapshot_date | date | — |  | The day of the snapshot that was written. | (table is empty) |
-| blood_type | text | — |  | Blood type of the snapshot that was written. | (table is empty) |
-| units | integer | 32-bit |  | The unit count that was written for that day and type. | (table is empty) |
-| upload_history_id | bigint | 64-bit | FK | The upload that wrote this value; NULL marks the original organic value saved before an upload overwrote it. Log entries are deleted with the upload (FK to upload_history.id). Nullable. | (table is empty) |
-| created_at | timestamp with time zone | — |  | When the entry was logged. | (table is empty) |
+| id | bigint | 64-bit | PK | Unique identifier of the log entry; higher means written later. | 9620 |
+| facility_id | bigint | 64-bit | FK | The facility whose snapshot was written. Log entries are deleted with the facility (FK to facilities.id). | 5 |
+| snapshot_date | date | — |  | The day of the snapshot that was written. | 2026-03-30 |
+| blood_type | text | — |  | Blood type of the snapshot that was written. | O+ |
+| units | integer | 32-bit |  | The unit count that was written for that day and type. | 149 |
+| upload_history_id | bigint | 64-bit | FK | The upload that wrote this value; NULL marks the original organic value saved before an upload overwrote it. Log entries are deleted with the upload (FK to upload_history.id). Nullable. | 104 |
+| created_at | timestamp with time zone | — |  | When the entry was logged. | 2026-09-26 15:52:11.599627+00:00 |
 
 ## inventory_snapshots
 
-The daily count of usable units per facility and blood type. Written by the app's own daily snapshot and by historical-stock CSV uploads; it is the time series the per-facility forecast is fitted on. Operational data that also serves as forecasting input. (1,320 rows, 7 columns in the live database.)
+The daily count of usable units (not past their expiry date) per facility and blood type, one row per day per type. Written when a blood bank loads its forecast, nightly for every active facility including hospitals (POST /internal/daily-snapshot at 23:30 Manila, first run 2026-10-27), and by historical-stock CSV uploads. All eight blood types are written each time and a type with none in stock is an explicit 0, so a missing day means nobody recorded it, not that stock was zero. It is the time series the per-facility forecast is fitted on, and the forecast carries the last value forward over a day with no rows. Operational data that also serves as forecasting input. (4,792 rows, 7 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
 | id | bigint | 64-bit | PK | Unique identifier of the snapshot row. | 185 |
 | snapshot_date | date | — | UK* | The day the count describes. | 2026-07-14 |
 | blood_type | text | — | UK* | Blood type counted. | B+ |
-| units | integer | 32-bit |  | Usable units of that type in stock that day. | 90 |
-| created_at | timestamp with time zone | — |  | When the row was written. | 2026-07-13 20:27:38.819426+00:00 |
-| facility_id | bigint | 64-bit | FK + UK* | The facility counted (FK to facilities.id). | 6 |
-| upload_history_id | bigint | 64-bit | FK | The historical-stock upload that supplied this row; NULL for the app's own daily snapshot (FK to upload_history.id). Nullable. | 21 |
+| units | integer | 32-bit |  | Usable units of that type in stock that day (not past expiry). An explicit 0 means the shelf was empty; no row for the day means it was not observed. | 90 |
+| created_at | timestamp with time zone | — |  | When the row was first written. | 2026-07-13 20:27:38.819426+00:00 |
+| facility_id | bigint | 64-bit | FK + UK* | The facility counted. Hospitals are counted too, though they are never forecast from (FK to facilities.id). | 6 |
+| upload_history_id | bigint | 64-bit | FK | The historical-stock upload that supplied this row; NULL for rows the app wrote itself (a forecast load or the nightly job) (FK to upload_history.id). Nullable. | 21 |
 
 Composite unique key (snapshot_date, blood_type, facility_id); `UK*` marks a column that is part of one.
 
 ## notifications
 
-In-app notifications shown to a facility (incoming requests, expiring units, forecast shortages, and so on). Operational. (136 rows, 7 columns in the live database.)
+In-app notifications shown to a facility (incoming requests, expiring units, forecast shortages, and so on). Operational. (412 rows, 7 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
 | id | bigint | 64-bit | PK | Unique identifier of the notification. | 8 |
 | facility_id | bigint | 64-bit | FK | The facility the notification is shown to (FK to facilities.id). | 3 |
-| type | text | — |  | Category: unit_expiry, incoming_request, request_accepted, request_cancelled, transfer_confirmation_needed, transfer_completed or forecast_shortage. | incoming_request |
+| type | text | — |  | Category, one of 11: blast_complete, expiring_unit_alert, forecast_shortage, incoming_request, request_accepted, request_cancelled, request_declined, transfer_completed, transfer_confirmation_needed, transfer_units_failed, unit_expiry. | incoming_request |
 | message | text | — |  | The text shown to the user. | New 3-unit O+ request from UI Notif Hospital |
 | link | text | — |  | The in-app page or record the notification opens (for example 'requests:14' or 'inventory'). Nullable. | requests:14 |
-| read_at | timestamp with time zone | — |  | When the user read it; NULL while unread (currently NULL in every row). Nullable. | NULL (no row has a value) |
+| read_at | timestamp with time zone | — |  | When the user read it; NULL while unread (currently NULL in every row). Nullable. | 2026-09-27 04:37:49.805425+00:00 |
 | created_at | timestamp with time zone | — |  | When the notification was raised. | 2026-08-21 05:52:48.287292+00:00 |
+
+## otp_codes
+
+One-time codes emailed to a person: either to prove a registrant owns the email on a facility_registration_requests row, or to reset a password. Only a hash of each code is stored, with a count of wrong guesses and an expiry; each row is bound to exactly one registration request or one user. Operational (security). (6 rows, 10 columns in the live database.)
+
+| Field_Name | Data_Type | Length | Key | Description | Example |
+|---|---|---|---|---|---|
+| id | bigint | 64-bit | PK | Unique identifier of the code. | 70 |
+| purpose | text | — |  | What the code is for: 'registration_email_verify' or 'password_reset'. Enforced by a CHECK constraint. | registration_email_verify |
+| registration_request_id | bigint | 64-bit | FK | The registration request being verified. Set only for registration_email_verify codes; a CHECK ties it to the purpose (FK to facility_registration_requests.id). Nullable. | 46 |
+| user_id | bigint | 64-bit | FK | The account whose password the code resets. Set only for password_reset codes; a CHECK ties it to the purpose (FK to users.id). Nullable. | 234 |
+| email | text | — |  | The address the code was emailed to. Personal data. | (personal data; not shown) |
+| code_hash | text | — |  | Hash of the code; the code itself is never stored. | $2b$12$... |
+| attempts | integer | 32-bit |  | How many wrong guesses have been made against this code; the code stops being accepted at the cap. | 0 |
+| expires_at | timestamp with time zone | — |  | When the code stops working. | 2026-09-28 10:54:00.640618+00:00 |
+| used_at | timestamp with time zone | — |  | When the code was accepted or superseded by a newly issued one; NULL while still usable. Nullable. | 2026-09-28 10:44:03.138049+00:00 |
+| created_at | timestamp with time zone | — |  | When the code was issued. | 2026-09-28 10:44:00.148423+00:00 |
+
+CHECK: `CHECK ((((purpose = 'registration_email_verify'::text) AND (registration_request_id IS NOT NULL) AND (user_id IS NULL)) OR ((purpose = 'password_reset'::text) AND (user_id IS NOT NULL) AND (registration_request_id IS NULL))))`. CHECK: `CHECK ((purpose = ANY (ARRAY['registration_email_verify'::text, 'password_reset'::text])))`.
 
 ## password_reset_requests
 
-One row per emailed password-reset link, storing only a hash of the token so a database leak cannot be used to reset accounts. Operational (security). (13 rows, 6 columns in the live database.)
+One row per emailed password-reset link, storing only a hash of the token so a database leak cannot be used to reset accounts. Operational (security). (1 rows, 6 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
-| id | bigint | 64-bit | PK | Unique identifier of the reset request. | 1 |
+| id | bigint | 64-bit | PK | Unique identifier of the reset request. | 15 |
 | user_id | bigint | 64-bit | FK | The account the reset link was issued for (FK to users.id). | 6 |
 | token_hash | text | — | UK | Hash of the one-time token that was emailed; the token itself is not stored. Unique. | a3f9c2e1-... |
-| expires_at | timestamp with time zone | — |  | When the link stops working. | 2026-09-13 07:28:14.647367+00:00 |
-| used_at | timestamp with time zone | — |  | When the link was used to set a new password; NULL while unused. Nullable. | 2026-09-13 06:41:03.414811+00:00 |
-| created_at | timestamp with time zone | — |  | When the reset was requested. | 2026-09-13 06:28:15.698229+00:00 |
+| expires_at | timestamp with time zone | — |  | When the link stops working. | 2026-09-30 06:21:47.131058+00:00 |
+| used_at | timestamp with time zone | — |  | When the link was used to set a new password; NULL while unused. Nullable. | NULL (no row has a value) |
+| created_at | timestamp with time zone | — |  | When the reset was requested. | 2026-09-30 05:21:47.237577+00:00 |
 
 ## request_messages
 
-The chat thread attached to a transfer request, letting the two facilities coordinate. Operational. (19 rows, 5 columns in the live database.)
+The chat thread attached to a transfer request, letting the two facilities coordinate. Operational. (3 rows, 5 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
-| id | bigint | 64-bit | PK | Unique identifier of the message. | 1 |
-| request_id | bigint | 64-bit | FK | The request whose chat thread this message belongs to (FK to requests.id). | 3 |
-| sender_facility_id | bigint | 64-bit | FK | The facility that wrote the message (FK to facilities.id). | 1 |
-| message | text | — |  | The message text. | Hi, checking on the status of our O- request. |
-| created_at | timestamp with time zone | — |  | When it was sent. | 2026-07-22 17:04:51.217005+00:00 |
+| id | bigint | 64-bit | PK | Unique identifier of the message. | 6 |
+| request_id | bigint | 64-bit | FK | The request whose chat thread this message belongs to (FK to requests.id). | 4 |
+| sender_facility_id | bigint | 64-bit | FK | The facility that wrote the message (FK to facilities.id). | 4 |
+| message | text | — |  | The message text. | hello |
+| created_at | timestamp with time zone | — |  | When it was sent. | 2026-07-22 21:08:23.594478+00:00 |
+
+## request_unit_failures
+
+One row per reserved unit that could not be received because it expired between the supplier's release and the requester's receipt. Records which DIN failed and why, so a short delivery is never unexplained. Operational (audit). (0 rows, 7 columns in the live database.)
+
+| Field_Name | Data_Type | Length | Key | Description | Example |
+|---|---|---|---|---|---|
+| id | bigint | 64-bit | PK | Unique identifier of the failure record. | (table is empty) |
+| request_id | bigint | 64-bit | FK + UK* | The transfer request the unit was reserved for (FK to requests.id). | (table is empty) |
+| blood_unit_id | bigint | 64-bit | FK + UK* | The unit that was not received. It stays at the supplier, archived (FK to blood_units.id). | (table is empty) |
+| din | text | — |  | The unit's donation identification number at the moment receipt was refused. | (table is empty) |
+| expires_date | date | — |  | The unit's expiry date at the moment receipt was refused; before that day's business date. | (table is empty) |
+| reason | text | — |  | Why the unit failed. Only 'expired_before_receipt' exists (database CHECK). | (table is empty) |
+| created_at | timestamp with time zone | — |  | When receipt was confirmed and the failure recorded. | (table is empty) |
+
+Composite unique key (request_id, blood_unit_id); `UK*` marks a column that is part of one. CHECK: `CHECK ((reason = 'expired_before_receipt'::text))`.
 
 ## requests
 
-Blood transfer requests between two facilities (one requests, one supplies) and their lifecycle from pending to completed. Operational. (24 rows, 10 columns in the live database.)
+Blood transfer requests between two facilities (one requests, one supplies) and their lifecycle from pending to completed. Operational. (12 rows, 10 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
-| id | bigint | 64-bit | PK | Unique identifier of the request. | 1 |
+| id | bigint | 64-bit | PK | Unique identifier of the request. | 2 |
 | requesting_facility_id | bigint | 64-bit | FK | The facility asking for blood (FK to facilities.id). | 1 |
-| supplying_facility_id | bigint | 64-bit | FK | The facility being asked to supply it (FK to facilities.id). | 5 |
-| blood_type | text | — |  | The blood type requested. | O- |
-| quantity | integer | 32-bit |  | Number of units requested. | 3 |
-| emergency_type | text | — |  | Why it is needed: 'trauma' (urgent) or 'restock' (routine). Free text; no database CHECK. | trauma |
-| status | text | — |  | Lifecycle state: pending, accepted, declined, cancelled or completed. Free text; no database CHECK. Only pending, declined, cancelled and completed occur in the current data. | completed |
-| created_at | timestamp with time zone | — |  | When the request was made. | 2026-07-10 09:42:39.346305+00:00 |
-| supplier_confirmed_at | timestamp with time zone | — |  | When the supplier confirmed the hand-over; NULL until then. Nullable. | 2026-07-10 10:38:24.560726+00:00 |
-| requester_confirmed_at | timestamp with time zone | — |  | When the requester confirmed receipt; NULL until then. Both confirmations complete the transfer. Nullable. | 2026-07-10 10:38:26.559298+00:00 |
+| supplying_facility_id | bigint | 64-bit | FK | The facility being asked to supply it (FK to facilities.id). | 6 |
+| blood_type | text | — |  | The blood type requested. | A+ |
+| quantity | integer | 32-bit |  | Number of units requested. | 5 |
+| emergency_type | text | — |  | Why it is needed: 'trauma' (urgent) or 'restock' (routine). Free text; no database CHECK. | restock |
+| status | text | — |  | Lifecycle state: pending, accepted, declined, cancelled, completed, or failed (every reserved unit expired before receipt; see request_unit_failures). Completed can still carry failed units. Free text; no database CHECK. | cancelled |
+| created_at | timestamp with time zone | — |  | When the request was made. | 2026-07-10 09:42:39.655554+00:00 |
+| supplier_confirmed_at | timestamp with time zone | — |  | When the supplier confirmed the hand-over; NULL until then. Nullable. | 2026-09-23 20:11:54.700112+00:00 |
+| requester_confirmed_at | timestamp with time zone | — |  | When the requester confirmed receipt; NULL until then. Both confirmations complete the transfer. Nullable. | 2026-09-26 09:04:31.616919+00:00 |
 
 ## synthetic_forecast_cache
 
@@ -294,21 +391,21 @@ Composite unique key (snapshot_date, blood_type); `UK*` marks a column that is p
 
 ## upload_history
 
-An audit record of each CSV upload (inventory, donors or historical stock), including the raw file and any per-row errors, so an upload can be undone. Operational (audit). (6 rows, 11 columns in the live database.)
+An audit record of each CSV upload (inventory, donors or historical stock), including the raw file and any per-row errors, so an upload can be undone. Operational (audit). (14 rows, 11 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
-| id | bigint | 64-bit | PK | Unique identifier of the upload. | 22 |
-| facility_id | bigint | 64-bit | FK | The facility that uploaded the file (FK to facilities.id). | 1 |
-| upload_type | text | — |  | Kind of upload: 'inventory', 'donors' or 'historical_stock'. Enforced by a CHECK constraint. | inventory |
-| uploaded_by | bigint | 64-bit | FK | The user who uploaded it (FK to users.id). Nullable. | 6 |
-| filename | text | — |  | Original file name. Nullable. | hospital_inventory.csv |
-| uploaded_at | timestamp with time zone | — |  | When the upload happened. | 2026-09-26 10:31:20.123850+00:00 |
-| rows_processed | integer | 32-bit |  | How many CSV rows were accepted. | 113 |
+| id | bigint | 64-bit | PK | Unique identifier of the upload. | 21 |
+| facility_id | bigint | 64-bit | FK | The facility that uploaded the file (FK to facilities.id). | 158 |
+| upload_type | text | — |  | Kind of upload: 'inventory', 'donors' or 'historical_stock'. Enforced by a CHECK constraint. | historical_stock |
+| uploaded_by | bigint | 64-bit | FK | The user who uploaded it (FK to users.id). Nullable. | 47 |
+| filename | text | — |  | Original file name. Nullable. | demo_historical_stock.csv |
+| uploaded_at | timestamp with time zone | — |  | When the upload happened. | 2026-09-22 07:52:50.576315+00:00 |
+| rows_processed | integer | 32-bit |  | How many CSV rows were accepted. | 1200 |
 | rows_failed | integer | 32-bit |  | How many CSV rows were rejected. | 0 |
 | error_details | jsonb | — |  | JSON list of per-row rejection reasons; an empty list when every row was accepted. | [] |
-| raw_content | text | — |  | The uploaded CSV text, kept so an upload can be audited or undone. Shown here as its header line only. Nullable. | din,blood_type,component,location,volume_ml,collected_date,e… |
-| undone_at | timestamp with time zone | — |  | When the upload was reversed; NULL if it stands. Nullable. | 2026-09-26 14:52:15.293942+00:00 |
+| raw_content | text | — |  | The uploaded CSV text, kept so an upload can be audited or undone. Shown here as its header line only. Nullable. | snapshot_date,blood_type,units |
+| undone_at | timestamp with time zone | — |  | When the upload was reversed; NULL if it stands. Nullable. | 2026-09-26 15:54:53.873236+00:00 |
 
 CHECK: `CHECK ((upload_type = ANY (ARRAY['inventory'::text, 'donors'::text, 'historical_stock'::text])))`.
 
@@ -329,7 +426,7 @@ Login accounts. Each staff account belongs to one facility; the single admin acc
 ## Foreign key map
 
 Every foreign key constraint in the deployed schema. `requests` joins `facilities` twice (requesting and supplying);
-`blood_units.reserved_for_request_id` is nullable. All are `ON DELETE NO ACTION` except `inventory_snapshot_write_log.facility_id` and `.upload_history_id`, which are `ON DELETE CASCADE`. Cardinality reads child : parent.
+`blood_units.reserved_for_request_id` is nullable. All are `ON DELETE NO ACTION` except `facility_sarimax_order.facility_id`, `inventory_snapshot_write_log.facility_id` and `inventory_snapshot_write_log.upload_history_id`, which are `ON DELETE CASCADE`. Cardinality reads child : parent.
 
 | Child column | Parent column | Cardinality | Nullable |
 |---|---|---|---|
@@ -345,15 +442,21 @@ Every foreign key constraint in the deployed schema. `requests` joins `facilitie
 | donors.facility_id | facilities.id | many : 1 | no |
 | donors.upload_history_id | upload_history.id | many : 0..1 | yes |
 | facility_forecast_cache.facility_id | facilities.id | many : 1 | no |
+| facility_registration_requests.reviewed_by | users.id | many : 0..1 | yes |
+| facility_sarimax_order.facility_id | facilities.id | many : 1 | no |
 | forecast_alert_state.facility_id | facilities.id | many : 1 | no |
 | inventory_snapshot_write_log.facility_id | facilities.id | many : 1 | no |
 | inventory_snapshot_write_log.upload_history_id | upload_history.id | many : 0..1 | yes |
 | inventory_snapshots.facility_id | facilities.id | many : 1 | no |
 | inventory_snapshots.upload_history_id | upload_history.id | many : 0..1 | yes |
 | notifications.facility_id | facilities.id | many : 1 | no |
+| otp_codes.registration_request_id | facility_registration_requests.id | many : 0..1 | yes |
+| otp_codes.user_id | users.id | many : 0..1 | yes |
 | password_reset_requests.user_id | users.id | many : 1 | no |
 | request_messages.request_id | requests.id | many : 1 | no |
 | request_messages.sender_facility_id | facilities.id | many : 1 | no |
+| request_unit_failures.blood_unit_id | blood_units.id | many : 1 | no |
+| request_unit_failures.request_id | requests.id | many : 1 | no |
 | requests.requesting_facility_id | facilities.id | many : 1 | no |
 | requests.supplying_facility_id | facilities.id | many : 1 | no |
 | upload_history.facility_id | facilities.id | many : 1 | no |
@@ -369,11 +472,11 @@ Which tables exist to support the forecasting research rather than day-to-day bl
 | synthetic_inventory_snapshots | **Research** | Generated two-year demonstration series (no facility). Not blood bank records. Used to fit the shared stand-in model. |
 | synthetic_forecast_cache | **Research** | Output of the stand-in model. Served only to facilities with fewer than 3 days of history, so it can appear in the UI, but it is model output on generated data, not a measurement. |
 | facility_forecast_cache | Derived (forecasting) | Cache of per-facility SARIMAX output. Reproducible from `inventory_snapshots`; safe to truncate. |
+| facility_sarimax_order | Derived (forecasting) | The SARIMAX order chosen offline for each facility and blood type, with its selection diagnostics. Reproducible by re-running `server/select_orders.py` on `inventory_snapshots`; with no row the live fitter uses the AI-recommended or default order. |
 | forecast_alert_state | Derived (forecasting) | De-duplication flag for forecast-shortage notifications. It has an operational effect (raises a notification) but exists only because of the forecast. |
-| inventory_snapshots | Mixed | Operational counts, but also the series the forecast is fitted on. At the time of generation, 1,200 of its 1,320 rows came from one historical-stock CSV upload of a generated demonstration file; the rest are the app's own daily snapshots. It should not be described as a record of real supply. |
+| inventory_snapshots | Mixed | Operational counts, but also the series the forecast is fitted on. At the time of generation, 4,560 of its 4,792 rows came from historical-stock CSV uploads and 232 were written by the app itself (a forecast load, or the nightly job for every active facility). Uploaded files in this deployment have included generated demonstration data, so the table should not be described as a record of real supply. A day with no row is unobserved, not zero. |
 
-Every other table (`inventory_snapshot_write_log`, `facilities`, `users`, `password_reset_requests`, `blood_units`, `blood_type_thresholds`, `requests`,
-`request_messages`, `notifications`, `upload_history`, `donors`, `blasts`, `blast_messages`, `blast_replies`) is operational. In the
+Every other table (`blast_messages`, `blast_replies`, `blasts`, `blood_type_thresholds`, `blood_units`, `donors`, `facilities`, `facility_registration_requests`, `inventory_snapshot_write_log`, `notifications`, `otp_codes`, `password_reset_requests`, `request_messages`, `request_unit_failures`, `requests`, `upload_history`, `users`) is operational. In the
 paper, `blood_units` is the system's record of physical inventory; the `synthetic_*` tables are a research and demonstration
 apparatus and should not be presented as equivalent to it. The current database also holds demo and test operational rows
 (demo facilities and accounts), so even the operational tables contain demonstration content in this deployment.

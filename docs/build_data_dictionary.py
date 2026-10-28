@@ -2,9 +2,11 @@
 (information_schema + pg_constraint) and sampling real rows for examples.
 Descriptions are hand-written below; the script asserts every deployed table and
 column has one, so a schema change fails loudly instead of being silently omitted.
+The database is only ever read, inside a READ ONLY transaction.
 Run from repo root: server\\.venv\\Scripts\\python.exe docs\\build_data_dictionary.py
 """
 import datetime
+import re
 import sys
 from pathlib import Path
 
@@ -12,11 +14,21 @@ sys.path.insert(0, "server")
 from database import engine
 from sqlalchemy import text
 
-OUT = Path("docs/DATA_DICTIONARY.md")
+OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("docs/DATA_DICTIONARY.md")  # an argument writes elsewhere (dry runs)
+
+# Every value server/main.py passes to _create_notification. Checked against the code in main(), so a new
+# notification type fails the run until it is listed here.
+NOTIFICATION_TYPES = [
+    "blast_complete", "expiring_unit_alert", "forecast_shortage", "incoming_request", "request_accepted",
+    "request_cancelled", "request_declined", "transfer_completed", "transfer_confirmation_needed",
+    "transfer_units_failed", "unit_expiry",
+]
 
 TABLE_DOC = {
     "facilities": "Every organisation on the platform (hospitals and blood banks). It is the tenant root: nearly every other table carries a facility_id pointing here. Operational.",
     "users": "Login accounts. Each staff account belongs to one facility; the single admin account belongs to none. Operational.",
+    "facility_registration_requests": "A facility's self-service application to join the platform: organisation details, a contact person and the password they chose (hashed), held until an administrator approves or rejects it. Status runs submitted, then email_verified once the contact confirms a one-time code (see otp_codes), then approved or rejected. Approval creates the facility, its default stock thresholds and its first staff account; either decision archives the request. Contains personal data. Operational (identity).",
+    "otp_codes": "One-time codes emailed to a person: either to prove a registrant owns the email on a facility_registration_requests row, or to reset a password. Only a hash of each code is stored, with a count of wrong guesses and an expiry; each row is bound to exactly one registration request or one user. Operational (security).",
     "password_reset_requests": "One row per emailed password-reset link, storing only a hash of the token so a database leak cannot be used to reset accounts. Operational (security).",
     "blood_units": "The blood inventory: one row per physical unit (bag/component) identified by its DIN. The core operational table. Operational.",
     "blood_type_thresholds": "Per-facility minimum and maximum stock levels for each blood type; they drive low-stock and overstock status and restock recommendations. Operational configuration.",
@@ -29,9 +41,10 @@ TABLE_DOC = {
     "blasts": "Donor outreach campaigns: one row per call for donors of a given blood type, with a target and a deadline. Operational (donor outreach, part 1 of 3).",
     "blast_messages": "One row per message a blast addressed to one donor. Messages are simulated: there is no real SMS provider integration. Operational (donor outreach, part 2 of 3).",
     "blast_replies": "A donor's reply (yes/no) to a blast; at most one reply per donor per blast. Operational (donor outreach, part 3 of 3).",
-    "inventory_snapshots": "The daily count of usable units per facility and blood type. Written by the app's own daily snapshot and by historical-stock CSV uploads; it is the time series the per-facility forecast is fitted on. Operational data that also serves as forecasting input.",
+    "inventory_snapshots": "The daily count of usable units (not past their expiry date) per facility and blood type, one row per day per type. Written when a blood bank loads its forecast, nightly for every active facility including hospitals (POST /internal/daily-snapshot at 23:30 Manila, first run 2026-10-27), and by historical-stock CSV uploads. All eight blood types are written each time and a type with none in stock is an explicit 0, so a missing day means nobody recorded it, not that stock was zero. It is the time series the per-facility forecast is fitted on, and the forecast carries the last value forward over a day with no rows. Operational data that also serves as forecasting input.",
     "facility_forecast_cache": "Cached per-facility SARIMAX forecast checkpoints, refit at most once a day per facility and blood type, so the dashboard does not refit on every load. Derived cache; forecasting.",
     "inventory_snapshot_write_log": "Append-only log of every value a historical-stock upload wrote into inventory_snapshots, plus the original organic value the first time an upload overwrote one. It exists so undoing an upload can restore what was overwritten and handle overlapping uploads correctly. Operational (audit).",
+    "facility_sarimax_order": "The SARIMAX order chosen offline for each facility and blood type by a grid search on training data only (the series minus its last 30 days), with diagnostics reported separately on a 30-day hold-out the search never saw. A facility and type with no row here is fitted with the AI-recommended order or the fixed default instead (see facility_forecast_cache.model_order). Derived; forecasting.",
     "forecast_alert_state": "Remembers whether a facility and blood type is currently in a forecast-shortage alert, so a notification is raised once when it starts rather than on every refresh. Derived state; forecasting.",
     "synthetic_inventory_snapshots": "A generated two-year daily stock series per blood type (no facility). It is demonstration data used to fit the shared stand-in model; it is not real blood bank records. Research.",
     "synthetic_forecast_cache": "The stand-in forecast produced from the synthetic series, served to facilities that have fewer than 3 days of their own history. Research.",
@@ -57,6 +70,37 @@ D = {
         "role": "Account role: 'staff' (facility user) or 'admin'. Free text; no database CHECK.",
         "created_at": "When the account was created.",
         "must_change_password": "True when the account was issued with a temporary password and must set its own on first login.",
+    },
+    "facility_registration_requests": {
+        "id": "Unique identifier of the registration request.",
+        "facility_name": "The applicant facility's name; becomes facilities.name on approval.",
+        "facility_type": "'hospital' or 'bloodbank'. Enforced by a CHECK constraint.",
+        "address": "Street address entered or picked on the map.",
+        "latitude": "Map latitude of the facility; may be missing if no location was picked.",
+        "longitude": "Map longitude of the facility.",
+        "doh_license_number": "The Department of Health licence number given on the form; not validated.",
+        "contact_person": "Name of the person applying. Personal data.",
+        "email": "The applicant's email address, which the one-time code is sent to and which becomes the login on approval. Personal data. Unique among live (not archived) requests.",
+        "phone": "The applicant's phone number. Personal data.",
+        "password_hash": "bcrypt hash of the password chosen at registration, copied to users.password_hash on approval. The password itself is never stored.",
+        "status": "submitted, email_verified, approved or rejected. Enforced by a CHECK constraint.",
+        "rejection_reason": "The administrator's stated reason when the request was rejected; NULL otherwise. Free text.",
+        "reviewed_by": "The administrator account that approved or rejected the request.",
+        "reviewed_at": "When the decision was made; NULL while undecided.",
+        "archived_at": "When the request was archived (set on approval or rejection, so a later application with the same email starts a fresh row); NULL while live.",
+        "created_at": "When the request was first submitted.",
+    },
+    "otp_codes": {
+        "id": "Unique identifier of the code.",
+        "purpose": "What the code is for: 'registration_email_verify' or 'password_reset'. Enforced by a CHECK constraint.",
+        "registration_request_id": "The registration request being verified. Set only for registration_email_verify codes; a CHECK ties it to the purpose.",
+        "user_id": "The account whose password the code resets. Set only for password_reset codes; a CHECK ties it to the purpose.",
+        "email": "The address the code was emailed to. Personal data.",
+        "code_hash": "Hash of the code; the code itself is never stored.",
+        "attempts": "How many wrong guesses have been made against this code; the code stops being accepted at the cap.",
+        "expires_at": "When the code stops working.",
+        "used_at": "When the code was accepted or superseded by a newly issued one; NULL while still usable.",
+        "created_at": "When the code was issued.",
     },
     "password_reset_requests": {
         "id": "Unique identifier of the reset request.",
@@ -119,7 +163,7 @@ D = {
     "notifications": {
         "id": "Unique identifier of the notification.",
         "facility_id": "The facility the notification is shown to.",
-        "type": "Category: unit_expiry, incoming_request, request_accepted, request_cancelled, transfer_confirmation_needed, transfer_completed, transfer_units_failed or forecast_shortage.",
+        "type": f"Category, one of {len(NOTIFICATION_TYPES)}: {', '.join(NOTIFICATION_TYPES)}.",
         "message": "The text shown to the user.",
         "link": "The in-app page or record the notification opens (for example 'requests:14' or 'inventory').",
         "read_at": "When the user read it; NULL while unread (currently NULL in every row).",
@@ -175,10 +219,10 @@ D = {
         "id": "Unique identifier of the snapshot row.",
         "snapshot_date": "The day the count describes.",
         "blood_type": "Blood type counted.",
-        "units": "Usable units of that type in stock that day.",
-        "created_at": "When the row was written.",
-        "facility_id": "The facility counted.",
-        "upload_history_id": "The historical-stock upload that supplied this row; NULL for the app's own daily snapshot.",
+        "units": "Usable units of that type in stock that day (not past expiry). An explicit 0 means the shelf was empty; no row for the day means it was not observed.",
+        "created_at": "When the row was first written.",
+        "facility_id": "The facility counted. Hospitals are counted too, though they are never forecast from.",
+        "upload_history_id": "The historical-stock upload that supplied this row; NULL for rows the app wrote itself (a forecast load or the nightly job).",
     },
     "inventory_snapshot_write_log": {
         "id": "Unique identifier of the log entry; higher means written later.",
@@ -198,8 +242,37 @@ D = {
         "lower_units": "Lower end of the 95% prediction interval.",
         "upper_units": "Upper end of the 95% prediction interval.",
         "trained_through_date": "The last day of history the model was fitted on; the cache is reused only while this equals today.",
-        "model_order": "Label of the model that produced it: the SARIMAX order plus the dengue regressor, and how the order was obtained (grid-searched, ai-recommended or default-order).",
+        "model_order": "Label of the model that produced it: the SARIMAX order plus the dengue regressor, then in brackets how the order was obtained: [grid-searched] (a facility_sarimax_order row), [ai-recommended] (the decision-tree selector) or [default-order] (the fixed default). The bracket names the mechanism only. Rows written before the brackets existed have no suffix (a grid-searched order) or ' [fallback]' (the default order); the API reports those in today's spelling.",
         "generated_at": "When it was computed.",
+    },
+    "facility_sarimax_order": {
+        "facility_id": "The facility the order was chosen for (part of the composite primary key). Rows are deleted with the facility.",
+        "blood_type": "Blood type the order was chosen for (part of the composite primary key).",
+        "p": "Non-seasonal autoregressive order of the chosen model.",
+        "d": "Non-seasonal differencing order of the chosen model.",
+        "q": "Non-seasonal moving-average order of the chosen model.",
+        "seasonal_p": "Seasonal autoregressive order.",
+        "seasonal_d": "Seasonal differencing order; the grid fixes it at 0.",
+        "seasonal_q": "Seasonal moving-average order.",
+        "seasonal_s": "Seasonal period in days; 7 (weekly).",
+        "aic": "AIC of the chosen model fitted on the training window.",
+        "lb_p_14_in_sample": "Ljung-Box p-value at lag 14 on the chosen model's in-sample residuals, corrected for the model's ARMA parameters.",
+        "lb_p_21_in_sample": "Same at lag 21.",
+        "lb_p_28_in_sample": "Same at lag 28.",
+        "criterion_satisfied": "True when the chosen model passed Ljung-Box (p above 0.05) at all three lags; False means no candidate did and the lowest-AIC candidate was kept.",
+        "n_candidates_converged": "How many of the grid's candidate models converged and passed the sanity check on the training window.",
+        "lb_p_14_holdout_onestep": "Ljung-Box p-value at lag 14 on one-step-ahead errors over the hold-out, with parameters not re-estimated; NULL if not computable.",
+        "lb_p_21_holdout_onestep": "Same at lag 21.",
+        "lb_p_28_holdout_onestep": "Same at lag 28.",
+        "holdout_mape": "Mean absolute percentage error, in percent, of the chosen model's 30-day forecast against the hold-out actuals; NULL if undefined.",
+        "holdout_rmse": "Root mean squared error, in units, of that forecast.",
+        "holdout_baseline_mape": "The same percentage error for a naive baseline that repeats the last training value.",
+        "holdout_baseline_rmse": "The same root mean squared error, in units, for that naive baseline.",
+        "trained_through_date": "The last day of the training window: the selection day minus the 30-day hold-out.",
+        "evaluated_through_date": "The last day of the hold-out; the day the selection ran.",
+        "selected_at": "When the row was written (UTC).",
+        "start_params": "The chosen model's fitted parameters on the training window, used to warm-start the fit on the full series; NULL on rows written before this column existed.",
+        "selection_aic_per_obs": "The training-window AIC divided by the number of observations; the baseline the live fit's soundness check compares against. NULL on rows written before this column existed.",
     },
     "forecast_alert_state": {
         "facility_id": "The facility (part of the composite primary key).",
@@ -225,9 +298,17 @@ D = {
 }
 # examples that must not be shown verbatim
 MASK = {("users", "password_hash"): "$2b$12$...", ("password_reset_requests", "token_hash"): "a3f9c2e1-...",
-        ("donors", "phone"): "+1 5*****01"}
+        ("donors", "phone"): "+1 5*****01",
+        ("facility_registration_requests", "password_hash"): "$2b$12$...",
+        ("facility_registration_requests", "contact_person"): "(personal data; not shown)",
+        ("facility_registration_requests", "email"): "(personal data; not shown)",
+        ("facility_registration_requests", "phone"): "+1 5*****01",
+        ("facility_registration_requests", "rejection_reason"): "(free text; not shown)",
+        ("otp_codes", "code_hash"): "$2b$12$...", ("otp_codes", "email"): "(personal data; not shown)"}
 # preferred example row: donors 7 is a literal placeholder record ("Donor A"); users 7 is a demo account
 ROW_ID = {"donors": 7, "users": 7, "upload_history": 22}
+# preferred example row where the newest reads best: the oldest cache rows carry the pre-bracket label spelling
+ROW_ORDER = {"facility_forecast_cache": "id desc"}
 
 
 def length(c):
@@ -253,14 +334,19 @@ def show(v):
 
 
 def main():
+    # the notification types the code can raise must be exactly the ones documented
+    raised = re.findall(r'_create_notification\(\s*conn,\s*[^,]+,\s*"(\w+)"', Path("server/main.py").read_text(encoding="utf-8"))
+    assert set(raised) == set(NOTIFICATION_TYPES), f"notification types in server/main.py differ from NOTIFICATION_TYPES: {sorted(set(raised) ^ set(NOTIFICATION_TYPES))}"
+    secrets = set()  # real values of masked columns seen while sampling; none may reach the output
     with engine.connect() as c:
-        tabs = [r[0] for r in c.execute(text("select table_name from information_schema.tables where table_schema='public' and table_type='BASE TABLE' order by 1"))]
+        c.execute(text("SET TRANSACTION READ ONLY"))  # first statement of the transaction: this run cannot write
+        tabs =[r[0] for r in c.execute(text("select table_name from information_schema.tables where table_schema='public' and table_type='BASE TABLE' order by 1"))]
         views = [r[0] for r in c.execute(text("select table_name from information_schema.views where table_schema='public'"))]
         cons = c.execute(text("select conrelid::regclass::text t, contype, conname, pg_get_constraintdef(oid) d, conkey, confrelid::regclass::text ft, confkey, confdeltype from pg_constraint where connamespace='public'::regnamespace")).mappings().all()
         attn = {(r[0], r[1]): r[2] for r in c.execute(text("select attrelid::regclass::text, attnum, attname from pg_attribute where attnum>0 and not attisdropped and attrelid in (select oid from pg_class where relnamespace='public'::regnamespace)"))}
         missing = [t for t in tabs if t not in TABLE_DOC]
         assert not missing, f"undocumented tables: {missing}"
-        pk, uk, fk, fkrows = {}, {}, {}, []
+        pk, uk, fk, fkrows, cascade_fks = {}, {}, {}, [], []
         for k in cons:
             cols = [attn[(k["t"], n)] for n in k["conkey"]]
             if k["contype"] == "p":
@@ -273,13 +359,19 @@ def main():
                 pcol = attn[(k["ft"], k["confkey"][0])]
                 fk[(k["t"], cols[0])] = (k["ft"], pcol)
                 fkrows.append((k["t"], cols[0], k["ft"], pcol))
+                if k["confdeltype"] == "c":
+                    cascade_fks.append(f"{k['t']}.{cols[0]}")
         md, totals, nullable = [], {}, {}
         for t in tabs:
             cols = [dict(r) for r in c.execute(text("select column_name,data_type,character_maximum_length cl,numeric_precision np,numeric_scale ns,is_nullable from information_schema.columns where table_schema='public' and table_name=:t order by ordinal_position"), {"t": t}).mappings()]
             n = c.execute(text(f'select count(*) from "{t}"')).scalar()
             totals[t] = (n, len(cols))
             extra = f" where id={ROW_ID[t]}" if t in ROW_ID else ""
-            row = c.execute(text(f'select * from "{t}"{extra} order by 1 limit 1')).mappings().first() or {}
+            row = c.execute(text(f'select * from "{t}"{extra} order by {ROW_ORDER.get(t, "1")} limit 1')).mappings().first()
+            if row is None and extra:  # the preferred example row no longer exists: use the first real row, never an all-NULL one
+                row = c.execute(text(f'select * from "{t}" order by {ROW_ORDER.get(t, "1")} limit 1')).mappings().first()
+            row = row or {}
+            secrets |= {str(row[name]) for (mt, name) in MASK if mt == t and row.get(name) is not None and len(str(row[name])) >= 4}
             md.append(f"## {t}\n\n{TABLE_DOC[t]} ({n:,} rows, {len(cols)} columns in the live database.)\n")
             md.append("| Field_Name | Data_Type | Length | Key | Description | Example |\n|---|---|---|---|---|---|")
             for col in cols:
@@ -303,7 +395,7 @@ def main():
                 elif (t, name) in MASK:
                     ex = MASK[(t, name)]
                 elif t == "upload_history" and name == "raw_content":
-                    ex = show((row[name] or "").split("\n")[0])
+                    ex = show((row.get(name) or "").split("\n")[0])
                 else:
                     v = row.get(name)
                     if v is None and col["is_nullable"] == "YES":
@@ -330,8 +422,16 @@ def main():
             card = "1:1" if (ct, cc) in uniq_single else ("many : 0..1" if nullable[(ct, cc)] else "many : 1")
             fkmd.append(f"| {ct}.{cc} | {pt}.{pc} | {card} | {'yes' if nullable[(ct, cc)] else 'no'} |")
         delrules = {k["confdeltype"] for k in cons if k["contype"] == "f"}
-        cascades = sorted({k["t"] for k in cons if k["contype"] == "f" and k["confdeltype"] == "c"})
-        assert delrules == {"a", "c"} and cascades == ["inventory_snapshot_write_log"], f"delete rules changed: {delrules} {cascades}; update the prose"
+        assert delrules <= {"a", "c"}, f"a delete rule other than NO ACTION / CASCADE exists: {delrules}; update the prose"
+        check_tables = sorted({k["t"] for k in cons if k["contype"] == "c"})
+        n_checks = sum(1 for k in cons if k["contype"] == "c")
+        assert not {"users", "requests", "facilities"} & set(check_tables), "users/requests/facilities now have CHECKs; the free-text sentence below is wrong"
+        cascade_names = [f"`{x}`" for x in sorted(cascade_fks)]
+        cascade_text = " and ".join([", ".join(cascade_names[:-1]), cascade_names[-1]]) if len(cascade_names) > 1 else cascade_names[0]
+        # what inventory_snapshots holds, for the Research vs operational table
+        snap_total = c.execute(text("select count(*) from inventory_snapshots")).scalar()
+        snap_upload = c.execute(text("select count(*) from inventory_snapshots where upload_history_id is not null")).scalar()
+    check_text = ", ".join(f"`{t}`" for t in check_tables)
     total = len(tabs)
     head = f"""# BloodLink Data Dictionary and Schema Reference
 
@@ -342,18 +442,18 @@ deployed; example values are real values from actual rows, with the exceptions d
 ## Summary
 
 * **{total} tables** in the `public` schema, {sum(v[1] for v in totals.values())} columns in all, {len(fkrows)} foreign keys. Views: {', '.join(views) or 'none'}.
-* **No unexpected tables.** Every table maps to a feature: identity (`facilities`, `users`, `password_reset_requests`), inventory
+* **No unexpected tables.** Every table maps to a feature: identity (`facilities`, `users`, `password_reset_requests`, `facility_registration_requests`, `otp_codes`), inventory
   (`blood_units`, `blood_type_thresholds`, `upload_history`, `inventory_snapshot_write_log`), transfers (`requests`, `request_messages`, `request_unit_failures`), notification
   (`notifications`), donor outreach (`donors`, `blasts`, `blast_messages`, `blast_replies`) and forecasting (`inventory_snapshots`,
-  `facility_forecast_cache`, `forecast_alert_state`, `synthetic_inventory_snapshots`, `synthetic_forecast_cache`). The ones easiest to
-  overlook are `forecast_alert_state` (alert de-duplication), `upload_history` (audit; holds the raw CSV text and drives undo), `inventory_snapshot_write_log` (lets undo restore overwritten snapshots) and the
+  `facility_forecast_cache`, `facility_sarimax_order`, `forecast_alert_state`, `synthetic_inventory_snapshots`, `synthetic_forecast_cache`). The ones easiest to
+  overlook are `facility_sarimax_order` (the SARIMAX order chosen offline per facility and blood type), `forecast_alert_state` (alert de-duplication), `upload_history` (audit; holds the raw CSV text and drives undo), `inventory_snapshot_write_log` (lets undo restore overwritten snapshots) and the
   two `synthetic_*` research tables.
 * **Donor outreach tables:** `blasts` (the campaign), `blast_messages` (one row per donor messaged) and `blast_replies` (donor yes/no
   answers). Full column lists below.
 * **`facilities` carries more than name, type, address, coordinates and `is_active`.** The onboarding migration also added
   `department`, `doh_license_number` and `profile_completed`, so the table has 10 columns.
-* **Referential integrity:** every foreign key is `NO ACTION` on delete (a parent row cannot be deleted while children exist), except the two on `inventory_snapshot_write_log`, which `CASCADE` because it is a pure log.
-  The only CHECK constraint in the schema is `upload_history.upload_type`; enumerations such as `users.role`, `requests.status`
+* **Referential integrity:** every foreign key is `NO ACTION` on delete (a parent row cannot be deleted while children exist), except {cascade_text}, which `CASCADE` because those rows have no meaning without their parent (a pure log and derived selection results).
+  {n_checks} CHECK constraints exist, on {check_text}; each is shown under its table. Enumerations such as `users.role`, `requests.status`
   and `facilities.facility_type` are free text validated in application code only.
 
 ## Conventions and privacy
@@ -373,13 +473,17 @@ deployed; example values are real values from actual rows, with the exceptions d
   real values, not curated ones.
 
 """
-    tail = """
+    assert all(f"`{t}`" in head for t in tabs), f"tables missing from the Summary prose: {[t for t in tabs if f'`{t}`' not in head]}"
+    non_operational = ["synthetic_inventory_snapshots", "synthetic_forecast_cache", "facility_forecast_cache", "facility_sarimax_order",
+                       "forecast_alert_state", "inventory_snapshots"]
+    operational_text = ", ".join(f"`{t}`" for t in tabs if t not in non_operational)
+    tail = f"""
 ## Foreign key map
 
 Every foreign key constraint in the deployed schema. `requests` joins `facilities` twice (requesting and supplying);
-`blood_units.reserved_for_request_id` is nullable. All are `ON DELETE NO ACTION` except `inventory_snapshot_write_log.facility_id` and `.upload_history_id`, which are `ON DELETE CASCADE`. Cardinality reads child : parent.
+`blood_units.reserved_for_request_id` is nullable. All are `ON DELETE NO ACTION` except {cascade_text}, which are `ON DELETE CASCADE`. Cardinality reads child : parent.
 
-""" + "\n".join(fkmd) + """
+""" + "\n".join(fkmd) + f"""
 
 ## Research vs operational
 
@@ -390,16 +494,21 @@ Which tables exist to support the forecasting research rather than day-to-day bl
 | synthetic_inventory_snapshots | **Research** | Generated two-year demonstration series (no facility). Not blood bank records. Used to fit the shared stand-in model. |
 | synthetic_forecast_cache | **Research** | Output of the stand-in model. Served only to facilities with fewer than 3 days of history, so it can appear in the UI, but it is model output on generated data, not a measurement. |
 | facility_forecast_cache | Derived (forecasting) | Cache of per-facility SARIMAX output. Reproducible from `inventory_snapshots`; safe to truncate. |
+| facility_sarimax_order | Derived (forecasting) | The SARIMAX order chosen offline for each facility and blood type, with its selection diagnostics. Reproducible by re-running `server/select_orders.py` on `inventory_snapshots`; with no row the live fitter uses the AI-recommended or default order. |
 | forecast_alert_state | Derived (forecasting) | De-duplication flag for forecast-shortage notifications. It has an operational effect (raises a notification) but exists only because of the forecast. |
-| inventory_snapshots | Mixed | Operational counts, but also the series the forecast is fitted on. At the time of generation, 1,200 of its 1,320 rows came from one historical-stock CSV upload of a generated demonstration file; the rest are the app's own daily snapshots. It should not be described as a record of real supply. |
+| inventory_snapshots | Mixed | Operational counts, but also the series the forecast is fitted on. At the time of generation, {snap_upload:,} of its {snap_total:,} rows came from historical-stock CSV uploads and {snap_total - snap_upload:,} were written by the app itself (a forecast load, or the nightly job for every active facility). Uploaded files in this deployment have included generated demonstration data, so the table should not be described as a record of real supply. A day with no row is unobserved, not zero. |
 
-Every other table (`inventory_snapshot_write_log`, `facilities`, `users`, `password_reset_requests`, `blood_units`, `blood_type_thresholds`, `requests`,
-`request_messages`, `request_unit_failures`, `notifications`, `upload_history`, `donors`, `blasts`, `blast_messages`, `blast_replies`) is operational. In the
+Every other table ({operational_text}) is operational. In the
 paper, `blood_units` is the system's record of physical inventory; the `synthetic_*` tables are a research and demonstration
 apparatus and should not be presented as equivalent to it. The current database also holds demo and test operational rows
 (demo facilities and accounts), so even the operational tables contain demonstration content in this deployment.
 """
-    OUT.write_text(head + "\n".join(md) + tail, encoding="utf-8")
+    out_text = head + "\n".join(md) + tail
+    leaked = [x for x in secrets if x in out_text]
+    assert not leaked, f"{len(leaked)} masked value(s) reached the output; not written"
+    for pattern, what in ((r"\$2[aby]\$\d\d\$[./A-Za-z0-9]{20,}", "a bcrypt hash"), (r"\+\d[\d \-]{8,}\d", "a phone number")):
+        assert not re.search(pattern, out_text), f"the output contains {what}; not written"
+    OUT.write_text(out_text, encoding="utf-8")
     print("wrote", OUT, total, "tables")
 
 
