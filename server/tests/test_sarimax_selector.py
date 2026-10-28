@@ -131,19 +131,58 @@ class TreeRulesExportTests(unittest.TestCase):
             self.assertEqual(got, int(expected))
 
 
-class ModelArtifactNotIntegratedTests(unittest.TestCase):
-    """Documents the actual current state as an executable assertion,
-    rather than just a comment: no artifact was saved, because the
-    Stage 1 gate failed, so there is nothing for main.py to load."""
+def _errs(rmse, mape):
+    return {"rmse": rmse, "mape": mape}
 
-    def test_no_model_artifact_was_saved(self):
-        self.assertFalse(
-            sel.DEFAULT_MODEL_PATH.exists(),
-            "A model artifact exists, but the Stage 1 gate last failed. It may be a --force-stage2 "
-            "artifact (check deploy_recommended; use --out-dir to keep those out of server/models/), "
-            "or a fresh passing retrain — in which case main.py's AI integration needs to be redone "
-            "(see the 'NOTE ON THE AI MODEL-SELECTION FEATURE' comment there) and this test updated.",
-        )
+
+class PairedSummaryTests(unittest.TestCase):
+    """The headline AI-vs-default comparison is only a comparison on the series every method scored."""
+
+    def rows(self, default_errors):
+        base = {"oracle_errors": _errs(8.0, 20.0), "default_errors": _errs(10.0, 30.0), "seed": 1, "length": 120}
+        return [
+            {**base, "seed": 1},
+            {**base, "seed": 2, "default_errors": default_errors, "length": 200},
+            {**base, "seed": 3},
+        ], [{"errors": _errs(6.0, 10.0)}, {"errors": _errs(100.0, 90.0)}, {"errors": _errs(6.0, 10.0)}]
+
+    def test_a_series_one_method_could_not_score_is_dropped_from_every_method(self):
+        from train_sarimax_selector import _paired_summary
+
+        rows, ai = self.rows(default_errors=None)  # default failed on series 2, where the AI was terrible
+        out = _paired_summary(rows, ai)
+        self.assertEqual((out["n_paired"], out["n_eval_series"]), (2, 3))
+        self.assertEqual({m: out[m]["n"] for m in ("ai", "default", "oracle")}, {"ai": 2, "default": 2, "oracle": 2})
+        self.assertEqual(out["ai"]["rmse"], 6.0, "the AI's bad series 2 must not leak into the paired mean")
+        self.assertEqual(out["dropped_series"], [{"seed": 2, "length": 200, "unscored": {"default": "no_forecast"}}])
+
+    def test_undefined_mape_is_named_as_such(self):
+        from train_sarimax_selector import _paired_summary
+
+        rows, ai = self.rows(default_errors=_errs(10.0, None))
+        out = _paired_summary(rows, ai)
+        self.assertEqual(out["dropped_series"][0]["unscored"], {"default": "mape_undefined"})
+
+    def test_a_diagnosis_replaces_the_generic_reason(self):
+        from train_sarimax_selector import _paired_summary
+
+        rows, ai = self.rows(default_errors=None)
+        out = _paired_summary(rows, ai, diagnose=lambda row, a, method: f"{method} did not converge on seed {row['seed']}")
+        self.assertEqual(out["dropped_series"][0]["unscored"], {"default": "default did not converge on seed 2"})
+
+    def test_nothing_dropped_when_everything_scored(self):
+        from train_sarimax_selector import _paired_summary
+
+        rows, ai = self.rows(default_errors=_errs(10.0, 30.0))
+        out = _paired_summary(rows, ai)
+        self.assertEqual((out["n_paired"], out["dropped_series"]), (3, []))
+
+    def test_split_features_lists_each_feature_once(self):
+        from train_sarimax_selector import _split_features
+
+        tree = {"feature": "cv", "threshold": 1.0, "left": {"leaf": 0},
+                "right": {"feature": "n_obs", "threshold": 2.0, "left": {"feature": "cv", "threshold": 3.0, "left": {"leaf": 1}, "right": {"leaf": 2}}, "right": {"leaf": 3}}}
+        self.assertEqual(_split_features(tree), ["cv", "n_obs"])
 
 
 if __name__ == "__main__":

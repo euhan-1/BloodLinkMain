@@ -1,0 +1,335 @@
+{
+  "tree": {
+    "feature": "acf7_diff",
+    "threshold": 0.48624223470687866,
+    "left": {
+      "feature": "n_obs",
+      "threshold": 161.0,
+      "left": {
+        "feature": "adf_pvalue",
+        "threshold": 6.407422552001663e-05,
+        "left": {
+          "leaf": 2
+        },
+        "right": {
+          "feature": "cv",
+          "threshold": 0.2738625705242157,
+          "left": {
+            "leaf": 2
+          },
+          "right": {
+            "leaf": 1
+          }
+        }
+      },
+      "right": {
+        "feature": "mean_level",
+        "threshold": 101.54301071166992,
+        "left": {
+          "feature": "seasonal_strength",
+          "threshold": 0.017494927160441875,
+          "left": {
+            "leaf": 7
+          },
+          "right": {
+            "leaf": 1
+          }
+        },
+        "right": {
+          "feature": "cv",
+          "threshold": 0.3080945461988449,
+          "left": {
+            "leaf": 1
+          },
+          "right": {
+            "leaf": 6
+          }
+        }
+      }
+    },
+    "right": {
+      "feature": "cv",
+      "threshold": 0.2201933115720749,
+      "left": {
+        "leaf": 4
+      },
+      "right": {
+        "feature": "pacf1_diff",
+        "threshold": -0.12362444400787354,
+        "left": {
+          "leaf": 1
+        },
+        "right": {
+          "leaf": 6
+        }
+      }
+    }
+  },
+  "feature_names": [
+    "n_obs",
+    "mean_level",
+    "cv",
+    "adf_stat",
+    "adf_pvalue",
+    "d_suggested",
+    "acf1_diff",
+    "acf7_diff",
+    "pacf1_diff",
+    "trend_r2",
+    "trend_slope_norm",
+    "seasonal_strength",
+    "noise_to_signal"
+  ],
+  "candidate_library": [
+    [
+      [
+        0,
+        1,
+        1
+      ],
+      [
+        0,
+        0,
+        0,
+        7
+      ]
+    ],
+    [
+      [
+        0,
+        1,
+        4
+      ],
+      [
+        0,
+        0,
+        0,
+        7
+      ]
+    ],
+    [
+      [
+        1,
+        1,
+        1
+      ],
+      [
+        0,
+        0,
+        0,
+        7
+      ]
+    ],
+    [
+      [
+        0,
+        1,
+        1
+      ],
+      [
+        1,
+        0,
+        0,
+        7
+      ]
+    ],
+    [
+      [
+        0,
+        1,
+        4
+      ],
+      [
+        1,
+        0,
+        0,
+        7
+      ]
+    ],
+    [
+      [
+        0,
+        1,
+        4
+      ],
+      [
+        1,
+        0,
+        1,
+        7
+      ]
+    ],
+    [
+      [
+        1,
+        1,
+        1
+      ],
+      [
+        1,
+        0,
+        1,
+        7
+      ]
+    ],
+    [
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        1,
+        0,
+        1,
+        7
+      ]
+    ],
+    [
+      [
+        1,
+        1,
+        0
+      ],
+      [
+        1,
+        0,
+        0,
+        7
+      ]
+    ],
+    [
+      [
+        0,
+        2,
+        2
+      ],
+      [
+        0,
+        0,
+        0,
+        7
+      ]
+    ],
+    [
+      [
+        2,
+        1,
+        2
+      ],
+      [
+        1,
+        0,
+        1,
+        7
+      ]
+    ],
+    [
+      [
+        0,
+        1,
+        1
+      ],
+      [
+        1,
+        1,
+        1,
+        7
+      ]
+    ]
+  ],
+  "default_index": 5,
+  "evaluation_summary": {
+    "basis": "paired",
+    "n_paired": 51,
+    "n_eval_series": 52,
+    "dropped_series": [
+      {
+        "seed": 1307257252,
+        "length": 60,
+        "unscored": {
+          "default": "optimizer_did_not_converge_in_100_iterations ((0, 1, 4)x(1, 0, 1, 7) on 46 days of history)"
+        }
+      }
+    ],
+    "ai": {
+      "n": 51,
+      "rmse": 17.303766402776617,
+      "mape": 25.059050927056308
+    },
+    "default": {
+      "n": 51,
+      "rmse": 16.882190723913354,
+      "mape": 24.613674567433904
+    },
+    "oracle": {
+      "n": 51,
+      "rmse": 17.273968758711504,
+      "mape": 24.938608138949093
+    },
+    "unpaired": {
+      "ai": {
+        "n": 52,
+        "n_total": 52,
+        "rmse": 17.240849105089715,
+        "mape": 25.119999901476792
+      },
+      "default": {
+        "n": 51,
+        "n_total": 52,
+        "rmse": 16.882190723913354,
+        "mape": 24.613674567433904
+      },
+      "oracle": {
+        "n": 52,
+        "n_total": 52,
+        "rmse": 17.235796430732485,
+        "mape": 25.058348818372703
+      }
+    }
+  },
+  "deploy_recommended": false,
+  "gate_passed": false,
+  "stage2_passed": false,
+  "forced_past_gate": true,
+  "gate_reasons": [
+    "The oracle (full information, forecast-error selection) doesn't clearly beat the fixed default."
+  ],
+  "limitations": [
+    "Trained and evaluated on synthetic series only (generate_diverse_series); no real facility data.",
+    "Labels come from 21-day rolling-origin CV windows, but the live forecast horizon is 30 days.",
+    "2 of the tree's 7 split features (mean_level, n_obs) are set directly by the generator's own length and baseline parameters, so the tree can lean on them in a way a real population may not support."
+  ],
+  "split_features": [
+    "acf7_diff",
+    "adf_pvalue",
+    "cv",
+    "mean_level",
+    "n_obs",
+    "pacf1_diff",
+    "seasonal_strength"
+  ],
+  "training": {
+    "quick": false,
+    "random_seed": 11,
+    "seed_offsets": {
+      "gate": 500,
+      "train": 1000,
+      "eval": 9000
+    },
+    "n_gate_series": 70,
+    "n_train_series": 220,
+    "n_eval_series": 60,
+    "n_train_labeled": 198,
+    "n_eval_scored": 52,
+    "label_cv_horizon": 21,
+    "label_cv_origins": 4,
+    "eval_horizon": 14,
+    "tree_max_depth": 4,
+    "tree_min_samples_leaf": 12,
+    "data": "synthetic (generate_diverse_series); no real facility data",
+    "trained_at_utc": "2026-10-28T00:31:23+00:00",
+    "wall_clock_seconds": 236.4,
+    "sklearn_version": "1.9.1"
+  }
+}

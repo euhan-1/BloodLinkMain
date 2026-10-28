@@ -9,11 +9,13 @@ Run from server/: .venv\\Scripts\\python.exe -m unittest tests.test_sarimax_orde
 import unittest
 import uuid
 from datetime import timedelta
+from pathlib import Path
 from unittest import mock
 
 from sqlalchemy import text
 
 import main as app
+import sarimax_selector_common as sel
 from database import engine
 from tests.test_bulk_upload import q, upload
 from tests.test_forecast_incremental import TYPES, TODAY, stub_result
@@ -63,9 +65,32 @@ class RankCandidatesTests(unittest.TestCase):
 
 
 class OrderLabelTests(unittest.TestCase):
-    def test_fallback_is_suffixed_selected_is_not(self):
-        self.assertEqual(app._order_label(1, 1, 1, 1, 0, 1, 7, selected=True), "SARIMAX(1,1,1)x(1,0,1,7)+dengue")
-        self.assertEqual(app._order_label(0, 1, 4, 1, 0, 1, 7, selected=False), "SARIMAX(0,1,4)x(1,0,1,7)+dengue [fallback]")
+    def test_every_source_names_its_mechanism(self):
+        self.assertEqual(app._order_label(1, 1, 1, 1, 0, 1, 7, source="grid"), "SARIMAX(1,1,1)x(1,0,1,7)+dengue [grid-searched]")
+        self.assertEqual(app._order_label(0, 1, 2, 1, 0, 1, 7, source="ai"), "SARIMAX(0,1,2)x(1,0,1,7)+dengue [ai-recommended]")
+        self.assertEqual(app._order_label(0, 1, 4, 1, 0, 1, 7, source="fixed"), "SARIMAX(0,1,4)x(1,0,1,7)+dengue [default-order]")
+
+    def test_unknown_source_is_an_error_not_a_silent_unlabelled_order(self):
+        with self.assertRaises(KeyError):
+            app._order_label(0, 1, 4, 1, 0, 1, 7, source="selected")
+
+    def test_stored_labels_from_before_the_rename_read_in_todays_spelling(self):
+        grid = app._order_label(1, 1, 1, 1, 0, 1, 7, source="grid")
+        # transition 1: a row with NO suffix was a grid-searched order
+        self.assertEqual(app._normalize_stored_order_label("SARIMAX(1,1,1)x(1,0,1,7)+dengue"), grid)
+        # transition 2: the literal legacy " [fallback]" was the fixed constant
+        self.assertEqual(app._normalize_stored_order_label("SARIMAX(0,1,4)x(1,0,1,7)+dengue [fallback]"),
+                         "SARIMAX(0,1,4)x(1,0,1,7)+dengue [default-order]")
+        # today's spellings pass through untouched (idempotent)
+        for source in app.ORDER_SOURCE_SUFFIX:
+            label = app._order_label(0, 1, 4, 1, 0, 1, 7, source=source)
+            self.assertEqual(app._normalize_stored_order_label(label), label)
+
+    def test_no_label_string_claims_the_order_is_better(self):
+        words = ("better", "best", "optim", "improv", "superior", "accura")
+        strings = [*app.ORDER_SOURCE_SUFFIX.values(), app.FACILITY_SARIMAX_FAMILY_LABEL]
+        for s in strings:
+            self.assertFalse(any(w in s.lower() for w in words), s)
 
 
 class FitAndCacheUsesSelectedOrderTests(unittest.TestCase):
@@ -83,14 +108,18 @@ class FitAndCacheUsesSelectedOrderTests(unittest.TestCase):
     def series(self):
         return [(TODAY - timedelta(days=d), 50) for d in range(40, -1, -1)]
 
-    def test_uses_fixed_order_and_fallback_label_when_nothing_selected(self):
-        with mock.patch.object(app, "_fit_sarimax_facility_forecast", side_effect=stub_result) as fit:
+    def test_uses_fixed_order_and_default_order_label_when_nothing_selected_and_no_ai_rules(self):
+        # rules pointed at a file that does not exist: pins the last rung of the precedence
+        with (
+            mock.patch.object(sel, "DEFAULT_RULES_PATH", Path("no_such_dir") / "rules.json"),
+            mock.patch.object(app, "_fit_sarimax_facility_forecast", side_effect=stub_result) as fit,
+        ):
             app._fit_and_cache_sarimax(self.fid, "O+", self.series(), TODAY)
         _, kwargs = fit.call_args
         self.assertEqual((kwargs["order"], kwargs["seasonal_order"]), (app.FACILITY_SARIMAX_ORDER, app.FACILITY_SARIMAX_SEASONAL_ORDER))
-        self.assertTrue(kwargs["model_label"].endswith("[fallback]"))
+        self.assertTrue(kwargs["model_label"].endswith("[default-order]"))
 
-    def test_uses_the_stored_selected_order_and_unsuffixed_label(self):
+    def test_uses_the_stored_selected_order_and_grid_searched_label(self):
         with engine.begin() as c:
             c.execute(text(
                 "INSERT INTO facility_sarimax_order (facility_id, blood_type, p, d, q, seasonal_p, seasonal_d, "
@@ -102,17 +131,25 @@ class FitAndCacheUsesSelectedOrderTests(unittest.TestCase):
             app._fit_and_cache_sarimax(self.fid, "O+", self.series(), TODAY)
         _, kwargs = fit.call_args
         self.assertEqual((kwargs["order"], kwargs["seasonal_order"]), ((1, 1, 1), (1, 0, 1, 7)))
-        self.assertEqual(kwargs["model_label"], "SARIMAX(1,1,1)x(1,0,1,7)+dengue")
+        self.assertEqual(kwargs["model_label"], "SARIMAX(1,1,1)x(1,0,1,7)+dengue [grid-searched]")
+
+    def cached_label(self, stored_label):
+        """Writes one type's cache rows carrying `stored_label` verbatim, reads them back."""
+        with mock.patch.object(app, "_fit_sarimax_facility_forecast",
+                               side_effect=lambda *a, **kw: stub_result(model_label=stored_label)):
+            app._fit_and_cache_sarimax(self.fid, "O+", self.series(), TODAY)
+        with engine.connect() as c:
+            return app._read_cached_sarimax(c, self.fid, "O+", self.series(), TODAY)["model_order"]
 
     def test_cache_read_reports_the_stored_label_not_a_hardcoded_one(self):
         # regression test: _read_cached_sarimax used to return FACILITY_SARIMAX_LABEL
         # unconditionally instead of the label actually stored on the cache row.
-        with mock.patch.object(app, "_fit_sarimax_facility_forecast",
-                               side_effect=lambda *a, **kw: stub_result(model_label="SARIMAX(1,1,1)x(1,0,1,7)+dengue")):
-            app._fit_and_cache_sarimax(self.fid, "O+", self.series(), TODAY)
-        with engine.connect() as c:
-            cached = app._read_cached_sarimax(c, self.fid, "O+", self.series(), TODAY)
-        self.assertEqual(cached["model_order"], "SARIMAX(1,1,1)x(1,0,1,7)+dengue")
+        self.assertEqual(self.cached_label("SARIMAX(1,1,1)x(1,0,1,7)+dengue [ai-recommended]"),
+                         "SARIMAX(1,1,1)x(1,0,1,7)+dengue [ai-recommended]")
+
+    def test_cache_rows_written_before_the_rename_read_in_todays_spelling(self):
+        self.assertEqual(self.cached_label("SARIMAX(1,1,1)x(1,0,1,7)+dengue"), "SARIMAX(1,1,1)x(1,0,1,7)+dengue [grid-searched]")
+        self.assertEqual(self.cached_label("SARIMAX(0,1,4)x(1,0,1,7)+dengue [fallback]"), "SARIMAX(0,1,4)x(1,0,1,7)+dengue [default-order]")
 
 
 class OrderSelectionRunTests(unittest.TestCase):
