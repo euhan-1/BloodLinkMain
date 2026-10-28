@@ -18,6 +18,7 @@ import { UploadHistoryPanel } from "../components/UploadHistoryPanel";
 import { useFlashOnChange } from "../lib/motion";
 import { getCurrentUser } from "../lib/session";
 import { type InventoryUnit, type InventoryApiRow, toInventoryUnit } from "../lib/inventoryTypes";
+import { forecastSourceTag } from "../lib/forecastSource";
 
 // Narrowed to just the fields this screen actually reads — the full request
 // shape (RequestRow) belongs to the Requests screen; Dashboard only ever
@@ -153,6 +154,9 @@ type ForecastView = {
   // _fit_sarimax_facility_forecast in main.py.
   sarimax_model_label?: string;
   sarimax_fallback_types?: string[];
+  // {blood_type: "SARIMAX(p,d,q)x(P,D,Q,s)+dengue [grid-searched|ai-recommended|default-order]"} for
+  // every type that has a SARIMAX forecast. A type missing from it is on the linear trend.
+  sarimax_orders?: Record<string, string>;
   sarimax_min_days_required?: number;
   // Present (non-null) on both the linear_trend and sarimax_facility_history
   // paths once at least one blood type has an interval to report — see
@@ -832,17 +836,30 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-2">
                     {summary.map((s) => {
                       const rec = recommendationByType.get(s.blood_type);
+                      // Which mechanism produced this type's forecast. Neutral on purpose: the status
+                      // colors above mean stock status, and this tag is not a status.
+                      const sourceTag = forecastSourceTag(dashboardData, s.blood_type);
                       return (
-                        <div key={s.blood_type} className="flex items-center gap-1.5 text-[12.5px] min-w-0">
-                          <BloodTypeBadge type={s.blood_type} size="sm" />
-                          {(dashboardData.pending_types ?? []).includes(s.blood_type) ? (
-                            <span className="text-muted-foreground font-semibold">Calculating…</span>
-                          ) : rec ? (
-                            <span className="text-status-watch-text font-semibold truncate">
-                              ⚠ {rec.recommended_units} by {formatBreachDate(rec.breach_date)}
+                        <div key={s.blood_type} className="min-w-0">
+                          <div className="flex items-center gap-1.5 text-[12.5px] min-w-0">
+                            <BloodTypeBadge type={s.blood_type} size="sm" />
+                            {(dashboardData.pending_types ?? []).includes(s.blood_type) ? (
+                              <span className="text-muted-foreground font-semibold">Calculating…</span>
+                            ) : rec ? (
+                              <span className="text-status-watch-text font-semibold truncate">
+                                ⚠ {rec.recommended_units} by {formatBreachDate(rec.breach_date)}
+                              </span>
+                            ) : (
+                              <span className="text-status-safe-text font-semibold">✓ On track</span>
+                            )}
+                          </div>
+                          {sourceTag && (
+                            <span
+                              title={sourceTag.title}
+                              className="mt-1 block w-fit max-w-full truncate rounded-full border border-border bg-secondary px-2 py-px text-[11px] font-semibold text-muted-foreground"
+                            >
+                              {sourceTag.text}
                             </span>
-                          ) : (
-                            <span className="text-status-safe-text font-semibold">✓ On track</span>
                           )}
                         </div>
                       );
