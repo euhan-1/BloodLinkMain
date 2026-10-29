@@ -171,7 +171,10 @@ function UndoUploadModal({ entry, onClose, onUndone }: {
 // without this component needing to know how that upload happened.
 // `onUndone` lets the same screen also refresh its OWN primary data (the
 // units table, donor count, forecast) once an undo actually removes something.
-export function UploadHistoryPanel({ uploadType, refreshKey, onUndone }: { uploadType: UploadType; refreshKey?: number; onUndone?: () => void }) {
+//
+// `variant` is the look only: "card" (default, what every screen already had) or "flat", one list on the page
+// background with hairline rows and no cards, used by the hospital Inventory.
+export function UploadHistoryPanel({ uploadType, refreshKey, onUndone, variant = "card" }: { uploadType: UploadType; refreshKey?: number; onUndone?: () => void; variant?: "card" | "flat" }) {
   const [entries, setEntries] = useState<UploadHistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -200,6 +203,87 @@ export function UploadHistoryPanel({ uploadType, refreshKey, onUndone }: { uploa
     } finally {
       setDownloadingId(null);
     }
+  }
+
+  if (variant === "flat") {
+    const headingId = `upload-history-${uploadType}`;
+    return (
+      <section aria-labelledby={headingId}>
+        <div className="flex items-baseline justify-between gap-4">
+          <h2 id={headingId} className="font-display font-bold text-xl tracking-tight text-foreground">Upload history</h2>
+          <button onClick={load} className="text-[14px] font-semibold text-primary rounded-sm hover:underline hover:underline-offset-2">
+            Refresh
+          </button>
+        </div>
+        {loading && <p className="py-4 text-[15px] text-foreground">Loading…</p>}
+        {!loading && error && <p role="alert" className="py-3 text-[15px] text-status-critical-text">Failed to load: {error}</p>}
+        {!loading && !error && entries.length === 0 && <p className="py-4 text-[15px] text-foreground">No uploads yet.</p>}
+        {!loading && !error && entries.length > 0 && (
+          <ul className="mt-2">
+            {entries.map((entry) => {
+              const expanded = expandedId === entry.id;
+              const isUndone = entry.undone_at !== null;
+              return (
+                <li key={entry.id} className="border-b border-gray-200 last:border-b-0">
+                  <button
+                    onClick={() => setExpandedId(expanded ? null : entry.id)}
+                    aria-expanded={expanded}
+                    className="w-full text-left py-3 hover:bg-secondary/60 transition-colors"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[15px] font-semibold text-foreground truncate min-w-0">{entry.filename ?? "Untitled upload"}</span>
+                      <ChevronDown size={15} className={`text-gray-600 transition-transform shrink-0 ${expanded ? "rotate-180" : ""}`} />
+                    </div>
+                    <div className="mt-0.5 flex flex-wrap gap-x-5 gap-y-0.5 text-[14px] text-foreground">
+                      <span>{new Date(entry.uploaded_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</span>
+                      {entry.uploaded_by_email && <span className="truncate max-w-full">{entry.uploaded_by_email}</span>}
+                      <span>{entry.rows_processed} processed</span>
+                      {entry.rows_failed > 0 && <span className="font-semibold text-status-critical-text">{entry.rows_failed} failed</span>}
+                      {isUndone && <span className="font-semibold">Undone {new Date(entry.undone_at!).toLocaleDateString([], { dateStyle: "medium" })}</span>}
+                    </div>
+                  </button>
+                  {expanded && (
+                    <div className="pb-3 space-y-2 text-[14px] text-foreground">
+                      {entry.has_raw_content ? (
+                        <button
+                          onClick={() => handleDownload(entry)}
+                          disabled={downloadingId === entry.id}
+                          className="flex items-center gap-1.5 font-semibold text-primary rounded-sm hover:underline hover:underline-offset-2 disabled:opacity-60"
+                        >
+                          <Download size={13} /> {downloadingId === entry.id ? "Downloading…" : "Download original file"}
+                        </button>
+                      ) : (
+                        <p>The original file isn't stored for this upload type.</p>
+                      )}
+                      {downloadError && <p className="text-status-critical-text">{downloadError}</p>}
+                      {entry.error_details.length > 0 && (
+                        <div>
+                          <div className="font-semibold">Rows that failed</div>
+                          {entry.error_details.map((e, i) => (
+                            <div key={i}>Row {e.row}: {e.reason}</div>
+                          ))}
+                        </div>
+                      )}
+                      {!isUndone && (
+                        <button
+                          onClick={() => setUndoEntry(entry)}
+                          className="flex items-center gap-1.5 font-semibold text-foreground rounded-sm hover:underline hover:underline-offset-2"
+                        >
+                          <RotateCcw size={13} /> Undo this upload
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        {undoEntry && (
+          <UndoUploadModal entry={undoEntry} onClose={() => setUndoEntry(null)} onUndone={() => { load(); onUndone?.(); }} />
+        )}
+      </section>
+    );
   }
 
   return (

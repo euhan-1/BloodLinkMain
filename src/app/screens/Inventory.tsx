@@ -1,12 +1,14 @@
 import { useState, useRef, useEffect } from "react";
 import { Plus, Upload, ChevronDown, SlidersHorizontal, Trash2, Search, Archive } from "lucide-react";
-import { apiGet, apiUploadFile, updateThreshold, deleteInventoryUnit, createInventoryUnit, archiveExpiredInventory, type ThresholdRow } from "../lib/api";
+import { apiGet, apiUploadFile, updateThreshold, deleteInventoryUnit, createInventoryUnit, archiveExpiredInventory } from "../lib/api";
+import { getCurrentUser } from "../lib/session";
+import { StockByTypeTable } from "./HospitalInventory";
 import { BLOOD_TYPE_ORDER, getExpiryStatus, EXPIRY_STYLES } from "../lib/statusTokens";
 import { BloodTypeBadge, DinLabel, DateStamp } from "../components/BloodTypeBadge";
 import { Skeleton } from "../components/Skeleton";
 import { Modal } from "../components/Modal";
 import { UploadHistoryPanel } from "../components/UploadHistoryPanel";
-import { type InventoryUnit, type InventoryApiRow, toInventoryUnit } from "../lib/inventoryTypes";
+import { type InventoryUnit, type InventoryApiRow, type InventorySummaryRow, toInventoryUnit } from "../lib/inventoryTypes";
 
 // ─── Inventory ────────────────────────────────────────────────────────────────
 
@@ -33,7 +35,9 @@ export function InventoryScreen() {
   // /inventory/summary server-side; blood_type_thresholds is keyed
   // (facility_id, blood_type)), and editable here so a facility isn't stuck
   // with the seeded placeholder values forever.
-  const [thresholds, setThresholds] = useState<Record<string, ThresholdRow>>({});
+  const [thresholds, setThresholds] = useState<Record<string, InventorySummaryRow>>({});
+  const [summaryLoading, setSummaryLoading] = useState(true);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
   const [editingType, setEditingType] = useState<string | null>(null);
   const [editMin, setEditMin] = useState("");
   const [editMax, setEditMax] = useState("");
@@ -91,10 +95,16 @@ export function InventoryScreen() {
 
   useEffect(() => {
     let cancelled = false;
-    apiGet<ThresholdRow[]>("/inventory/summary").then((data) => {
-      if (cancelled) return;
-      setThresholds(Object.fromEntries(data.map((t) => [t.blood_type, t])));
-    });
+    apiGet<InventorySummaryRow[]>("/inventory/summary")
+      .then((data) => {
+        if (!cancelled) setThresholds(Object.fromEntries(data.map((t) => [t.blood_type, t])));
+      })
+      .catch((err) => {
+        if (!cancelled) setSummaryError(err instanceof Error ? err.message : "Failed to load stock levels");
+      })
+      .finally(() => {
+        if (!cancelled) setSummaryLoading(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -124,7 +134,7 @@ export function InventoryScreen() {
     setThresholdError(null);
     try {
       const updated = await updateThreshold(editingType, minimum, maximum);
-      setThresholds((prev) => ({ ...prev, [updated.blood_type]: updated }));
+      setThresholds((prev) => ({ ...prev, [updated.blood_type]: { ...prev[updated.blood_type], ...updated } }));
       setEditingType(null);
     } catch (err) {
       setThresholdError(err instanceof Error ? err.message : "Failed to save");
@@ -233,7 +243,10 @@ export function InventoryScreen() {
     }
   }
 
-  const types = ["All", ...Array.from(new Set(rows.map((r) => r.type)))];
+  // A type the facility holds none of still exists. /inventory/summary lists every type, while the units list only
+  // contains types that have units, so a type with none used to vanish from both the pills and the shelves below.
+  const knownTypes = Array.from(new Set([...rows.map((r) => r.type), ...Object.keys(thresholds)]));
+  const types = ["All", ...knownTypes];
 
   const byType = filterType === "All"
     ? rows
@@ -258,7 +271,7 @@ export function InventoryScreen() {
       type,
       units: filtered.filter((r) => r.type === type).sort((a, b) => a.daysLeft - b.daysLeft),
     }))
-    .filter((g) => g.units.length > 0);
+    .filter((g) => g.units.length > 0 || (query === "" && (filterType === "All" || filterType === g.type) && knownTypes.includes(g.type)));
 
   function toggleGroup(type: string) {
     setCollapsedTypes((prev) => {
@@ -269,26 +282,8 @@ export function InventoryScreen() {
     });
   }
 
-  return (
-    <div className="max-w-screen-2xl mx-auto px-6 py-6 space-y-5">
-      {/* Toolbar */}
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <h2 className="font-display text-lg font-bold text-foreground">Blood Inventory</h2>
-          <p className="text-[14px] text-muted-foreground">
-            {rows.length} units on record
-            {expiredUnits.length > 0 && (
-              <>
-                {" · "}
-                <span className="text-status-critical-text font-semibold">
-                  {expiredUnits.length} expired — needs clearing
-                </span>
-              </>
-            )}
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {expiredUnits.length > 0 && (
+  // The page-level actions, shared by both layouts so they cannot drift apart.
+  const clearExpiredButton = expiredUnits.length > 0 && (
             <button
               onClick={handleArchiveExpired}
               disabled={archivingExpired}
@@ -298,22 +293,9 @@ export function InventoryScreen() {
               <Archive size={14} />
               {archivingExpired ? "Clearing…" : `Clear Expired Backlog (${expiredUnits.length})`}
             </button>
-          )}
-          <div className="flex flex-wrap gap-1 bg-secondary rounded-lg p-1">
-            {types.map((t) => (
-              <button
-                key={t}
-                onClick={() => setFilterType(t)}
-                className={`px-3 py-1 text-[13px] font-semibold rounded border transition-all duration-200 ease-out ${
-                  filterType === t
-                    ? "bg-card text-foreground shadow-sm border-border scale-105"
-                    : "border-transparent text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
+  );
+  const importButtons = (
+    <>
           <input
             ref={fileInputRef}
             type="file"
@@ -335,6 +317,70 @@ export function InventoryScreen() {
           >
             <Plus size={14} /> Add Unit
           </button>
+    </>
+  );
+
+  // Hospitals get the stock-by-type table; blood banks keep the shelves below until this is rolled out to them.
+  const hospital = getCurrentUser()?.facility_type === "hospital";
+  const usableUnits = rows.filter((r) => r.daysLeft >= 0).length;
+
+  return (
+    <div className={hospital ? "max-w-screen-2xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-8" : "max-w-screen-2xl mx-auto px-6 py-6 space-y-5"}>
+      {hospital && (
+        <div className="max-w-5xl flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+          <div>
+            <h2 className="font-display font-bold text-2xl tracking-tight text-foreground">Blood inventory</h2>
+            <p className="text-[15px] text-foreground mt-1">
+              <span className="mr-4">{usableUnits} {usableUnits === 1 ? "unit" : "units"} on hand</span>
+              {expiredUnits.length > 0 && (
+                <span className="text-status-critical-text font-semibold">
+                  {expiredUnits.length} expired {expiredUnits.length === 1 ? "unit needs" : "units need"} clearing
+                </span>
+              )}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {clearExpiredButton}
+            {importButtons}
+          </div>
+        </div>
+      )}
+
+      {!hospital && (<>
+      {/* Toolbar */}
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="font-display text-lg font-bold text-foreground">Blood Inventory</h2>
+          <p className="text-[14px] text-muted-foreground">
+            {rows.length} units on record
+            {expiredUnits.length > 0 && (
+              <>
+                {" · "}
+                <span className="text-status-critical-text font-semibold">
+                  {expiredUnits.length} expired — needs clearing
+                </span>
+              </>
+            )}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {clearExpiredButton}
+          <div className="flex flex-wrap gap-1 bg-secondary rounded-lg p-1">
+            {types.map((t) => (
+              <button
+                key={t}
+                onClick={() => setFilterType(t)}
+                className={`px-3 py-1 text-[13px] font-semibold rounded border transition-all duration-200 ease-out ${
+                  filterType === t
+                    ? "bg-card text-foreground shadow-sm border-border scale-105"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+          {importButtons}
         </div>
       </div>
 
@@ -348,6 +394,7 @@ export function InventoryScreen() {
           className="w-full h-9 pl-9 pr-3 text-[14px] border border-border rounded-lg bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
         />
       </div>
+      </>)}
 
       {archiveError && (
         <div className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-lg px-3 py-2">
@@ -373,6 +420,22 @@ export function InventoryScreen() {
         </div>
       )}
 
+      {hospital && (
+        <div className="max-w-5xl">
+          <StockByTypeTable
+            summary={thresholds}
+            units={rows}
+            loading={loading || summaryLoading}
+            error={error ?? summaryError}
+            isOpen={(t) => !collapsedTypes.has(t)}
+            onToggle={toggleGroup}
+            onEditThresholds={openThresholdEditor}
+            onRemoveUnit={(din) => { setDeleteError(null); setDeleteConfirmDin(din); }}
+          />
+        </div>
+      )}
+
+      {!hospital && (<>
       {/* Shelves — one collapsible group per blood type */}
       {loading && (
         <div className="space-y-5" aria-label="Loading inventory">
@@ -464,6 +527,9 @@ export function InventoryScreen() {
                     rows, and letting the browser keep recomputing
                     auto-layout column widths every animation frame is what
                     makes a big table look janky mid-transition. */}
+                {group.units.length === 0 ? (
+                  <p className="px-4 py-4 text-[14px] text-muted-foreground">No {group.type} units on file.</p>
+                ) : (
                 <table className="w-full text-[14px] table-fixed">
                   <thead>
                     <tr className="border-b border-border bg-secondary">
@@ -518,13 +584,18 @@ export function InventoryScreen() {
                     })}
                   </tbody>
                 </table>
+                )}
               </div>
             </div>
           </div>
         );
       })}
 
-      <UploadHistoryPanel uploadType="inventory" refreshKey={uploadHistoryRefreshKey} onUndone={() => loadInventory()} />
+      </>)}
+
+      <div className={hospital ? "max-w-5xl" : undefined}>
+        <UploadHistoryPanel uploadType="inventory" refreshKey={uploadHistoryRefreshKey} onUndone={() => loadInventory()} variant={hospital ? "flat" : "card"} />
+      </div>
 
       {editingType && (
         <Modal title={`${editingType} — Stock Thresholds`} onClose={() => setEditingType(null)}>
