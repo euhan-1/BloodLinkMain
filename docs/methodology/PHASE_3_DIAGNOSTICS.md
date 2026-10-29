@@ -8,9 +8,12 @@
 
 **The live order-selection grid search already runs Ljung-Box** — that is its selection criterion (SELECTION FIT
 results below ARE what the grid search itself computed, not a re-derivation). **It runs no Jarque-Bera and no
-heteroskedasticity test at all, ever**, on either fit. A live forecast request performs zero residual diagnostics:
-after fitting the stored (or fallback) order it checks only that the optimiser reports convergence and the forecast
-is finite. This report adds the full suite — Ljung-Box, Jarque-Bera, heteroskedasticity, residual ACF — to BOTH fits,
+heteroskedasticity test at all, ever**, on either fit. A live forecast request performs no residual diagnostics:
+after fitting the resolved order (PHASE_1) it applies a soundness check, `main.py:_sarimax_fit_is_sane` — the optimiser
+reports convergence, the parameters and AIC/BIC are finite, sigma2 is positive, the AR/MA roots are finite and, for a
+type with a stored selection baseline, AIC per observation has not risen more than 0.05 above that baseline — and the
+forecast must be finite. A fit that fails is retried once from a different start, and if that also fails the type is
+served the linear trend. This report adds the full suite — Ljung-Box, Jarque-Bera, heteroskedasticity, residual ACF — to BOTH fits,
 offline.
 
 ## Method (code: `run_methodology.py`)

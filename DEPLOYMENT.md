@@ -1,47 +1,75 @@
-# Deploying for group testing (not production)
+# Deployment and operations reference
 
-Reference for the actual steps once you're ready to deploy — written so nothing here has to be re-derived later. Covers the specific choices made for this round: `ALLOW_DEV_FACILITY_OVERRIDE=false`, `ALLOW_DEV_TEST_TOOLS=true`, `CORS_ALLOWED_ORIGINS` starting at `*` until the real frontend URL exists.
+How BloodLink is deployed and what it needs from its environment. Environment variables appear **by name only**: values live in the hosting dashboards and local `.env` files, never in the repository.
 
-## The real blocker: backend and frontend URLs depend on each other
+## Topology
 
-Neither URL exists yet — nothing is deployed. That creates a real ordering constraint, not just a preference:
+- **Frontend:** a Vite build on Vercel. `vercel.json` rewrites `/api/:path*` to the Render backend and every other path to `index.html`. A production build calls the relative path `/api` (`src/app/lib/api.ts`); `VITE_API_BASE_URL` is read only by the local dev server. Vercel's rewrite has a **120-second ceiling**, so no request may approach it.
+- **Backend:** FastAPI on Render's free tier.
+- **Database:** Supabase Postgres, reached through `DATABASE_URL` (it must start with `postgresql+psycopg2://`). Development and production share this one database, so a local script that writes to it writes to live data. Three standalone scripts that insert or delete rows (`seed_facility_inventory.py`, `generate_synthetic_forecast_data.py`, `fit_and_cache_synthetic_forecast.py`) refuse to run without `--i-know-this-writes-to-production`; others, such as `select_orders.py`, do not, so treat any local script as a production write.
 
-1. **Deploy the backend first**, with `CORS_ALLOWED_ORIGINS` left unset (defaults to `*`) since the frontend's URL isn't known yet. This gives you a real backend URL.
-2. **Set `VITE_API_BASE_URL` to that backend URL** and deploy the frontend. This gives you a real frontend URL.
-3. **Go back and set `CORS_ALLOWED_ORIGINS` on the backend to that real frontend URL**, then restart the backend service (most platforms don't need a full redeploy for an env var change, just a restart).
+## Render free-tier limits
 
-Skipping step 3 isn't a functional blocker for a group test (`*` keeps working fine — see `server/main.py`'s `CORS_ALLOWED_ORIGINS` comment for why that's safe here specifically), but it's the difference between "temporary" and "just never tightened it."
+- **512 MB of memory and a throttled CPU.** scikit-learn and joblib would exhaust the memory, so production installs `server/requirements.txt` only. `requirements-dev.txt` is for local work.
+- **The instance sleeps after about 15 minutes idle**, and the next request pays a cold start. UptimeRobot pings the backend to limit this (`GET /health` is the lightweight endpoint for it).
+- **One SARIMAX fit takes about 12–20 s deployed** (about 0.3 s locally). A forecast request therefore fits at most 2 blood types and reports the rest in `pending_types`, which the dashboard polls.
+- **Outbound SMTP is blocked**, so email goes out through an HTTP provider (see below).
+- The rest of the service configuration (Python version, build command, root directory) is set in the Render dashboard and is not recorded in this repository.
 
-## Backend — environment variables to set on the host
+## Backend start command
 
-Set as real environment variables in the hosting platform's dashboard. Never as a committed file — `server/.env` stays local-only and gitignored.
-
-| Variable | Value | Source |
-|---|---|---|
-| `DATABASE_URL` | same value as local `server/.env` | copy by hand from your local file — it's the same Supabase instance either way |
-| `JWT_SECRET` | same value as local `server/.env`, or a freshly generated one | `python -c "import secrets; print(secrets.token_hex(32))"` if you'd rather rotate it for this deployment |
-| `ALLOW_DEV_FACILITY_OVERRIDE` | `false` | must be false — this is a full auth bypass if left on anywhere reachable |
-| `ALLOW_DEV_TEST_TOOLS` | `true` | deliberate choice for this round, so donor-blast reply simulation stays testable |
-| `CORS_ALLOWED_ORIGINS` | unset at first, then the real frontend URL once deployed (step 3 above) | e.g. `https://your-app.vercel.app` |
-| `CRON_SECRET` | a 64-character hex string | `python -c "import secrets; print(secrets.token_hex(32))"` — required by `POST /internal/daily-snapshot`; the endpoint returns 503 while it is unset, so it fails closed |
-
-## Backend — start command
-
-Local dev has been using `uvicorn main:app --host 127.0.0.1 --port 8000` — that exact command will not work on a real host. Use:
+From `server/`:
 
 ```
 uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
 
-`--host 0.0.0.0` so the process accepts connections from outside its own container (`127.0.0.1` only accepts connections from itself). `$PORT` because most platforms (Render, Railway) inject the actual port to listen on via that env var rather than letting you pick a fixed one — the shell expands `$PORT` when the platform runs this as your configured start command.
+`0.0.0.0` so the process accepts connections from outside its container; `$PORT` because Render injects the port to listen on.
 
-## Frontend — build-time variable
+## Backend environment variables
 
-`VITE_API_BASE_URL` is read once, at build time (`src/app/lib/api.ts`) — not at runtime. Set it as a build-time environment variable in Vercel's/Netlify's dashboard, pointing at the real backend URL from step 1. Local `.env.local` stays pointed at `http://localhost:8000` for local dev and is untouched by this — the platform's own build-time env var takes precedence for the deployed build, it doesn't read your local file at all.
+| Variable | Set to | Notes |
+|---|---|---|
+| `DATABASE_URL` | the Supabase connection string | `postgresql+psycopg2://…` |
+| `JWT_SECRET` | a long random value | `python -c "import secrets; print(secrets.token_hex(32))"`. Changing it signs everyone out. |
+| `CORS_ALLOWED_ORIGINS` | the deployed frontend origin, comma-separated if more than one | **Required. Unset or empty means no origin is allowed: it fails closed and is never `*`.** Production browsers reach the backend through the Vercel rewrite, so they send same-origin requests; the setting still matters for local development and any direct call. `GET /health` reports the list the server parsed. |
+| `FRONTEND_BASE_URL` | the frontend's public URL | Used to build the link in password-reset emails. **If unset it defaults to `http://localhost:5173`, so reset links would point at localhost.** |
+| `ADMIN_EMAIL` | the address that should hear about new registrations | The "a registration is waiting for review" notice goes here. If unset only that one email fails (logged); the admin queue itself is unaffected. |
+| `CRON_SECRET` | a long random value | Shared secret for the nightly snapshot job (below). While unset, the job's endpoint returns 503. |
+| `ALLOW_DEV_FACILITY_OVERRIDE` | `false` | **Must be false in production.** When true, any request carrying an `X-Dev-Facility-Id` header acts as that facility with no login at all: a full authentication bypass. |
+| `ALLOW_DEV_TEST_TOOLS` | `false` | **Must be false in production** (it is the default). When true it enables two development endpoints for donor outreach: `POST /donors/blasts/{id}/simulate-reply`, which records a donor reply (the only way a reply is ever recorded, since no SMS provider is connected), and `POST /donors/blasts/{id}/dev-force-expire`, which forces a blast's deadline into the past. Both still require a signed-in blood-bank account and act on that facility's own blasts. When false, both return 403 "dev test tools are disabled on this server". |
 
-## After both are live
+### Email
 
-Live-verify the same way every round of work in this project has been verified — not just "it built":
-- Load the deployed frontend URL, confirm the login screen renders (proves the build succeeded and isn't silently pointing at `undefined` or the old localhost value).
-- Log in with a real account, confirm a real API call succeeds (proves CORS and `VITE_API_BASE_URL` are both actually correct, not just configured).
-- Check the browser console for CORS errors specifically — the most common failure mode here is a mismatched origin that only shows up as a browser-blocked request, not a server-side error.
+`EMAIL_PROVIDER` picks the provider: `brevo` (the default, and what production uses), `resend` or `smtp`. Any other value, or none, means Brevo. Without a working provider every email endpoint still returns its normal response and logs a send failure instead of delivering.
+
+| Provider | Variables |
+|---|---|
+| Brevo (live) | `BREVO_API_KEY`, `MAIL_FROM`, `MAIL_FROM_NAME` |
+| Resend (alternative) | `RESEND_API_KEY`, `RESEND_FROM_EMAIL`. Its shared sandbox sender delivers only to the Resend account's own address until a domain is verified. |
+| SMTP (alternative; local use) | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM`, `MAIL_FROM_NAME`. Does not work from Render. |
+
+## Frontend variable
+
+`VITE_API_BASE_URL` is read only by the local dev server (`.env.local`, pointing at the local backend). Production builds ignore it and use `/api`.
+
+## The nightly snapshot job
+
+`POST /internal/daily-snapshot` records today's stock for **every active facility, hospitals included**, writing an explicit 0 for a blood type with none in stock. It fits no forecast and archives nothing: one transaction, one upsert, and it is safe to retry.
+
+- **Scheduler: [cron-job.org](https://cron-job.org).** Nothing else in the repository names it, and this job is what keeps the forecast series continuous, so record any change to it here. The job lives in the project's cron-job.org account (ask the project owner for access).
+- **Schedule:** daily at **23:30, time zone Asia/Manila (15:30 UTC)**.
+- **Request:** a `POST` to `/internal/daily-snapshot` on the backend, with the header **`X-Cron-Secret`**. The secret's value is `CRON_SECRET`, which lives in Render's environment; the job's header must carry the same value, set in the cron-job.org job and never recorded in the repository. The endpoint returns 401 for a wrong secret and 503 while `CRON_SECRET` is unset.
+- **Timeout: 90 seconds.** Render's free tier sleeps when idle and a cold start takes about 50 seconds, so a shorter timeout would count a successful wake-up as a failure.
+- **History:** the first successful run was **2026-10-27 23:30:18 Manila**. Before that, a snapshot was written only when a blood bank loaded its forecast or uploaded history.
+- **If it stops running,** the missing days are unobserved, and a forecast carries the last recorded value forward over them. That cannot be repaired afterwards: October 1–25, 2026 is such a gap for every facility, caused by the job not existing before 2026-10-27 combined with upload 605's undo on 2026-09-30.
+
+## After a deploy
+
+Verify it live, not just "it built":
+
+- Load the deployed frontend and confirm the login screen renders.
+- Sign in with a real account and confirm a real API call succeeds (this proves the rewrite and the backend are connected).
+- Open `GET /health`: it should report the database as connected and the CORS origins you intended.
+- Confirm the two dev flags are false: as a blood-bank account, `simulate-reply` and `dev-force-expire` should return 403.
+- Check the browser console for CORS errors, the most common failure mode for a mismatched origin.

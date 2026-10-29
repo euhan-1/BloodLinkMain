@@ -13,7 +13,9 @@ requests, SARIMAX demand forecasting, donor broadcast.
   dropped tables.
 - **Archive, don't delete.** Soft-delete via `archived_at` / `undone_at`.
 - **Keep `server/requirements.txt` lean.** scikit-learn and joblib OOM the
-  512 MB instance; they live in `requirements-dev.txt` only. Everything pinned.
+  512 MB instance; they live in `requirements-dev.txt` only. Every direct dependency is
+  pinned, numpy included (imported directly, but only transitive until 2026-10-29) and pytest in the dev
+  file; transitive dependencies are not pinned.
 
 ## Topology
 
@@ -57,6 +59,31 @@ requests, SARIMAX demand forecasting, donor broadcast.
   wording anywhere. `sarimax_fallback_types` is unrelated: SARIMAX failed and the
   linear trend was used. `sarimax_selector_common.py` must stay importable
   without joblib/scikit-learn (`tests/test_sarimax_selector_import.py`).
+- **Snapshots, and the permanent October 1-25 hole.** `inventory_snapshots` is written when a blood bank loads
+  its forecast, on historical uploads, and nightly by `POST /internal/daily-snapshot` (23:30 Manila, every active
+  facility including hospitals, an explicit 0 for an empty type, guarded by `CRON_SECRET`; scheduled on cron-job.org (see
+  DEPLOYMENT.md); first successful run 2026-10-27 23:30:18 Manila; it fits nothing). October 1-25, 2026 has no rows
+  for any facility and cannot be recovered: the job did not exist before 2026-10-27 and upload 605's undo on
+  2026-09-30 removed what Northside had. `_resample_daily_series` carries the last value
+  forward over an unobserved day. NaN instead was measured and rejected (O+ fails worse under it, and non-finite
+  features would disable the AI selector). Count observed days with `_count_observed_days`, never
+  `len(daily_series)`; the API's `days_of_history` is observed days.
+- **The soundness guard** (`_sarimax_fit_is_sane`) rejects a fit whose AIC per observation exceeds its stored
+  selection baseline (`facility_sarimax_order.selection_aic_per_obs`) by more than 0.05; a type whose row has no
+  baseline is unguarded. A rejected fit is retried once (Nelder-Mead, then L-BFGS), then the type is served the
+  linear trend. **Consequence as of 2026-10-29: four Northside types (A-, A+, AB+, O+) are on the linear trend**,
+  because the October 1-25 carry-forward turns 26 days of real change into a one-day step on the 26th and their
+  full-series fits degrade (that step, relative to a type's usual 26-day variability, has rank correlation 0.93 with
+  the degradation). A replay of 2,213 fits found no clean alternative gate, so the guard is unchanged and the
+  limitation is recorded in the selector JSON: do not widen 0.05 or re-baseline without new evidence.
+- **Re-running order selection is not free.** `select_orders.py` / `_run_order_selection_for_facility` overwrites each
+  type's `facility_sarimax_order` row and gives every type a baseline. On 2026-10-29 it sent B- to the linear trend,
+  skipped AB- and O+ (the hold-out warm refit reports not_converged), and was undone from a dump. There is no audit
+  table: dump the facility's rows first.
+- **Scripts that write to production refuse to run by default.** `seed_facility_inventory.py`,
+  `generate_synthetic_forecast_data.py` and `fit_and_cache_synthetic_forecast.py` need
+  `--i-know-this-writes-to-production` (`server/script_guard.py`). Other scripts, `select_orders.py` among them,
+  have no such guard.
 - **Uploads are batched** — `INSERT … SELECT … FROM unnest(...)`, never
   row-by-row. Three CSV parsers require exact column names, filter extras, and
   reject on a missing required column.
@@ -74,7 +101,9 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `DATABASE_URL`, and rebuilds the public schema from `server/tests/schema.sql`
   (a `pg_dump --schema-only` of production; regenerate after a migration).
   Never run the suite against production.
-  Stock band rules: `node scripts/check_stock_bands.ts` (prints `ok`).
+  Frontend checks: `node scripts/check_stock_bands.ts` (stock band rules) and
+  `node scripts/check_forecast_source_tags.ts` (per-type forecast source tags), each printing `ok`, plus
+  `npm run typecheck`. The frontend has no component test runner.
   A red suite is a finding, not a footnote — "known failure" is how a real
   bug hides.
 - **Don't report a measurement you didn't take.** Say UNKNOWN. Check that the

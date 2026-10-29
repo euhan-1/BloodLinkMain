@@ -6,8 +6,8 @@
 
 ## What the live system does versus what this report does
 
-Live, `GET /forecast` reads each type's stored order (or the fixed fallback) and fits it on the FULL available
-history — the PRODUCTION FIT pattern — caching 7 checkpoints (days 0, 5, 10, 15, 20, 25, 30) per facility, type and
+Live, `GET /forecast` resolves each type's order (PHASE_1: a grid-searched row, else an AI recommendation, else the
+fixed default order) and fits it on the FULL available history — the PRODUCTION FIT pattern — caching 7 checkpoints (days 0, 5, 10, 15, 20, 25, 30) per facility, type and
 day. **The live system has no accuracy monitoring**: it never compares a forecast with what later happened. This
 report's hold-out (the SELECTION FIT, forecasting the 30 days it was never trained on) is an
 offline test using each type's own selected order, not the live path's own request/response cycle.

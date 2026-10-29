@@ -85,13 +85,29 @@ write("PHASE_1_IDENTIFICATION.md", f"""# Phase 1: Identification
 `main.py:_run_order_selection_for_facility`, which fits a 72-candidate grid (p,q in {{0,1,2}}, d in {{0,1}} SEARCHED —
 not assumed, since a change made alongside this report — seasonal P,Q in {{0,1}}, D=0, s=7 fixed) on the series minus
 the last {R['meta']['holdout_days']} days, and picks the lowest-AIC candidate
-whose Ljung-Box test passes on its own training residuals — see PHASE_2 and PHASE_3. A type with nothing selected
-falls back to the fixed `FACILITY_SARIMAX_ORDER = (0, 1, 4)` / `FACILITY_SARIMAX_SEASONAL_ORDER = (1, 0, 1, 7)`
-(`main.py:97-98`).
+whose Ljung-Box test passes on its own training residuals — see PHASE_2 and PHASE_3. The winner is stored per type in
+`facility_sarimax_order`.
 
-**Still, no ADF test, no ACF/PACF computation ever runs inside the grid search or a request** (verified by grep: no
-`adfuller`, `acf`, or `pacf` anywhere in `main.py`). Order selection ranks candidates by AIC and Ljung-Box alone; it
-never looks at a differencing test or a correlogram. **This report runs identification to check the selected orders
+**A type with no stored row is still given an order**, by `main.py:_resolve_order`, in this precedence:
+
+1. **grid-searched** — the stored row above;
+2. **AI-recommended** — a depth-4 decision tree over 13 features of the type's own daily series, walked from
+   `server/models/sarimax_selector_rules.json`. It is computed when the fit is made and not stored. It is refused, and the
+   refusal logged, when its order has no seasonal term and a weekday ANOVA on the series' daily changes is significant at
+   0.05;
+3. **default-order** — the fixed `FACILITY_SARIMAX_ORDER = (0, 1, 4)` / `FACILITY_SARIMAX_SEASONAL_ORDER = (1, 0, 1, 7)`,
+   also used whenever step 2 cannot produce an order (rules missing or invalid, a non-finite feature, any error).
+
+The stored forecast carries the mechanism as a label: `[grid-searched]`, `[ai-recommended]` or `[default-order]`. The
+label says how the order was obtained, not how good it is: the selector was measured not to beat the default order on
+synthetic data, so no label or claim here says otherwise. (`sarimax_fallback_types`, in the forecast response, is
+unrelated: it lists the types whose SARIMAX fit was rejected and which were served the linear trend instead.)
+
+**The grid search runs no ADF test and no ACF/PACF computation** (verified by grep: no `adfuller`, `acf`, or `pacf` anywhere
+in `main.py`). It ranks candidates by AIC and Ljung-Box alone; it never looks at a differencing test or a correlogram. The
+one place ADF, ACF and PACF do run on the live path is step 2 above: for a type with no stored row, the feature extraction
+in `sarimax_selector_common.py` computes them as inputs to the decision tree, as features and not as an order-selection
+rule. **This report runs identification to check the selected orders
 against what ADF/ACF/PACF would suggest, not to choose them.** Where the readings disagree with what was selected,
 that is reported as a disagreement, not corrected. The orders shown below are each type's SELECTION FIT order — see
 PHASE_2/3 for what that means precisely.
@@ -100,8 +116,8 @@ PHASE_2/3 for what that means precisely.
 
 * ADF test, `statsmodels.tsa.stattools.adfuller`, constant-only regression, lag length chosen by AIC, alpha = 0.05.
 * Differencing: difference repeatedly until ADF rejects the unit root (max 2). ADF is also reported on the first
-  difference regardless of what the minimum needed was, since the fixed FALLBACK order (used when nothing has been
-  selected for a type yet) still uses d = 1 — see the module comment above `main.py`'s `SARIMAX_ORDER_GRID_D`.
+  difference regardless of what the minimum needed was, since the fixed default order (used when a type has neither a
+  grid-searched row nor a usable AI recommendation) still uses d = 1 — see the module comment above `main.py`'s `SARIMAX_ORDER_GRID_D`.
 * ACF and PACF of the **first-differenced** series to 28 lags; PACF by the Yule-Walker method.
   95% bound = 1.96/sqrt(n) = {bound:.3f} (n = {R['meta']['days'] - 1} differences).
 * "Suggested q / p" below is the crude textbook rule: the number of consecutive significant lags starting at lag 1.
@@ -404,9 +420,12 @@ write("PHASE_3_DIAGNOSTICS.md", f"""# Phase 3: Diagnostic checking
 
 **The live order-selection grid search already runs Ljung-Box** — that is its selection criterion (SELECTION FIT
 results below ARE what the grid search itself computed, not a re-derivation). **It runs no Jarque-Bera and no
-heteroskedasticity test at all, ever**, on either fit. A live forecast request performs zero residual diagnostics:
-after fitting the stored (or fallback) order it checks only that the optimiser reports convergence and the forecast
-is finite. This report adds the full suite — Ljung-Box, Jarque-Bera, heteroskedasticity, residual ACF — to BOTH fits,
+heteroskedasticity test at all, ever**, on either fit. A live forecast request performs no residual diagnostics:
+after fitting the resolved order (PHASE_1) it applies a soundness check, `main.py:_sarimax_fit_is_sane` — the optimiser
+reports convergence, the parameters and AIC/BIC are finite, sigma2 is positive, the AR/MA roots are finite and, for a
+type with a stored selection baseline, AIC per observation has not risen more than 0.05 above that baseline — and the
+forecast must be finite. A fit that fails is retried once from a different start, and if that also fails the type is
+served the linear trend. This report adds the full suite — Ljung-Box, Jarque-Bera, heteroskedasticity, residual ACF — to BOTH fits,
 offline.
 
 ## Method (code: `run_methodology.py`)
@@ -504,8 +523,8 @@ write("PHASE_4_FORECASTING.md", f"""# Phase 4: Forecasting and out-of-sample val
 {TWO_FITS}
 ## What the live system does versus what this report does
 
-Live, `GET /forecast` reads each type's stored order (or the fixed fallback) and fits it on the FULL available
-history — the PRODUCTION FIT pattern — caching 7 checkpoints (days 0, 5, 10, 15, 20, 25, 30) per facility, type and
+Live, `GET /forecast` resolves each type's order (PHASE_1: a grid-searched row, else an AI recommendation, else the
+fixed default order) and fits it on the FULL available history — the PRODUCTION FIT pattern — caching 7 checkpoints (days 0, 5, 10, 15, 20, 25, 30) per facility, type and
 day. **The live system has no accuracy monitoring**: it never compares a forecast with what later happened. This
 report's hold-out (the SELECTION FIT, forecasting the {R['meta']['holdout_days']} days it was never trained on) is an
 offline test using each type's own selected order, not the live path's own request/response cycle.

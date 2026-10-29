@@ -9,13 +9,29 @@
 `main.py:_run_order_selection_for_facility`, which fits a 72-candidate grid (p,q in {0,1,2}, d in {0,1} SEARCHED —
 not assumed, since a change made alongside this report — seasonal P,Q in {0,1}, D=0, s=7 fixed) on the series minus
 the last 30 days, and picks the lowest-AIC candidate
-whose Ljung-Box test passes on its own training residuals — see PHASE_2 and PHASE_3. A type with nothing selected
-falls back to the fixed `FACILITY_SARIMAX_ORDER = (0, 1, 4)` / `FACILITY_SARIMAX_SEASONAL_ORDER = (1, 0, 1, 7)`
-(`main.py:97-98`).
+whose Ljung-Box test passes on its own training residuals — see PHASE_2 and PHASE_3. The winner is stored per type in
+`facility_sarimax_order`.
 
-**Still, no ADF test, no ACF/PACF computation ever runs inside the grid search or a request** (verified by grep: no
-`adfuller`, `acf`, or `pacf` anywhere in `main.py`). Order selection ranks candidates by AIC and Ljung-Box alone; it
-never looks at a differencing test or a correlogram. **This report runs identification to check the selected orders
+**A type with no stored row is still given an order**, by `main.py:_resolve_order`, in this precedence:
+
+1. **grid-searched** — the stored row above;
+2. **AI-recommended** — a depth-4 decision tree over 13 features of the type's own daily series, walked from
+   `server/models/sarimax_selector_rules.json`. It is computed when the fit is made and not stored. It is refused, and the
+   refusal logged, when its order has no seasonal term and a weekday ANOVA on the series' daily changes is significant at
+   0.05;
+3. **default-order** — the fixed `FACILITY_SARIMAX_ORDER = (0, 1, 4)` / `FACILITY_SARIMAX_SEASONAL_ORDER = (1, 0, 1, 7)`,
+   also used whenever step 2 cannot produce an order (rules missing or invalid, a non-finite feature, any error).
+
+The stored forecast carries the mechanism as a label: `[grid-searched]`, `[ai-recommended]` or `[default-order]`. The
+label says how the order was obtained, not how good it is: the selector was measured not to beat the default order on
+synthetic data, so no label or claim here says otherwise. (`sarimax_fallback_types`, in the forecast response, is
+unrelated: it lists the types whose SARIMAX fit was rejected and which were served the linear trend instead.)
+
+**The grid search runs no ADF test and no ACF/PACF computation** (verified by grep: no `adfuller`, `acf`, or `pacf` anywhere
+in `main.py`). It ranks candidates by AIC and Ljung-Box alone; it never looks at a differencing test or a correlogram. The
+one place ADF, ACF and PACF do run on the live path is step 2 above: for a type with no stored row, the feature extraction
+in `sarimax_selector_common.py` computes them as inputs to the decision tree, as features and not as an order-selection
+rule. **This report runs identification to check the selected orders
 against what ADF/ACF/PACF would suggest, not to choose them.** Where the readings disagree with what was selected,
 that is reported as a disagreement, not corrected. The orders shown below are each type's SELECTION FIT order — see
 PHASE_2/3 for what that means precisely.
@@ -24,8 +40,8 @@ PHASE_2/3 for what that means precisely.
 
 * ADF test, `statsmodels.tsa.stattools.adfuller`, constant-only regression, lag length chosen by AIC, alpha = 0.05.
 * Differencing: difference repeatedly until ADF rejects the unit root (max 2). ADF is also reported on the first
-  difference regardless of what the minimum needed was, since the fixed FALLBACK order (used when nothing has been
-  selected for a type yet) still uses d = 1 — see the module comment above `main.py`'s `SARIMAX_ORDER_GRID_D`.
+  difference regardless of what the minimum needed was, since the fixed default order (used when a type has neither a
+  grid-searched row nor a usable AI recommendation) still uses d = 1 — see the module comment above `main.py`'s `SARIMAX_ORDER_GRID_D`.
 * ACF and PACF of the **first-differenced** series to 28 lags; PACF by the Yule-Walker method.
   95% bound = 1.96/sqrt(n) = 0.096 (n = 419 differences).
 * "Suggested q / p" below is the crude textbook rule: the number of consecutive significant lags starting at lag 1.
