@@ -42,3 +42,6 @@ export function toInventoryUnit(row: InventoryApiRow): InventoryUnit {
     daysLeft,
   };
 }
+
+// One row of GET /inventory/summary: current usable stock for a type against the facility's own thresholds.
+export type InventorySummaryRow = { blood_type: string; minimum_units: number; maximum_units: number; units: number };

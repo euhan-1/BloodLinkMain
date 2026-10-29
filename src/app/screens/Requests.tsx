@@ -8,6 +8,7 @@ import { Modal } from "../components/Modal";
 import { FacilityNetworkMap, type Facility } from "../components/FacilityNetworkMap";
 import { useFlashOnChange } from "../lib/motion";
 import { ALL_BLOOD_TYPES } from "../lib/statusTokens";
+import { EMERGENCY_TYPE_LABELS, type EmergencyType, type RequestRow } from "../lib/requestTypes";
 
 // Chat messages poll faster than notifications (App.tsx's NOTIFICATION_POLL_MS)
 // since a coordination chat is a live conversation, not a background alert.
@@ -27,30 +28,6 @@ const bloodCompatibility: Record<string, string[]> = {
 };
 
 // ─── Requests (Emergency Sourcing + Transfer) ─────────────────────────────────
-
-type EmergencyType = "trauma" | "scheduled_surgery" | "restock";
-
-const EMERGENCY_TYPE_LABELS: Record<EmergencyType, string> = {
-  trauma: "Trauma",
-  scheduled_surgery: "Scheduled Surgery",
-  restock: "Restock",
-};
-
-type RequestRow = {
-  id: number;
-  requesting_facility_id: number;
-  supplying_facility_id: number;
-  blood_type: string;
-  quantity: number;
-  emergency_type: EmergencyType;
-  status: string;
-  created_at: string;
-  supplier_confirmed_at: string | null;
-  requester_confirmed_at: string | null;
-  supplying_facility_name?: string;
-  requesting_facility_name?: string;
-  failed_units: { din: string; expires_date: string }[];
-};
 
 // Outcome of confirm-receipt, shared by both cards. A reserved unit that expired
 // before receipt was not transferred; the DINs are listed rather than leaving a

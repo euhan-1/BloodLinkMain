@@ -69,11 +69,12 @@ function TopNav({
 
   return (
     <header className="sticky top-0 z-[1100] bg-card border-b border-border animate-header-drop-in">
-      <div className="max-w-screen-2xl mx-auto px-6 flex items-center gap-8 h-14 min-w-0">
+      <div className="max-w-screen-2xl mx-auto px-3 sm:px-6 flex items-center gap-2 sm:gap-8 h-14 min-w-0">
         {/* Logo */}
         <div className="flex items-center gap-2.5 shrink-0">
           <BloodDropLogo size={28} />
-          <span className="text-[16px] font-bold tracking-tight text-foreground">
+          {/* The wordmark gives way first on a phone: the drop alone is the logo there. */}
+          <span className="hidden sm:inline text-[16px] font-bold tracking-tight text-foreground">
             Blood<span className="text-primary">Link</span>
           </span>
         </div>
@@ -84,7 +85,9 @@ function TopNav({
             <button
               key={item.key}
               onClick={() => setScreen(item.key)}
-              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded text-[14px] font-medium transition-all duration-200 ease-out ${
+              aria-label={item.label}
+              aria-current={screen === item.key ? "page" : undefined}
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded text-[14px] font-medium transition-all duration-200 ease-out ${
                 screen === item.key
                   ? "bg-accent text-primary scale-105"
                   : "text-muted-foreground hover:text-foreground hover:bg-secondary"
@@ -97,7 +100,7 @@ function TopNav({
         </nav>
 
         {/* Right */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1 sm:gap-3">
           <NotificationBell onNavigate={onNotificationNavigate} />
           <AccountMenu user={user} onLogout={onLogout} />
         </div>
@@ -299,6 +302,7 @@ export default function App() {
                 setSourcingPrefillType(bloodType);
                 setScreen("requests");
               }}
+              onViewRequests={() => setScreen("requests")}
             />
           )}
           {screen === "inventory" && <InventoryScreen />}

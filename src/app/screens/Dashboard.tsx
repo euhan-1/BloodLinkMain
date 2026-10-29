@@ -3,13 +3,12 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
   ComposedChart, Area, Line, ReferenceLine, ReferenceArea,
 } from "recharts";
-import { AlertTriangle, ArrowRight, Bell, CheckCircle, Clock, FlaskConical, TrendingUp, Upload, Zap } from "lucide-react";
+import { AlertTriangle, CheckCircle, Clock, FlaskConical, TrendingUp, Upload } from "lucide-react";
 import {
-  apiGet, uploadHistoricalInventorySnapshots, notifyNearbyHospitals,
-  type HistoricalUploadResult, type NotifyNearbyHospitalsResult,
+  apiGet, uploadHistoricalInventorySnapshots, type HistoricalUploadResult,
 } from "../lib/api";
 import {
-  getExpiryStatus, EXPIRY_STYLES, type StatusLevel, STATUS_STYLES, stockStatus, STATUS_HEX,
+  getExpiryStatus, type StatusLevel, STATUS_STYLES, stockStatus, STATUS_HEX,
   STOCK_LABELS, isNotStocked, EXPIRED_STYLE,
 } from "../lib/statusTokens";
 import { StatusDot, BloodTypeBadge } from "../components/BloodTypeBadge";
@@ -17,14 +16,12 @@ import { Skeleton } from "../components/Skeleton";
 import { UploadHistoryPanel } from "../components/UploadHistoryPanel";
 import { useFlashOnChange } from "../lib/motion";
 import { getCurrentUser } from "../lib/session";
-import { type InventoryUnit, type InventoryApiRow, toInventoryUnit } from "../lib/inventoryTypes";
+import { type InventoryUnit, type InventoryApiRow, type InventorySummaryRow, toInventoryUnit } from "../lib/inventoryTypes";
+import { ExpiryWarningRow } from "../components/ExpiryWarningRow";
+import { HospitalDashboardView, type ThresholdView } from "./HospitalDashboard";
+import { isOutstandingRequest, type RequestRow } from "../lib/requestTypes";
 import { forecastSourceTag } from "../lib/forecastSource";
 import { buildTrendChart, shortDate, tickLabel, type HistoryPoint, type SeriesPoint, type TrendPoint } from "../lib/trendChart";
-
-// Narrowed to just the fields this screen actually reads — the full request
-// shape (RequestRow) belongs to the Requests screen; Dashboard only ever
-// counts how many are active/emergency, so it doesn't need the rest.
-type ActiveRequestSummary = { status: string; emergency_type: string };
 
 // Same order of magnitude as AccountMenu's NOTIFICATION_POLL_MS — frequent
 // enough that a status change is visible within one sitting, infrequent
@@ -32,69 +29,6 @@ type ActiveRequestSummary = { status: string; emergency_type: string };
 const SUMMARY_POLL_MS = 25000;
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
-
-function ExpiryWarningRow({ row }: { row: InventoryUnit }) {
-  const [notifyState, setNotifyState] = useState<"idle" | "sending" | "sent" | "error">("idle");
-  const [notifyResult, setNotifyResult] = useState<NotifyNearbyHospitalsResult | null>(null);
-  const [notifyError, setNotifyError] = useState<string | null>(null);
-  const status = getExpiryStatus(row.daysLeft);
-  const style = EXPIRY_STYLES[status];
-
-  async function handleNotify() {
-    setNotifyState("sending");
-    setNotifyError(null);
-    try {
-      const result = await notifyNearbyHospitals(row.din);
-      setNotifyResult(result);
-      setNotifyState("sent");
-    } catch (err) {
-      setNotifyError(err instanceof Error ? err.message : "Failed to notify nearby hospitals");
-      setNotifyState("error");
-    }
-  }
-
-  return (
-    <div className={`rounded-lg px-3 py-2.5 text-[14px] ${style.panel}`}>
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <span className={`font-display font-bold leading-none tracking-tight text-[14px] w-9 h-6 flex items-center justify-center rounded shrink-0 ${style.solid}`}>
-            {row.type}
-          </span>
-          <div className="min-w-0">
-            <div className="font-mono text-[14px] font-semibold text-foreground truncate">{row.din}</div>
-            <div className="text-foreground text-[13px] truncate">{row.component}</div>
-          </div>
-        </div>
-        <div className={`font-bold text-right shrink-0 ${style.text}`}>
-          {status === "expired" ? "Expired" : `${row.daysLeft}d`}
-          {status !== "expired" && <div className="text-foreground text-[12px] font-normal">left</div>}
-        </div>
-      </div>
-      <div className="mt-2 pt-2 border-t border-black/5 dark:border-white/10">
-        {notifyState === "sent" ? (
-          <span className="flex items-start gap-1 text-[13px] font-semibold text-status-safe-text leading-snug">
-            <CheckCircle size={13} className="shrink-0 mt-0.5" />
-            {notifyResult && notifyResult.notified_count > 0
-              ? `${notifyResult.notified_count} nearby hospital${notifyResult.notified_count === 1 ? "" : "s"} alerted`
-              : "No nearby hospitals to alert"}
-          </span>
-        ) : (
-          <button
-            onClick={handleNotify}
-            disabled={notifyState === "sending"}
-            className={`w-full h-6 px-2 rounded text-[13px] font-semibold transition-colors flex items-center justify-center gap-1 ${style.solid} hover:opacity-90 disabled:opacity-60`}
-          >
-            <Bell size={12} className="shrink-0" />
-            <span className="min-w-0 truncate">{notifyState === "sending" ? "Notifying…" : "Notify Nearby Hospitals"}</span>
-          </button>
-        )}
-        {notifyState === "error" && (
-          <div className="mt-1.5 text-[12px] text-status-critical-text">{notifyError}</div>
-        )}
-      </div>
-    </div>
-  );
-}
 
 // Recharts' default Tooltip would list every series on the chart, including
 // the two Area layers that only exist to draw the shaded confidence band —
@@ -124,8 +58,6 @@ function TrendTooltip({ active, payload, todayISO }: { active?: boolean; payload
     </div>
   );
 }
-
-type InventorySummaryRow = { blood_type: string; minimum_units: number; maximum_units: number; units: number };
 
 type ForecastAlert = {
   type: string;
@@ -214,33 +146,6 @@ function formatRecommendationSentence(rec: RestockRecommendation, minimumUnits: 
   return `restock about ${rec.recommended_units} unit${rec.recommended_units === 1 ? "" : "s"} ${timing} (projected below ${minimumClause} ${whenClause})`;
 }
 
-// Hospital-type facilities: /forecast returns this instead — no forecast at
-// all, just current-stock-vs-minimum and an explicit, staff-confirmed action
-// per shortage. See _build_hospital_threshold_view in main.py.
-type ThresholdEntry = {
-  blood_type: string;
-  units: number;
-  minimum_units: number;
-  status: "ok" | "below_minimum";
-  deficit: number;
-};
-
-type ActionPrompt = {
-  blood_type: string;
-  units: number;
-  minimum_units: number;
-  deficit: number;
-  message: string;
-  requires_confirmation: boolean;
-};
-
-type ThresholdView = {
-  view: "threshold_status";
-  is_dengue_season: boolean;
-  thresholds: ThresholdEntry[];
-  action_prompts: ActionPrompt[];
-};
-
 type DashboardData = ForecastView | ThresholdView;
 
 // A single blood type's card in the "Status by Type" grid. Split out from
@@ -319,7 +224,7 @@ function ForecastPendingCard({ title, error, onRetry, progress }: { title: strin
   );
 }
 
-export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (bloodType: string) => void }) {
+export function DashboardScreen({ onRequestBloodType, onViewRequests }: { onRequestBloodType: (bloodType: string) => void; onViewRequests: () => void }) {
   const [summary, setSummary] = useState<InventorySummaryRow[]>([]);
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [summaryError, setSummaryError] = useState<string | null>(null);
@@ -333,7 +238,6 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
   // the same grid row, its sibling too) to grow arbitrarily tall.
   const VISIBLE_ITEM_LIMIT = 3;
   const FORECAST_PENDING_POLL_MS = 2000;
-  const [showAllActions, setShowAllActions] = useState(false);
   const [showAllExpiry, setShowAllExpiry] = useState(false);
 
   // The forecast card leads with plain-language recommendations; the actual
@@ -349,8 +253,10 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
   const [forecastLoading, setForecastLoading] = useState(true);
   const [forecastError, setForecastError] = useState<string | null>(null);
 
-  const [activeRequestsCount, setActiveRequestsCount] = useState<number | null>(null);
-  const [activeRequestsEmergencyCount, setActiveRequestsEmergencyCount] = useState<number | null>(null);
+  // The requests this facility is party to: a hospital's own outgoing ones, a blood bank's incoming ones. null until
+  // the first answer; requestsFailed says that answer never came.
+  const [requestRows, setRequestRows] = useState<RequestRow[] | null>(null);
+  const [requestsFailed, setRequestsFailed] = useState(false);
 
   // Historical inventory-snapshot backfill — only ever rendered when
   // dashboardData.view === "forecast", i.e. never for hospitals (see
@@ -449,20 +355,19 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
   useEffect(() => {
     if (!dashboardData?.view) return;
     let cancelled = false;
-    // Hospitals count their own outgoing requests; blood banks count the
-    // requests directed at them as the supplier — /requests/incoming is the
-    // same endpoint the Transfer tab's "Incoming Requests" panel already uses.
-    const endpoint = dashboardData.view === "threshold_status" ? "/requests" : "/requests/incoming";
-    apiGet<ActiveRequestSummary[]>(endpoint)
-      .then((rows) => {
-        if (cancelled) return;
-        const active = rows.filter((r) => r.status === "pending" || r.status === "accepted");
-        const emergency = active.filter((r) => r.emergency_type === "trauma" || r.emergency_type === "scheduled_surgery");
-        setActiveRequestsCount(active.length);
-        setActiveRequestsEmergencyCount(emergency.length);
-      })
-      .catch(() => {}); // KPI card falls back to "…" below — not worth a dedicated error state
-    return () => { cancelled = true; };
+    // Hospitals see their own outgoing requests; blood banks the requests directed at them as the supplier —
+    // /requests/incoming is the same endpoint the Transfer tab's "Incoming Requests" panel already uses.
+    const isHospital = dashboardData.view === "threshold_status";
+    const endpoint = isHospital ? "/requests" : "/requests/incoming";
+    function load() {
+      apiGet<RequestRow[]>(endpoint)
+        .then((rows) => { if (!cancelled) { setRequestRows(rows); setRequestsFailed(false); } })
+        .catch(() => { if (!cancelled) setRequestsFailed(true); }); // a failed refresh keeps what is already on screen
+    }
+    load();
+    // A hospital's column shows each request's status, which changes while the page is open.
+    const interval = isHospital ? setInterval(load, SUMMARY_POLL_MS) : undefined;
+    return () => { cancelled = true; if (interval) clearInterval(interval); };
   }, [dashboardData?.view]);
 
   const totalUnits = summary.reduce((a, b) => a + b.units, 0);
@@ -500,6 +405,36 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
       : heroStatus === "watch"
       ? "See Expiry Warnings below for which units"
       : "No shortages or expiring stock flagged right now";
+
+  const activeRequests = requestRows?.filter(isOutstandingRequest) ?? null;
+  const activeRequestsCount = activeRequests?.length ?? null;
+  const activeRequestsEmergencyCount = activeRequests?.filter((r) => r.emergency_type === "trauma" || r.emergency_type === "scheduled_surgery").length ?? null;
+
+  // Which layout to draw. The server decides once /forecast has answered (it follows the acting facility, which
+  // ?dev=1 can override); until then the logged-in account's own type is the best guess.
+  const isHospitalView = dashboardData
+    ? dashboardData.view === "threshold_status"
+    : getCurrentUser()?.facility_type === "hospital";
+  if (isHospitalView) {
+    return (
+      <HospitalDashboardView
+        summary={summary}
+        summaryLoading={summaryLoading}
+        summaryError={summaryError}
+        expiringRows={expiringRows}
+        expiryLoading={expiryLoading}
+        expiryError={expiryError}
+        thresholdView={dashboardData?.view === "threshold_status" ? dashboardData : null}
+        forecastLoading={forecastLoading}
+        forecastError={forecastError}
+        onRetryForecast={() => loadForecast()}
+        requests={requestRows}
+        requestsFailed={requestsFailed}
+        onRequestBloodType={onRequestBloodType}
+        onViewRequests={onViewRequests}
+      />
+    );
+  }
 
   return (
     <div className="max-w-screen-2xl mx-auto px-6 py-6 space-y-6">
@@ -701,7 +636,7 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {(!dashboardData || nothingReadyYet) && (
           <ForecastPendingCard
-            title={getCurrentUser()?.facility_type === "hospital" ? "Action Required" : "Restock Outlook"}
+            title="Restock Outlook"
             error={forecastLoading ? null : (forecastError ?? (nothingReadyYet ? null : "no response"))}
             onRetry={() => loadForecast()}
             progress={nothingReadyYet ? `Calculating your forecast: 0 of ${dashboardData.types_total} blood types ready…` : undefined}
@@ -1203,96 +1138,6 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
           </div>
           );
         })()}
-
-        {dashboardData?.view === "threshold_status" && (
-          <div className="lg:col-span-2 self-start bg-card border border-border rounded-xl p-6 flex flex-col">
-            <div className="flex flex-wrap items-center justify-between mb-4 gap-3">
-              <div className="flex items-center gap-2">
-                <div className="w-7 h-7 rounded-lg bg-status-critical-tint flex items-center justify-center">
-                  <Zap size={15} className="text-status-critical-text" />
-                </div>
-                <h3 className="font-semibold text-foreground text-[19px]">Action Required</h3>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                {dashboardData.action_prompts.length > 0 ? (
-                  <span className="flex items-center gap-1 text-[13px] font-bold text-status-critical-text bg-status-critical-tint px-2 py-0.5 rounded-full border border-status-critical-border">
-                    <AlertTriangle size={13} /> {dashboardData.action_prompts.length} below minimum
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-1 text-[13px] font-bold text-status-safe-text bg-status-safe-tint px-2 py-0.5 rounded-full border border-status-safe-border">
-                    <CheckCircle size={13} /> Fully stocked
-                  </span>
-                )}
-                {dashboardData.action_prompts.length > VISIBLE_ITEM_LIMIT && (
-                  <button
-                    onClick={() => setShowAllActions((v) => !v)}
-                    className="text-[13px] font-semibold text-status-critical-text hover:underline hover:underline-offset-2"
-                  >
-                    {showAllActions ? "Show less" : `Show ${dashboardData.action_prompts.length - VISIBLE_ITEM_LIMIT} more`}
-                  </button>
-                )}
-              </div>
-            </div>
-            <p className="text-[15px] text-foreground mb-4">
-              Current stock vs. minimum threshold, per type. Sending a request is never automatic — confirm each one yourself.
-            </p>
-
-            <div className="flex-1 flex flex-col">
-              {forecastLoading && (
-                <div className="py-8 text-center text-[15px] text-foreground">Loading…</div>
-              )}
-              {!forecastLoading && forecastError && (
-                <div className="py-8 text-center text-[15px] text-status-critical-text">
-                Failed to load: {forecastError}
-                <div className="mt-3">
-                  <button onClick={() => loadForecast()} className="h-8 px-3 bg-primary text-white rounded-lg text-[13px] font-semibold hover:bg-primary-hover transition-colors">
-                    Retry
-                  </button>
-                </div>
-              </div>
-              )}
-              {!forecastLoading && !forecastError && dashboardData.action_prompts.length === 0 && (
-                <div className="flex flex-col items-center text-center py-6">
-                  <div className="w-12 h-12 rounded-full bg-status-safe-tint flex items-center justify-center mb-3">
-                    <CheckCircle size={22} className="text-status-safe-text" />
-                  </div>
-                  <div className="font-semibold text-foreground mb-1">All blood types fully stocked</div>
-                  <p className="text-[14px] text-foreground leading-relaxed max-w-[280px]">
-                    Every type is at or above its minimum threshold. No action needed right now.
-                  </p>
-                </div>
-              )}
-              {!forecastLoading && !forecastError && dashboardData.action_prompts.length > 0 && (() => {
-                const visible = showAllActions
-                  ? dashboardData.action_prompts
-                  : dashboardData.action_prompts.slice(0, VISIBLE_ITEM_LIMIT);
-                return (
-                  <div className="space-y-3">
-                    {visible.map((prompt) => (
-                      <div key={prompt.blood_type} className="rounded-lg p-3 flex items-start gap-3 bg-status-critical-tint border border-status-critical-border">
-                        <div className="w-8 h-8 rounded-md font-bold text-[15px] flex items-center justify-center shrink-0 bg-status-critical text-white">
-                          {prompt.blood_type}
-                        </div>
-                        <div className="flex-1">
-                          <div className="text-[15px] font-bold mb-0.5 text-status-critical-text">
-                            {prompt.units} of {prompt.minimum_units} units — short by {prompt.deficit}
-                          </div>
-                          <div className="text-[14px] text-foreground leading-snug mb-2">{prompt.message}</div>
-                          <button
-                            onClick={() => onRequestBloodType(prompt.blood_type)}
-                            className="flex items-center gap-1.5 h-8 px-3 bg-primary text-white rounded-lg text-[13px] font-semibold hover:bg-primary-hover transition-colors"
-                          >
-                            <ArrowRight size={14} /> Request {prompt.blood_type} from nearby blood banks
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })()}
-            </div>
-          </div>
-        )}
 
         {/* Expiry warnings */}
         <div className="lg:col-span-1 self-start bg-card border border-border rounded-xl p-6 flex flex-col">

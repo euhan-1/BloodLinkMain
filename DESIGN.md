@@ -127,6 +127,8 @@ Reused identically everywhere status appears — expiry, stock thresholds, avail
 
 **The No Red-Green Rule.** Status color never relies on a red/green distinction. Safe is teal, not green; Critical is red-orange, not pure red — chosen so the safe/watch/critical triad stays legible for red-green colorblindness (~8% of men), the single most common form, on the app's single most important recurring signal.
 
+**The Three-State Rule (hospital dashboard).** The hospital dashboard uses three status colours and neutrals, one per state `stockStatus` already defines: Safe teal means adequate (at or above minimum), Watch gold means below minimum, and Critical red-orange means critical (under 60% of minimum). Each state also carries a word ("Adequate", "Below minimum", "Critical"), so colour is never the only signal. Info Blue means nothing there, so the chart's blue Maximum outline is gone. The tint appears on the one alert surface (Action Required, and only while something is actually short) and takes the colour of the worst shortage, so a surface with only gold shortages is gold-tinted, not peach. It is never a wash across a grid. The role accent (Oxblood or Navy) still colours actions and links, because it is identity, not status.
+
 ## Typography
 
 **Display Font:** Archivo (with IBM Plex Sans, system-ui fallback)
@@ -164,10 +166,13 @@ Elevation is structural, not decorative: every top-level card gets the same soft
 - **Button** (`0 1px 2px rgba(28,25,23,.06), 0 2px 6px -1px rgba(role-accent,.25)`): Solid primary buttons at rest.
 - **Button Hover** (`0 2px 4px rgba(28,25,23,.07), 0 4px 12px -2px rgba(role-accent,.32)`): On hover.
 - **Button Active** (`0 1px 1px rgba(28,25,23,.06), 0 1px 3px rgba(role-accent,.22)`): On press — a tighter, closer shadow reads as the button settling down under the cursor.
+- **Raised** (`0 1px 1px rgba(28,25,23,.12), 0 3px 7px -1px rgba(28,25,23,.12), 0 16px 30px -8px rgba(28,25,23,.20)`): A borderless surface whose edge is the shadow. Three layers that each do one job: a tight contact line, a mid-distance layer, and a wide ambient layer pulled in with a negative spread. Used only for the hospital dashboard's two raised surfaces (`--shadow-raised`).
 - Modals and dropdowns use Tailwind's own `shadow-lg`/`shadow-xl` instead of the card shadow, since they sit at a different z-plane above everything else.
 
 ### Named Rules
 **The Structural Lift Rule.** Card elevation is never optional or state-gated — a card without `--shadow-card` reads as a bug, not a quieter variant. If a surface shouldn't look elevated, it shouldn't be a `rounded-xl` card in the first place.
+
+**The Two-Raised-Surfaces Rule (hospital dashboard).** The hospital dashboard has exactly two raised surfaces, Action Required and the Your requests column, and they carry no border. Everything else on that screen (the summary line, the stock chart, the expiry list) sits flat on Warm Paper with no card and no shadow. This is a deliberate exception to the Structural Lift Rule: a hospital consumes blood and is on the screen to act, so the page has one place to act and one place to check, and depth marks exactly those two. It has not been rolled out to the other screens.
 
 ## Shapes
 
@@ -197,11 +202,11 @@ Status badges (Adequate / Marginal / Low, etc.) follow the Four-Step color rule:
 ### Inputs / Fields
 - **Style:** Surface White background, 1px Border Charcoal, `rounded-md`, 40px height, `1rem` label gap above.
 - **Focus:** A 2px ring in Oxblood/Navy at 30% opacity plus a border-color shift to full brand color — never just a border change alone.
-- **Login focus:** On the login screen every field, button and link uses a 2px solid brand outline offset 2px (`focus-visible`) instead of the 30% ring, which was too faint against the charcoal border.
+- **Keyboard focus (every control):** A global `:focus-visible` rule in `theme.css` draws a 2px solid outline in the role accent, offset 2px, on every link, button, tab and menu item. A field that draws its own ring opts out with `focus:outline-none`. Login uses the same outline on its fields, because the 30% ring is too faint against the charcoal border.
 - **Error:** The field itself doesn't change; a Critical-family message box (tint background, border, text) appears beneath the form.
 
 ### Navigation
-Sticky top bar, Surface White background, single bottom border (no shadow — the nav sits flush, cards below it carry the depth instead). Active item: Oxblood/Navy-tinted background pill with brand-colored text and a slight scale-up; inactive: muted text that brightens on hover with a soft background wash. Labels hide below the `md` breakpoint, leaving icon-only nav so the header shrinks rather than overflows on a narrow or split window.
+Sticky top bar, Surface White background, single bottom border (no shadow — the nav sits flush, cards below it carry the depth instead). Active item: Oxblood/Navy-tinted background pill with brand-colored text and a slight scale-up; inactive: muted text that brightens on hover with a soft background wash. Labels hide below the `md` breakpoint, leaving icon-only nav so the header shrinks rather than overflows on a narrow or split window. Below `sm` the wordmark is hidden (the drop alone is the logo) and the bar's gaps and padding tighten, so the three nav icons, the bell and the account button fit at 320px without touching.
 
 ### DIN / Date Stamp (signature component)
 Two small, deliberately literal components that carry the "printed on a real label" metaphor: `DinLabel` sets a blood-unit ID in uppercase, wide-tracked mono. `DateStamp` boxes an expiry date in a bordered, status-colored callout — visually heavier than the plain collection-date text beside it, mirroring how a real bag's printed expiry is the one date meant to catch your eye.
@@ -214,9 +219,12 @@ Two small, deliberately literal components that carry the "printed on a real lab
 - **Do** use JetBrains Mono only for things that represent a physical printed identifier (DIN, dates, request IDs).
 - **Do** keep status color (safe/watch/critical) completely independent of role-accent color (Oxblood/Navy) — a Hospital and a Blood Bank account must always see the same red for the same shortage.
 - **Do** use the one shared `BloodTypeBadge` component at whatever size fits, never a bespoke inline badge for a blood type.
+- **Do** write hospital-dashboard labels in sentence case ("Total units", "Expiring soon") and give each fact its own sentence or clause.
 
 ### Don't:
 - **Don't** introduce a second red-adjacent or green "success/danger" pair — Safe is teal, Critical is red-orange, by rule, to stay colorblind-safe.
 - **Don't** use Info Blue or Synthetic Violet for anything status-shaped — they're reserved for "related option" and "stand-in data" respectively, never "OK" or "urgent."
 - **Don't** add decorative or looping motion. Every animation in the system plays once, in response to a real event, and settles — never ambient, never repeating (the notification bell's attention pulse is the one deliberate exception, and even that plays once per new arrival, not on a loop).
 - **Don't** flatten a card by removing its shadow "for a cleaner look" — in this system, no shadow reads as broken, not minimal.
+- **Don't** use tracked-out capitals as labels, middle dots between facts, or arrow prefixes on button text on the hospital dashboard. The other screens still use them; they are to be reviewed when this treatment is rolled out.
+- **Don't** add a third raised surface to the hospital dashboard, or put a border on a raised one.
