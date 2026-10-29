@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Building2, CheckCircle, FlaskConical, RefreshCw, ShieldCheck, Zap } from "lucide-react";
 import {
   login as apiLogin, changePassword as apiChangePassword, requestPasswordResetOtp, resetPasswordOtp, warmBackend,
@@ -10,12 +10,12 @@ import { BloodDropLogo } from "../components/BloodTypeBadge";
 
 // Permanent demo accounts (seeded server-side) so the two dashboard
 // experiences — forecast for blood banks, threshold/action for hospitals,
-// see Section 2.7 of the status report — are one click away to try, without
-// needing to know real facility credentials.
+// see Section 2.7 of the status report — are easy to try. A button only fills
+// in the email; the password is never stored in this file.
 const DEMO_ACCOUNTS = {
-  hospital: { email: "demo.hospital@example.com", password: "BloodLinkDemo123!", label: "Hospital" },
-  bloodbank: { email: "demo.bloodbank@example.com", password: "BloodLinkDemo123!", label: "Blood Bank" },
-  admin: { email: "demo.admin@example.com", password: "BloodLinkDemo123!", label: "Admin" },
+  hospital: { email: "demo.hospital@example.com", label: "Hospital" },
+  bloodbank: { email: "demo.bloodbank@example.com", label: "Blood Bank" },
+  admin: { email: "demo.admin@example.com", label: "Admin" },
 } as const;
 
 type DemoAccountType = keyof typeof DEMO_ACCOUNTS;
@@ -32,6 +32,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedDemo, setSelectedDemo] = useState<DemoAccountType | null>(null);
+  const passwordInputRef = useRef<HTMLInputElement>(null);
   const [pendingReset, setPendingReset] = useState<PendingReset | null>(null);
 
   const [forgotMode, setForgotMode] = useState(false);
@@ -79,8 +80,9 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
   function handleSelectDemo(type: DemoAccountType) {
     setSelectedDemo(type);
     setEmail(DEMO_ACCOUNTS[type].email);
-    setPassword(DEMO_ACCOUNTS[type].password);
+    setPassword("");
     setError(null);
+    passwordInputRef.current?.focus();
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -342,7 +344,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
               </p>
 
               <div className="mb-5">
-                <p className="text-[13px] font-semibold text-muted-foreground mb-1.5">Quick demo login</p>
+                <p className="text-[13px] font-semibold text-muted-foreground mb-1.5">Demo accounts: fills in the email, you enter the password</p>
                 <div className="flex gap-1 bg-secondary rounded-lg p-1">
                   {(Object.keys(DEMO_ACCOUNTS) as DemoAccountType[]).map((type) => (
                     <button
@@ -388,11 +390,12 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                     </button>
                   </div>
                   <input
+                    ref={passwordInputRef}
                     type="password"
                     required
                     autoComplete="current-password"
                     value={password}
-                    onChange={(e) => { setPassword(e.target.value); setSelectedDemo(null); }}
+                    onChange={(e) => setPassword(e.target.value)}
                     className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
                   />
                 </div>
