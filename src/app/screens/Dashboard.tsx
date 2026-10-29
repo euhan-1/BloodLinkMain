@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
-  ComposedChart, Area, Line, ReferenceLine,
+  ComposedChart, Area, Line, ReferenceLine, ReferenceArea,
 } from "recharts";
 import { AlertTriangle, ArrowRight, Bell, CheckCircle, Clock, FlaskConical, TrendingUp, Upload, Zap } from "lucide-react";
 import {
@@ -19,6 +19,7 @@ import { useFlashOnChange } from "../lib/motion";
 import { getCurrentUser } from "../lib/session";
 import { type InventoryUnit, type InventoryApiRow, toInventoryUnit } from "../lib/inventoryTypes";
 import { forecastSourceTag } from "../lib/forecastSource";
+import { buildTrendChart, shortDate, tickLabel, type HistoryPoint, type SeriesPoint, type TrendPoint } from "../lib/trendChart";
 
 // Narrowed to just the fields this screen actually reads — the full request
 // shape (RequestRow) belongs to the Requests screen; Dashboard only ever
@@ -97,24 +98,27 @@ function ExpiryWarningRow({ row }: { row: InventoryUnit }) {
 
 // Recharts' default Tooltip would list every series on the chart, including
 // the two Area layers that only exist to draw the shaded confidence band —
-// "lower: 320, band: 45, units: 340" means nothing to a reader. This shows
-// just the projected total and, when available, its predicted range.
-function ForecastTooltip({
-  active, payload, label,
-}: {
-  active?: boolean;
-  payload?: { payload: { units: number; lower: number | null; upper: number | null } }[];
-  label?: string;
-}) {
+// "lower: 320, band: 45, units: 340" means nothing to a reader. This says what
+// the hovered day is: recorded, carried forward (not recorded), or projected,
+// and for a projected day its predicted range.
+function TrendTooltip({ active, payload, todayISO }: { active?: boolean; payload?: { payload: TrendPoint }[]; todayISO: string | null }) {
   if (!active || !payload || payload.length === 0) return null;
   const d = payload[0].payload;
+  const projected = d.forecastUnits !== null && d.t > 0;
+  const heading = d.t === 0 ? "Today" : d.date ? shortDate(d.date) : tickLabel(d.t, todayISO);
   return (
     <div className="bg-card border border-border rounded-md px-3 py-2 text-[13px] shadow-sm">
-      <div className="font-bold text-foreground mb-0.5">{label}</div>
+      <div className="font-bold text-foreground mb-0.5">{projected && d.label ? `${heading} (${d.label})` : heading}</div>
       <div className="text-foreground">{d.units} units</div>
-      {d.lower !== null && d.upper !== null && (
+      {projected && d.lower !== null && d.band !== null && (
         <div className="text-foreground text-[12px]">
-          Likely range: {d.lower}–{d.upper}
+          Likely range: {d.lower}–{d.lower + d.band}
+        </div>
+      )}
+      {d.recorded === true && <div className="text-foreground text-[12px]">Recorded</div>}
+      {d.recorded === false && (
+        <div className="text-foreground text-[12px]">
+          Not recorded{d.carriedFrom ? ` — carried forward from ${shortDate(d.carriedFrom)}` : ""}
         </div>
       )}
     </div>
@@ -175,7 +179,12 @@ type ForecastView = {
   // empty while any are pending. Absent on the non-SARIMAX paths.
   pending_types?: string[];
   types_total?: number;
-  series: { day: string; units: number; lower: number | null; upper: number | null }[];
+  // The forward checkpoints (Today, Day 5 ... Day 30); `date` is the calendar date each one falls on.
+  series: SeriesPoint[];
+  // The last 90 days of the facility's total stock, oldest first, ending today. observed=false marks a day
+  // nobody recorded: its units are the last recorded value carried forward, as the model was fed it. Present
+  // even while the forecast is pending; absent from an older API.
+  history?: HistoryPoint[];
   alerts: ForecastAlert[];
 };
 
@@ -407,6 +416,9 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
   // The server fits only a couple of blood types per request and lists the rest
   // as pending; ask again (after the previous answer, never overlapping) until none are.
   const pendingCount = dashboardData?.view === "forecast" ? (dashboardData.pending_types?.length ?? 0) : 0;
+  // The trend chart has something to draw once there is a forecast or any recorded history (history is
+  // independent of the fits, so it is there while forecasts are still pending).
+  const hasTrend = dashboardData?.view === "forecast" && (dashboardData.series.length > 0 || (dashboardData.history?.length ?? 0) > 0);
   const nothingReadyYet =
     dashboardData?.view === "forecast" && pendingCount > 0 && pendingCount === dashboardData.types_total;
   useEffect(() => {
@@ -874,46 +886,56 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                     type="button"
                     onClick={() => setShowTrendDetail((v) => !v)}
                     aria-expanded={showTrendDetail}
-                    disabled={dashboardData.series.length === 0}
+                    disabled={!hasTrend}
                     className="flex items-center gap-1.5 text-[13px] font-bold text-muted-foreground hover:text-foreground transition-colors disabled:opacity-60 disabled:cursor-default"
                   >
                     <TrendingUp size={14} />
-                    {dashboardData.series.length === 0
+                    {!hasTrend
                       ? "Trend detail appears once every blood type is calculated"
                       : showTrendDetail ? "Hide trend detail" : "View trend detail"}
                   </button>
 
-                  {showTrendDetail && dashboardData.series.length > 0 && (() => {
+                  {showTrendDetail && hasTrend && (() => {
                     // The backend omits this key entirely (rather than sending
                     // null) on the synthetic path, so `!== null` alone lets
                     // `undefined` through and produces "NaN%" below — check the
                     // actual type instead of trusting the declared null-only union.
                     const hasInterval = typeof dashboardData.interval_confidence === "number";
+                    const isStandIn = dashboardData.forecast_source === "synthetic_model_stand_in";
+                    const chart = buildTrendChart({ history: dashboardData.history, series: dashboardData.series, standIn: isStandIn });
+                    // Projected values use the forecast colour (violet for the synthetic
+                    // stand-in); recorded history keeps the role accent, or a neutral
+                    // grey beside a stand-in so it never reads as part of that forecast.
+                    const forecastColor = isStandIn ? "var(--synthetic)" : "var(--role-accent)";
+                    const historyColor = chart.historyTone === "neutral" ? "var(--gray-500)" : "var(--role-accent)";
+                    const dotsOnly = chart.mode === "dots";
+                    const widestRun = chart.filledRuns.reduce<{ from: number; to: number } | null>(
+                      (best, r) => (best === null || r.to - r.from > best.to - best.from ? r : best), null);
                     return (
                       <div className="mt-3">
                         <p className="text-[13px] text-foreground mb-2">
                           Total units across every blood type combined. A steady total doesn't mean every type is steady —
                           see the per-type outlook above.
                         </p>
+                        {!chart.hasForecast && (
+                          <p className="text-[13px] font-semibold text-foreground mb-2">
+                            The forecast is still calculating. Recorded stock so far is shown.
+                          </p>
+                        )}
                         <ResponsiveContainer width="100%" height={200}>
-                          <ComposedChart
-                            data={dashboardData.series.map((d) => ({
-                              ...d,
-                              band: d.lower !== null && d.upper !== null ? d.upper - d.lower : 0,
-                            }))}
-                            margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
-                          >
+                          {/* Today is the last tick while the forecast is pending, so leave room for its label. */}
+                          <ComposedChart data={chart.points} margin={{ top: 8, right: chart.hasForecast ? 8 : 22, left: 0, bottom: 0 }}>
                             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.35} vertical={false} />
                             <XAxis
-                              dataKey="day"
-                              // interval={0} forces every tick to render instead of
-                              // Recharts silently dropping whichever ones don't fit
-                              // (which is what produced the uneven "Day 20 ... Day
-                              // 30" gap with Day 25 missing) — the tickFormatter
-                              // shortens labels to "5"/"10"/etc. so all 7 fit
-                              // evenly spaced without overlapping.
+                              // One numeric axis in days from today: history is daily and the
+                              // forecast has a point every 5 days, so a category axis would
+                              // space them equally. Negative = recorded past, 0 = today.
+                              type="number"
+                              dataKey="t"
+                              domain={chart.domain}
+                              ticks={chart.ticks}
                               interval={0}
-                              tickFormatter={(value: string) => (value === "Today" ? "Today" : value.replace("Day ", ""))}
+                              tickFormatter={(t: number) => tickLabel(t, chart.todayISO)}
                               tick={{ fontSize: 12, fill: "var(--foreground)", fontFamily: "Plus Jakarta Sans", fontWeight: 700 }}
                               axisLine={false}
                               tickLine={false}
@@ -924,11 +946,31 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                               tickLine={false}
                               width={34}
                             />
-                            <Tooltip content={<ForecastTooltip />} cursor={{ stroke: "var(--border)", strokeDasharray: "3 3" }} />
-                            {totalMinimumUnits > 0 && (
-                              <ReferenceLine y={totalMinimumUnits} stroke="var(--gray-400)" strokeWidth={1.5} strokeDasharray="4 4" />
+                            <Tooltip content={<TrendTooltip todayISO={chart.todayISO} />} cursor={{ stroke: "var(--border)", strokeDasharray: "3 3" }} />
+                            {/* Days nobody recorded: shaded and labelled (once, on the widest
+                                run) so the flat stretch reads as "not recorded", not as a
+                                steady supply. */}
+                            {chart.filledRuns.map((r) => (
+                              <ReferenceArea
+                                key={r.from}
+                                x1={r.from}
+                                x2={r.to}
+                                fill="var(--gray-400)"
+                                fillOpacity={0.18}
+                                stroke="none"
+                                ifOverflow="hidden"
+                                label={r === widestRun ? { value: "Not recorded", position: "insideBottom", fontSize: 11, fontWeight: 700, fill: "var(--foreground)" } : undefined}
+                              />
+                            ))}
+                            {chart.minimumSegment && totalMinimumUnits > 0 && (
+                              <ReferenceLine
+                                segment={[{ x: chart.minimumSegment[0], y: totalMinimumUnits }, { x: chart.minimumSegment[1], y: totalMinimumUnits }]}
+                                stroke="var(--gray-400)"
+                                strokeWidth={1.5}
+                                strokeDasharray="4 4"
+                              />
                             )}
-                            {hasInterval && (
+                            {hasInterval && chart.hasForecast && (
                               <>
                                 {/* Stacked-area trick for a shaded confidence band:
                                     an invisible area up to `lower`, then a visible
@@ -940,21 +982,48 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                                 <Area
                                   dataKey="band"
                                   stackId="ci"
-                                  stroke={dashboardData.forecast_source === "synthetic_model_stand_in" ? "var(--synthetic)" : "var(--role-accent)"}
+                                  stroke={forecastColor}
                                   strokeWidth={1}
                                   strokeOpacity={0.35}
-                                  fill={dashboardData.forecast_source === "synthetic_model_stand_in" ? "var(--synthetic)" : "var(--role-accent)"}
+                                  fill={forecastColor}
                                   fillOpacity={0.3}
                                   isAnimationActive={false}
                                 />
                               </>
                             )}
+                            {/* Not-recorded days, dashed; it also touches the recorded day on
+                                each side so it joins the solid line. */}
+                            {!dotsOnly && (
+                              <Line
+                                type="linear"
+                                dataKey="filledUnits"
+                                stroke="var(--gray-500)"
+                                strokeWidth={2}
+                                strokeDasharray="5 4"
+                                dot={false}
+                                activeDot={false}
+                                connectNulls={false}
+                                isAnimationActive={false}
+                              />
+                            )}
+                            {/* Recorded days: a solid line, or with fewer than 7 recorded
+                                days just the dots (a line through the gaps would be invented). */}
+                            <Line
+                              type="linear"
+                              dataKey="observedUnits"
+                              stroke={dotsOnly ? "none" : historyColor}
+                              strokeWidth={2.5}
+                              dot={{ r: dotsOnly ? 4 : 0, strokeWidth: 0, fill: historyColor }}
+                              activeDot={{ r: 4.5, fill: historyColor }}
+                              connectNulls={false}
+                              isAnimationActive={false}
+                            />
                             <Line
                               type="monotone"
-                              dataKey="units"
-                              stroke={dashboardData.forecast_source === "synthetic_model_stand_in" ? "var(--synthetic)" : "var(--role-accent)"}
+                              dataKey="forecastUnits"
+                              stroke={forecastColor}
                               strokeWidth={3}
-                              dot={{ r: 3.5, strokeWidth: 0, fill: dashboardData.forecast_source === "synthetic_model_stand_in" ? "var(--synthetic)" : "var(--role-accent)" }}
+                              dot={{ r: 3.5, strokeWidth: 0, fill: forecastColor }}
                               activeDot={{ r: 5 }}
                               isAnimationActive={false}
                             />
@@ -964,41 +1033,61 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                             inline on the chart — this data tends to sit flat and
                             close to its own minimum, so an inline label kept
                             landing right on top of the last data point. */}
-                        <div className="flex items-center gap-4 text-[12px] font-semibold text-foreground -mt-1 mb-1">
-                          <span className="flex items-center gap-1.5">
-                            <span
-                              className="w-3 h-0.5 rounded-full inline-block"
-                              style={{ backgroundColor: dashboardData.forecast_source === "synthetic_model_stand_in" ? "var(--synthetic)" : "var(--role-accent)" }}
-                            />
-                            Projected total
-                          </span>
-                          {totalMinimumUnits > 0 && (
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] font-semibold text-foreground -mt-1 mb-1">
+                          {chart.observedCount > 0 && (
+                            <span className="flex items-center gap-1.5">
+                              <span className="w-3 h-0.5 rounded-full inline-block" style={{ backgroundColor: historyColor }} />
+                              Recorded
+                            </span>
+                          )}
+                          {chart.filledRuns.length > 0 && (
+                            <span className="flex items-center gap-1.5">
+                              <span className="w-3 h-3 inline-block rounded-sm border border-dashed border-gray-500" style={{ backgroundColor: "color-mix(in srgb, var(--gray-400) 18%, transparent)" }} />
+                              Not recorded, carried forward
+                            </span>
+                          )}
+                          {chart.hasForecast && (
+                            <span className="flex items-center gap-1.5">
+                              <span className="w-3 h-0.5 rounded-full inline-block" style={{ backgroundColor: forecastColor }} />
+                              Projected total
+                            </span>
+                          )}
+                          {chart.hasForecast && totalMinimumUnits > 0 && (
                             <span className="flex items-center gap-1.5">
                               <span className="w-3 h-0.5 rounded-full inline-block border-t-2 border-dashed border-gray-400" />
                               Combined minimum ({totalMinimumUnits})
                             </span>
                           )}
                         </div>
-                        <p className="text-[12.5px] text-foreground leading-snug flex items-start gap-1.5">
-                          <span>
-                            {hasInterval
-                              ? "The shaded band shows the range this could realistically fall in."
-                              : "Line shows the projected trend for total units on file."}
-                          </span>
-                          {hasInterval && (
-                            <button
-                              type="button"
-                              onClick={() => setShowIntervalDetail((v) => !v)}
-                              aria-expanded={showIntervalDetail}
-                              aria-label="What does the shaded band mean, technically?"
-                              title="What does the shaded band mean, technically?"
-                              className="shrink-0 w-4 h-4 rounded-full border border-border text-[10px] font-bold text-muted-foreground hover:text-foreground hover:border-foreground flex items-center justify-center leading-none"
-                            >
-                              ?
-                            </button>
-                          )}
-                        </p>
-                        {hasInterval && showIntervalDetail && (
+                        {dotsOnly && chart.observedCount > 0 && (
+                          <p className="text-[12.5px] text-foreground leading-snug mb-1">
+                            Only {chart.observedCount} day{chart.observedCount === 1 ? "" : "s"} of stock {chart.observedCount === 1 ? "has" : "have"} been
+                            recorded so far, so just {chart.observedCount === 1 ? "that day is" : "those days are"} shown — no line is drawn through the days
+                            nobody recorded.
+                          </p>
+                        )}
+                        {chart.hasForecast && (
+                          <p className="text-[12.5px] text-foreground leading-snug flex items-start gap-1.5">
+                            <span>
+                              {hasInterval
+                                ? "The shaded band after Today shows the range this could realistically fall in."
+                                : "Line shows the projected trend for total units on file."}
+                            </span>
+                            {hasInterval && (
+                              <button
+                                type="button"
+                                onClick={() => setShowIntervalDetail((v) => !v)}
+                                aria-expanded={showIntervalDetail}
+                                aria-label="What does the shaded band mean, technically?"
+                                title="What does the shaded band mean, technically?"
+                                className="shrink-0 w-4 h-4 rounded-full border border-border text-[10px] font-bold text-muted-foreground hover:text-foreground hover:border-foreground flex items-center justify-center leading-none"
+                              >
+                                ?
+                              </button>
+                            )}
+                          </p>
+                        )}
+                        {hasInterval && chart.hasForecast && showIntervalDetail && (
                           <p className="text-[11.5px] text-muted-foreground leading-snug mt-1">
                             Technically, this is a {Math.round((dashboardData.interval_confidence as number) * 100)}% prediction
                             interval — wider with less history on file or further into the future, narrowing as more real

@@ -83,6 +83,8 @@ def business_today() -> date:
 MIN_DAYS_REQUIRED = 3
 FORECAST_CHECKPOINTS = [0, 5, 10, 15, 20, 25, 30]
 FORECAST_INTERVAL_CONFIDENCE = 0.95
+# How many days of observed totals GET /forecast returns as `history`, ending today, for the trend chart.
+HISTORY_DAYS = 90
 
 # A materially higher bar than MIN_DAYS_REQUIRED above: SARIMAX(0,1,4)x(1,0,1,7)
 # needs enough runway to estimate a 4-lag MA term plus several full weekly
@@ -1027,6 +1029,34 @@ def _count_observed_days(daily_series: list[tuple[date, int]], observed_dates: s
     days _resample_daily_series filled in (carried forward) because nobody recorded that day.
     Equals the API's days_of_history whenever the type starts at the facility's first date."""
     return sum(1 for d, _ in daily_series if d in observed_dates)
+
+
+def _history_totals(history_rows, today: date, days: int = HISTORY_DAYS) -> list[dict]:
+    """The facility's total stock per day for the last `days` days ending `today`, for the trend chart:
+    [{"date": ISO, "units": total across all blood types, "observed": bool}], oldest first.
+
+    `units` is built from the same per-type series the SARIMAX fit is fed (_resample_daily_series), so a day
+    nobody recorded carries the last recorded value forward exactly as the model saw it, and a blood type with
+    no row on a day somebody did record counts as a real zero. `observed` is true when the facility has at
+    least one snapshot row that date, which is the same test _resample_daily_series uses to tell the two apart.
+    Independent of any fit: the rows are already loaded, so this works while forecasts are still pending, and
+    for the linear-trend path, which never builds the per-type daily series itself."""
+    observed_dates = {r["snapshot_date"] for r in history_rows}
+    by_type: dict[str, dict[date, int]] = {}
+    for r in history_rows:
+        by_type.setdefault(r["blood_type"], {})[r["snapshot_date"]] = r["units"]
+    totals: dict[date, int] = {}
+    for type_rows in by_type.values():
+        for d, units in _resample_daily_series(type_rows, observed_dates, today):
+            totals[d] = totals.get(d, 0) + units
+    start = today - timedelta(days=days - 1)
+    return [{"date": d.isoformat(), "units": totals[d], "observed": d in observed_dates} for d in sorted(totals) if d >= start]
+
+
+def _series_point_fields(checkpoint: int, today: date) -> dict:
+    """The label and the real date of one forward-series point, so the chart can put history and forecast on one
+    date axis. Both forward series (SARIMAX/linear trend and the synthetic stand-in) build their points from this."""
+    return {"day": "Today" if checkpoint == 0 else f"Day {checkpoint}", "date": (today + timedelta(days=checkpoint)).isoformat()}
 
 
 def _sarimax_fit_is_sane(fit, n_obs: int, baseline_aic_per_obs: Optional[float]) -> tuple[bool, str, dict]:
@@ -2080,7 +2110,7 @@ def _build_synthetic_stand_in_forecast(
     alerts.sort(key=lambda a: severity_order[a["severity"]])
 
     series = [
-        {"day": "Today" if c == 0 else f"Day {c}", "units": total_by_checkpoint[c]}
+        {**_series_point_fields(c, today), "units": total_by_checkpoint[c]}
         for c in FORECAST_CHECKPOINTS
     ]
     restock_recommendations.sort(key=lambda r: r["days_until_breach"])
@@ -3138,6 +3168,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
 
         distinct_dates = sorted({row["snapshot_date"] for row in history_rows})
         days_of_history = len(distinct_dates)
+        history = _history_totals(history_rows, today)
 
         if days_of_history < MIN_DAYS_REQUIRED:
             current_units_by_type = {
@@ -3159,6 +3190,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
                     "forecast_source": "synthetic_model_stand_in",
                     "synthetic_model_label": SYNTHETIC_MODEL_LABEL,
                     "series": stand_in["series"],
+                    "history": history,
                     "alerts": stand_in["alerts"],
                     "restock_recommendations": stand_in["restock_recommendations"],
                     "restock_status": stand_in["restock_status"],
@@ -3174,6 +3206,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
                 "is_dengue_season": is_dengue_season,
                 "forecast_source": "none",
                 "series": [],
+                "history": history,
                 "alerts": [],
                 "restock_recommendations": [],
                 "restock_status": None,
@@ -3325,7 +3358,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
     # sum would read as a real (and much lower) total.
     series = [
         {
-            "day": "Today" if c == 0 else f"Day {c}",
+            **_series_point_fields(c, today),
             "units": total_by_checkpoint[c],
             "lower": lower_by_checkpoint[c] if band_available else None,
             "upper": upper_by_checkpoint[c] if band_available else None,
@@ -3351,6 +3384,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
         "forecast_source": forecast_source,
         "interval_confidence": FORECAST_INTERVAL_CONFIDENCE if band_available and not pending_types else None,
         "series": series,
+        "history": history,
         "alerts": alerts,
         "restock_recommendations": restock_recommendations,
         # "pending" = nothing to act on yet AND some types not calculated: "on_track" would be a claim

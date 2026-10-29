@@ -93,7 +93,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (290 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (302 tests plus
   84 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
@@ -102,7 +102,8 @@ requests, SARIMAX demand forecasting, donor broadcast.
   (a `pg_dump --schema-only` of production; regenerate after a migration).
   Never run the suite against production.
   Frontend checks: `node scripts/check_stock_bands.ts` (stock band rules) and
-  `node scripts/check_forecast_source_tags.ts` (per-type forecast source tags), each printing `ok`, plus
+  `node scripts/check_forecast_source_tags.ts` (per-type forecast source tags) and
+  `node scripts/check_trend_chart.ts` (trend chart history/forecast data), each printing `ok`, plus
   `npm run typecheck`. The frontend has no component test runner.
   A red suite is a finding, not a footnote — "known failure" is how a real
   bug hides.
