@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Building2, CheckCircle, FlaskConical, RefreshCw, ShieldCheck, Zap } from "lucide-react";
+import { useEffect, useState } from "react";
+import { CheckCircle, RefreshCw, ShieldCheck } from "lucide-react";
 import {
   login as apiLogin, changePassword as apiChangePassword, requestPasswordResetOtp, resetPasswordOtp, warmBackend,
 } from "../lib/api";
@@ -8,17 +8,13 @@ import { BloodDropLogo } from "../components/BloodTypeBadge";
 
 // ─── Login Screen ─────────────────────────────────────────────────────────────
 
-// Permanent demo accounts (seeded server-side) so the two dashboard
-// experiences — forecast for blood banks, threshold/action for hospitals,
-// see Section 2.7 of the status report — are easy to try. A button only fills
-// in the email; the password is never stored in this file.
-const DEMO_ACCOUNTS = {
-  hospital: { email: "demo.hospital@example.com", label: "Hospital" },
-  bloodbank: { email: "demo.bloodbank@example.com", label: "Blood Bank" },
-  admin: { email: "demo.admin@example.com", label: "Admin" },
-} as const;
-
-type DemoAccountType = keyof typeof DEMO_ACCOUNTS;
+// A 2px solid brand outline, offset so it clears a filled button's edge. The
+// fields' own 30%-ring is too faint against a charcoal border that already
+// sits close to oxblood in darkness, so every control here uses this instead.
+const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary";
+const FIELD = `w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:border-primary transition-colors ${FOCUS}`;
+const BTN = `w-full h-10 bg-primary text-white text-sm font-semibold rounded-md hover:bg-primary-hover transition-colors disabled:opacity-60 flex items-center justify-center gap-2 ${FOCUS}`;
+const LINK_BTN = `text-[13px] text-muted-foreground hover:text-foreground transition-colors rounded-sm ${FOCUS}`;
 
 // Only ever produced by an admin creating/resetting an account (a one-time
 // temp password) — the self-service "Forgot password?" flow no longer feeds
@@ -31,8 +27,6 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedDemo, setSelectedDemo] = useState<DemoAccountType | null>(null);
-  const passwordInputRef = useRef<HTMLInputElement>(null);
   const [pendingReset, setPendingReset] = useState<PendingReset | null>(null);
 
   const [forgotMode, setForgotMode] = useState(false);
@@ -76,14 +70,6 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
     const timer = setTimeout(() => setSlowLogin(true), 3000);
     return () => clearTimeout(timer);
   }, [loading]);
-
-  function handleSelectDemo(type: DemoAccountType) {
-    setSelectedDemo(type);
-    setEmail(DEMO_ACCOUNTS[type].email);
-    setPassword("");
-    setError(null);
-    passwordInputRef.current?.focus();
-  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -145,44 +131,40 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
   return (
     <div className="min-h-screen bg-background flex">
       {/* Left panel */}
-      <div className="hidden lg:flex flex-col justify-between w-[480px] bg-primary text-white p-12 animate-panel-slide-left">
-        <div>
-          <div className="flex items-center gap-3 mb-16">
-            <BloodDropLogo size={36} />
-            <span className="text-xl font-bold tracking-tight">BloodLink</span>
-          </div>
-          <h1 className="text-4xl font-bold leading-tight mb-6">
-            AI-assisted blood supply coordination for modern healthcare
-          </h1>
-          <p className="text-white/70 text-[16px] leading-relaxed">
-            Real-time inventory management, emergency sourcing and response, and donor coordination — unified for blood banks and hospitals across the network.
-          </p>
+      {/* Rows 1fr / auto / 1fr: the content block sits at the panel's own vertical centre, which is where the form
+          centres on the right, so the two halves share a centre line. The logo lives in the top row. */}
+      <div className="hidden lg:grid grid-rows-[1fr_auto_1fr] w-2/5 shrink-0 bg-primary text-white px-10 xl:px-14 py-12 animate-panel-slide-left">
+        <div className="flex items-start gap-3">
+          {/* The drop is a fixed oxblood fill, the same colour as this panel. */}
+          <span className="grid place-items-center w-10 h-10 rounded-lg bg-white">
+            <BloodDropLogo size={28} />
+          </span>
+          <span className="text-xl font-bold tracking-tight">BloodLink</span>
         </div>
 
-        <div className="space-y-4">
-          {[
-            { icon: <ShieldCheck size={16} />, text: "Verified healthcare facilities only" },
-            { icon: <Zap size={16} />, text: "AI-assisted forecasting and shortage alerts" },
-            { icon: <RefreshCw size={16} />, text: "Donor outreach and coordination tools" },
-          ].map((item, i) => (
+        <div>
+          <h1 className="font-login-serif text-[clamp(2.5rem,3.6vw,3.75rem)] font-bold leading-[1.05] tracking-[-0.01em] text-balance mb-6">
+            AI-assisted blood supply coordination
+          </h1>
+          <div className="max-w-[34ch]">
+            <p className="text-white/80 text-[16px] font-[500] leading-relaxed">
+              Real-time inventory management, emergency sourcing and response, and donor coordination — unified for blood banks and hospitals across the network.
+            </p>
             <div
-              key={i}
-              className="flex items-center gap-3 text-white/80 text-sm animate-bullet-rise-in"
-              style={{ animationDelay: `${360 + i * 90}ms` }}
+              className="mt-8 flex items-start gap-3 pt-5 border-t border-white/25 text-white/80 text-sm font-[500] leading-relaxed animate-bullet-rise-in"
+              style={{ animationDelay: "360ms" }}
             >
-              <div className="w-7 h-7 rounded bg-white/15 flex items-center justify-center shrink-0">
-                {item.icon}
-              </div>
-              {item.text}
+              <ShieldCheck size={16} className="shrink-0 mt-0.5" />
+              Every facility's DOH license is checked before access is approved.
             </div>
-          ))}
+          </div>
         </div>
       </div>
 
       {/* Right panel */}
-      <div className="flex-1 flex items-center justify-center p-8">
-        <div className="w-full max-w-[400px] animate-panel-slide-right">
-          <div className="flex items-center gap-2 mb-2 lg:hidden">
+      <div className="flex-1 flex items-center justify-center px-6 py-10 sm:p-10">
+        <div className="w-full max-w-[380px] animate-panel-slide-right">
+          <div className="flex items-center gap-2 mb-8 lg:hidden">
             <BloodDropLogo size={28} />
             <span className="text-lg font-bold">Blood<span className="text-primary">Link</span></span>
           </div>
@@ -209,7 +191,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                     setForgotMode(false); setForgotSent(false); setResetDone(false); setForgotEmail("");
                     setResetCode(""); setResetNewPassword(""); setResetConfirmPassword("");
                   }}
-                  className="w-full h-10 bg-primary text-white text-sm font-semibold rounded-md hover:bg-primary-hover transition-colors"
+                  className={BTN}
                 >
                   Back to sign in
                 </button>
@@ -235,7 +217,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                       value={resetCode}
                       onChange={(e) => setResetCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
                       placeholder="000000"
-                      className="w-full h-10 px-3 text-sm tracking-[0.3em] text-center font-mono border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+                      className={`${FIELD} tracking-[0.3em] text-center font-mono`}
                     />
                   </div>
                   <div>
@@ -246,7 +228,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                       autoComplete="new-password"
                       value={resetNewPassword}
                       onChange={(e) => setResetNewPassword(e.target.value)}
-                      className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+                      className={FIELD}
                     />
                   </div>
                   <div>
@@ -257,7 +239,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                       autoComplete="new-password"
                       value={resetConfirmPassword}
                       onChange={(e) => setResetConfirmPassword(e.target.value)}
-                      className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+                      className={FIELD}
                     />
                   </div>
 
@@ -270,7 +252,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                   <button
                     type="submit"
                     disabled={resetLoading || resetCode.length !== 6}
-                    className="w-full h-10 bg-primary text-white text-sm font-semibold rounded-md hover:bg-primary-hover transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+                    className={BTN}
                   >
                     {resetLoading ? (
                       <><RefreshCw size={15} className="animate-spin" /> Updating…</>
@@ -281,7 +263,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                   <button
                     type="button"
                     onClick={() => { setForgotSent(false); setResetError(null); setResetCode(""); }}
-                    className="w-full text-[13px] text-muted-foreground hover:text-foreground transition-colors"
+                    className={`w-full ${LINK_BTN}`}
                   >
                     Didn't get a code? Go back
                   </button>
@@ -305,7 +287,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                       autoComplete="email"
                       value={forgotEmail}
                       onChange={(e) => setForgotEmail(e.target.value)}
-                      className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+                      className={FIELD}
                     />
                   </div>
 
@@ -318,7 +300,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                   <button
                     type="submit"
                     disabled={forgotLoading}
-                    className="w-full h-10 bg-primary text-white text-sm font-semibold rounded-md hover:bg-primary-hover transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+                    className={BTN}
                   >
                     {forgotLoading ? (
                       <><RefreshCw size={15} className="animate-spin" /> Sending…</>
@@ -329,7 +311,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                   <button
                     type="button"
                     onClick={() => { setForgotMode(false); setForgotError(null); }}
-                    className="w-full text-[13px] text-muted-foreground hover:text-foreground transition-colors"
+                    className={`w-full ${LINK_BTN}`}
                   >
                     Back to sign in
                   </button>
@@ -339,64 +321,44 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
           ) : (
             <>
               <h2 className="font-display text-2xl font-bold text-foreground mb-1">Sign in</h2>
-              <p className="text-muted-foreground text-sm mb-4">
+              <p className="text-muted-foreground text-sm font-[500] mb-6">
                 Access your facility's blood management dashboard.
               </p>
 
-              <div className="mb-5">
-                <p className="text-[13px] font-semibold text-muted-foreground mb-1.5">Demo accounts: fills in the email, you enter the password</p>
-                <div className="flex gap-1 bg-secondary rounded-lg p-1">
-                  {(Object.keys(DEMO_ACCOUNTS) as DemoAccountType[]).map((type) => (
-                    <button
-                      key={type}
-                      type="button"
-                      onClick={() => handleSelectDemo(type)}
-                      className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-[14px] font-semibold rounded border transition-all duration-200 ease-out ${
-                        selectedDemo === type
-                          ? "bg-card text-foreground shadow-sm border-border scale-105"
-                          : "border-transparent text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      {type === "hospital" ? <Building2 size={15} /> : type === "bloodbank" ? <FlaskConical size={15} /> : <ShieldCheck size={15} />}
-                      {DEMO_ACCOUNTS[type].label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
-                  <label className="text-[14px] font-semibold text-foreground block mb-1.5">
+                  <label htmlFor="login-email" className="text-[14px] font-semibold text-foreground block mb-1.5">
                     Email address
                   </label>
                   <input
+                    id="login-email"
                     type="email"
                     required
                     autoComplete="email"
                     value={email}
-                    onChange={(e) => { setEmail(e.target.value); setSelectedDemo(null); }}
-                    className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+                    onChange={(e) => setEmail(e.target.value)}
+                    className={FIELD}
                   />
                 </div>
                 <div>
                   <div className="flex justify-between mb-1.5">
-                    <label className="text-[14px] font-semibold text-foreground">Password</label>
+                    <label htmlFor="login-password" className="text-[14px] font-semibold text-foreground">Password</label>
                     <button
                       type="button"
                       onClick={() => { setForgotMode(true); setError(null); setForgotEmail(email); }}
-                      className="text-[13px] text-primary hover:underline hover:underline-offset-2"
+                      className={`text-[13px] text-primary hover:underline hover:underline-offset-2 rounded-sm ${FOCUS}`}
                     >
                       Forgot password?
                     </button>
                   </div>
                   <input
-                    ref={passwordInputRef}
+                    id="login-password"
                     type="password"
                     required
                     autoComplete="current-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+                    className={FIELD}
                   />
                 </div>
 
@@ -409,7 +371,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full h-10 bg-primary text-white text-sm font-semibold rounded-md hover:bg-primary-hover transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+                  className={BTN}
                 >
                   {loading ? (
                     <><RefreshCw size={15} className="animate-spin" /> {slowLogin ? "Starting up the server, this may take a moment…" : "Signing in…"}</>
@@ -419,16 +381,13 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                 </button>
               </form>
 
-              <div className="mt-8 p-4 rounded-lg bg-status-watch-tint border border-status-watch-border flex gap-3">
-                <ShieldCheck size={16} className="text-status-watch shrink-0 mt-0.5" />
-                <p className="text-[13px] text-status-watch-text leading-relaxed">
-                  <strong>Verified facilities only.</strong> New registrations are reviewed by a BloodLink administrator, who checks your DOH license before approving access.
-                </p>
-              </div>
+              <p className="mt-8 pt-5 border-t border-gray-300 text-[13px] font-[500] text-gray-700 leading-relaxed">
+                <strong className="font-semibold">Verified facilities only.</strong> New registrations are reviewed by a BloodLink administrator, who checks your DOH license before approving access.
+              </p>
 
-              <p className="mt-6 text-center text-[13px] text-muted-foreground">
+              <p className="mt-5 text-[13px] font-[500] text-muted-foreground">
                 New facility?{" "}
-                <a href="/register" className="text-primary hover:underline hover:underline-offset-2">
+                <a href="/register" className={`text-primary font-semibold hover:underline hover:underline-offset-2 rounded-sm ${FOCUS}`}>
                   Register here
                 </a>
               </p>
@@ -495,7 +454,7 @@ function ForcePasswordChangeForm({
             autoComplete="new-password"
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
-            className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+            className={FIELD}
           />
         </div>
         <div>
@@ -506,7 +465,7 @@ function ForcePasswordChangeForm({
             autoComplete="new-password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
-            className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+            className={FIELD}
           />
         </div>
 
@@ -519,7 +478,7 @@ function ForcePasswordChangeForm({
         <button
           type="submit"
           disabled={loading}
-          className="w-full h-10 bg-primary text-white text-sm font-semibold rounded-md hover:bg-primary-hover transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+          className={BTN}
         >
           {loading ? (
             <><RefreshCw size={15} className="animate-spin" /> Setting password…</>
@@ -530,7 +489,7 @@ function ForcePasswordChangeForm({
         <button
           type="button"
           onClick={onCancel}
-          className="w-full text-[13px] text-muted-foreground hover:text-foreground transition-colors"
+          className={`w-full ${LINK_BTN}`}
         >
           Back to sign in
         </button>

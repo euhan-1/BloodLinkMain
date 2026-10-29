@@ -91,6 +91,7 @@ function FacilityTable({
   onAddAccount: (facility: AdminFacility) => void;
 }) {
   return (
+    <div className="overflow-x-auto">
     <table className="w-full text-[14px]">
       <thead>
         <tr className="border-b border-border bg-secondary">
@@ -174,6 +175,7 @@ function FacilityTable({
         ))}
       </tbody>
     </table>
+    </div>
   );
 }
 

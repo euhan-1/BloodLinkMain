@@ -151,9 +151,11 @@
   --shadow-button-hover: 0 2px 4px rgba(28, 25, 23, 0.07), 0 4px 12px -2px rgba(var(--role-accent-rgb), 0.32);
   --shadow-button-active: 0 1px 1px rgba(28, 25, 23, 0.06), 0 1px 3px rgba(var(--role-accent-rgb), 0.22);
 
-  --font-body: 'Plus Jakarta Sans', system-ui, sans-serif;
-  --font-display: 'Archivo', 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-body: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-display: 'Archivo', 'IBM Plex Sans', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'Courier New', monospace;
+  /* Login headline only (Login.tsx). Not the interface font — see DESIGN.md. */
+  --font-login-serif: 'IBM Plex Serif', Georgia, 'Times New Roman', serif;
 }
 
 /* Hospital role override — everything else (Blood Bank, Admin, logged-out)
@@ -300,6 +302,7 @@
   --color-gray-900: var(--gray-900);
   --font-display: var(--font-display);
   --font-mono: var(--font-mono);
+  --font-login-serif: var(--font-login-serif);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -363,9 +366,8 @@
     @apply bg-background text-foreground;
     /* Baseline body weight, bumped a third time now: regular->medium->
        semibold->bold (400->500->600->700) for the same legibility reason —
-       Plus Jakarta Sans only ships 400/500/600/700 as static weights (see
-       fonts.css), so 700 is the last real step available, not an arbitrary
-       value. Text that already asks for font-bold explicitly (most headers,
+       IBM Plex Sans tops out at 700 (fonts.css loads 400/500/600/700), so
+       700 is the last real step available, not an arbitrary value. Text that already asks for font-bold explicitly (most headers,
        all buttons, most emphasized labels) now matches this floor exactly
        rather than exceeding it — the "important vs. plain" distinction that
        used to be carried by font-semibold/font-bold utility classes is

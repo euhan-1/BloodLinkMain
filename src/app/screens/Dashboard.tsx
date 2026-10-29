@@ -581,7 +581,7 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
 
       {/* Blood type breakdown */}
       {summaryLoading && (
-        <div className="grid lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-2 bg-card border border-border rounded-xl p-6">
             <Skeleton className="h-4 w-44 mb-2" />
             <Skeleton className="h-3.5 w-56 mb-5" />
@@ -610,9 +610,9 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
         </div>
       )}
       {!summaryLoading && !summaryError && (
-        <div className="grid lg:grid-cols-3 gap-4 animate-card-rise-in" style={{ animationDelay: "750ms" }}>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 animate-card-rise-in" style={{ animationDelay: "750ms" }}>
           <div className="lg:col-span-2 bg-card border border-border rounded-xl p-6 flex flex-col">
-            <div className="flex items-center justify-between mb-5">
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 mb-5">
               <div>
                 <h3 className="font-semibold text-foreground text-[19px]">Inventory by Blood Type</h3>
                 <p className="text-[15px] text-foreground mt-0.5">
@@ -625,7 +625,7 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                   fully-stocked bar (its most common real state; watch/critical
                   types still render amber/red in the chart itself), and
                   Minimum/Maximum reuse their bars' literal hex values. */}
-              <div className="flex gap-3.5 text-[15px] font-semibold text-foreground">
+              <div className="flex flex-wrap gap-x-3.5 gap-y-1 text-[15px] font-semibold text-foreground">
                 <span className="flex items-center gap-2">
                   <span className="w-3.5 h-3.5 rounded-sm inline-block" style={{ backgroundColor: "#0F766E" }} /> Current
                 </span>
@@ -648,12 +648,12 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.35} vertical={false} />
                 <XAxis
                   dataKey="blood_type"
-                  tick={{ fontSize: 15, fontFamily: "Plus Jakarta Sans", fill: "var(--foreground)", fontWeight: 700 }}
+                  tick={{ fontSize: 15, fontFamily: "var(--font-body)", fill: "var(--foreground)", fontWeight: 700 }}
                   axisLine={false}
                   tickLine={false}
                 />
                 <YAxis
-                  tick={{ fontSize: 13, fontFamily: "Plus Jakarta Sans", fill: "var(--foreground)", fontWeight: 700 }}
+                  tick={{ fontSize: 13, fontFamily: "var(--font-body)", fill: "var(--foreground)", fontWeight: 700 }}
                   axisLine={false}
                   tickLine={false}
                   width={34}
@@ -664,7 +664,7 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                     border: "1px solid var(--border)",
                     borderRadius: "8px",
                     fontSize: 14,
-                    fontFamily: "Plus Jakarta Sans",
+                    fontFamily: "var(--font-body)",
                   }}
                   labelStyle={{ color: "var(--foreground)", fontWeight: 700, marginBottom: 4 }}
                   itemStyle={{ color: "var(--foreground)", fontWeight: 700 }}
@@ -698,7 +698,7 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
       )}
 
       {/* Forecast/Threshold + Alert/Action + Expiry */}
-      <div className="grid lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {(!dashboardData || nothingReadyYet) && (
           <ForecastPendingCard
             title={getCurrentUser()?.facility_type === "hospital" ? "Action Required" : "Restock Outlook"}
@@ -853,12 +853,12 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                       const sourceTag = forecastSourceTag(dashboardData, s.blood_type);
                       return (
                         <div key={s.blood_type} className="min-w-0">
-                          <div className="flex items-center gap-1.5 text-[12.5px] min-w-0">
+                          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12.5px] min-w-0">
                             <BloodTypeBadge type={s.blood_type} size="sm" />
                             {(dashboardData.pending_types ?? []).includes(s.blood_type) ? (
                               <span className="text-muted-foreground font-semibold">Calculating…</span>
                             ) : rec ? (
-                              <span className="text-status-watch-text font-semibold truncate">
+                              <span className="text-status-watch-text font-semibold">
                                 ⚠ {rec.recommended_units} by {formatBreachDate(rec.breach_date)}
                               </span>
                             ) : (
@@ -936,12 +936,12 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
                               ticks={chart.ticks}
                               interval={0}
                               tickFormatter={(t: number) => tickLabel(t, chart.todayISO)}
-                              tick={{ fontSize: 12, fill: "var(--foreground)", fontFamily: "Plus Jakarta Sans", fontWeight: 700 }}
+                              tick={{ fontSize: 12, fill: "var(--foreground)", fontFamily: "var(--font-body)", fontWeight: 700 }}
                               axisLine={false}
                               tickLine={false}
                             />
                             <YAxis
-                              tick={{ fontSize: 11, fill: "var(--foreground)", fontFamily: "Plus Jakarta Sans", fontWeight: 700 }}
+                              tick={{ fontSize: 11, fill: "var(--foreground)", fontFamily: "var(--font-body)", fontWeight: 700 }}
                               axisLine={false}
                               tickLine={false}
                               width={34}
@@ -1206,7 +1206,7 @@ export function DashboardScreen({ onRequestBloodType }: { onRequestBloodType: (b
 
         {dashboardData?.view === "threshold_status" && (
           <div className="lg:col-span-2 self-start bg-card border border-border rounded-xl p-6 flex flex-col">
-            <div className="flex items-center justify-between mb-4 gap-3">
+            <div className="flex flex-wrap items-center justify-between mb-4 gap-3">
               <div className="flex items-center gap-2">
                 <div className="w-7 h-7 rounded-lg bg-status-critical-tint flex items-center justify-center">
                   <Zap size={15} className="text-status-critical-text" />

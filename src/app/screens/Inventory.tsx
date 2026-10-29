@@ -299,7 +299,7 @@ export function InventoryScreen() {
               {archivingExpired ? "Clearing…" : `Clear Expired Backlog (${expiredUnits.length})`}
             </button>
           )}
-          <div className="flex gap-1 bg-secondary rounded-lg p-1">
+          <div className="flex flex-wrap gap-1 bg-secondary rounded-lg p-1">
             {types.map((t) => (
               <button
                 key={t}

@@ -17,13 +17,13 @@ colors:
   synthetic-violet: "#7C3AED"
 typography:
   display:
-    fontFamily: "Archivo, 'Plus Jakarta Sans', system-ui, sans-serif"
+    fontFamily: "Archivo, 'IBM Plex Sans', system-ui, sans-serif"
     fontSize: "clamp(1.5rem, 2.5vw, 1.875rem)"
     fontWeight: 800
     lineHeight: 1.2
     letterSpacing: "-0.01em"
   body:
-    fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif"
+    fontFamily: "'IBM Plex Sans', system-ui, sans-serif"
     fontSize: "0.9375rem"
     fontWeight: 700
     lineHeight: 1.5
@@ -33,6 +33,12 @@ typography:
     fontWeight: 600
     lineHeight: 1.5
     letterSpacing: "0.03em"
+  login-headline:
+    fontFamily: "'IBM Plex Serif', Georgia, 'Times New Roman', serif"
+    fontSize: "clamp(2.5rem, 3.6vw, 3.75rem)"
+    fontWeight: 700
+    lineHeight: 1.05
+    letterSpacing: "-0.01em"
 rounded:
   sm: "0.125rem"
   md: "0.375rem"
@@ -73,7 +79,7 @@ components:
 
 BloodLink's visual system takes its cues from the physical object at the center of the product: the printed label on a real blood bag. A donor identification number sets in wide-tracked mono type. An expiry date reads as a stamped, boxed callout rather than plain running text. Blood-type badges (O-, A+, AB-) are treated as the product's signature element — one shared, unmistakable shape used identically from a table row to a search-picker button, exactly the way a real bag's type label never changes shape depending on where you're standing.
 
-That material honesty extends outward into warmth rather than sterility. The palette is a deliberate rejection of cold clinical white-and-blue hospital-software convention: warm stone neutrals instead of cool gray, an oxblood (not alert-red) brand identity for Blood Bank accounts and a deep, muted navy for Hospital accounts, and a status language whose safe/watch/critical states use teal, gold, and red-orange specifically so the system never leans on a red-green distinction. Typography carries the same conviction — body text sits at a 700 weight floor, the boldest static weight Plus Jakarta Sans ships, so nothing in the interface reads as tentative. Cards get genuine, layered depth (a tight contact shadow, a mid-distance layer, a wide ambient glow) so surfaces feel like they're actually resting on the page, not drawn on with a flat line.
+That material honesty extends outward into warmth rather than sterility. The palette is a deliberate rejection of cold clinical white-and-blue hospital-software convention: warm stone neutrals instead of cool gray, an oxblood (not alert-red) brand identity for Blood Bank accounts and a deep, muted navy for Hospital accounts, and a status language whose safe/watch/critical states use teal, gold, and red-orange specifically so the system never leans on a red-green distinction. Typography carries the same conviction — body text sits at a 700 weight floor, the boldest static weight IBM Plex Sans ships, so nothing in the interface reads as tentative. Cards get genuine, layered depth (a tight contact shadow, a mid-distance layer, a wide ambient glow) so surfaces feel like they're actually resting on the page, not drawn on with a flat line.
 
 Motion is restrained and one-shot: something happens, the interface responds once, and settles. Nothing loops or decorates — in a tool whose job is coordinating an actual blood shortage, motion is feedback, never atmosphere for its own sake.
 
@@ -123,11 +129,12 @@ Reused identically everywhere status appears — expiry, stock thresholds, avail
 
 ## Typography
 
-**Display Font:** Archivo (with Plus Jakarta Sans, system-ui fallback)
-**Body Font:** Plus Jakarta Sans (with system-ui fallback)
+**Display Font:** Archivo (with IBM Plex Sans, system-ui fallback)
+**Body Font:** IBM Plex Sans (with system-ui fallback)
 **Label/Mono Font:** JetBrains Mono (with Courier New fallback)
+**Login Headline Font:** IBM Plex Serif 700 (with Georgia fallback) — the login screen's maroon-panel headline and nothing else
 
-**Character:** Archivo's geometric weight carries headlines and big numbers with real authority; Plus Jakarta Sans runs the interface at a floor most systems reserve for emphasis only, so nothing defaults to tentative; JetBrains Mono marks anything that reads as a physical, printed identifier — a DIN, a date, a request ID — the way a real label would set it.
+**Character:** Archivo's geometric weight carries headlines and big numbers with real authority; IBM Plex Sans runs the interface at a floor most systems reserve for emphasis only, so nothing defaults to tentative, and shares a family with the login headline's IBM Plex Serif, so the two read as one voice rather than a pairing; JetBrains Mono marks anything that reads as a physical, printed identifier — a DIN, a date, a request ID — the way a real label would set it.
 
 ### Hierarchy
 - **Display** (800, clamp(1.5rem, 2.5vw, 1.875rem), 1.2): Dashboard hero headline, big stat numbers, screen titles.
@@ -135,9 +142,12 @@ Reused identically everywhere status appears — expiry, stock thresholds, avail
 - **Title** (700, 1.125rem–1.1875rem, 1.5): Card titles, table section headers.
 - **Body** (700, 0.875rem–0.9375rem, 1.5): Running interface copy — the effective floor for nearly all text in the app, including labels and secondary/"muted" copy.
 - **Label** (600, 0.8125rem, 0.03em tracking): DIN codes, dates, request IDs — uppercase where the physical convention calls for it (see DinLabel).
+- **Login Headline** (IBM Plex Serif 700, clamp(2.5rem, 3.6vw, 3.75rem), 1.05, -0.01em): The one line of copy on the login screen's maroon panel. Set large and tight; no word in it is accented by colour or weight.
 
 ### Named Rules
-**The Bold Floor Rule.** Body text is set at font-weight 700 — the last real static weight Plus Jakarta Sans ships (400 → 500 → 600 → 700), raised there deliberately. Because the floor is already this high, `font-semibold` and `font-bold` utility classes on top of it read flatter than they would elsewhere; that's the intended effect, not a bug to "fix" by adding a heavier weight.
+**The Bold Floor Rule.** Body text is set at font-weight 700 — the last real static weight IBM Plex Sans ships (400 → 500 → 600 → 700), raised there deliberately. Because the floor is already this high, `font-semibold` and `font-bold` utility classes on top of it read flatter than they would elsewhere; that's the intended effect, not a bug to "fix" by adding a heavier weight.
+
+**The Login-Serif Rule.** IBM Plex Serif is loaded at 700 only and is used for the login headline (`font-login-serif`). It is a trial: the interface font is unchanged, and the serif is not used on any other screen until it has been judged on this one. Because body text everywhere else sits on the Bold Floor, the login screen is the one place the Bold Floor is lifted for supporting copy (explanatory paragraphs, the verification notice and the register line are set at 500, not 700) so the headline is the only bold thing on the page. Labels, buttons and inputs keep their usual 600.
 
 **The Mono-Means-Physical Rule.** JetBrains Mono is reserved for anything that represents a physical, printed identifier on a real object (a blood bag's DIN, its expiry stamp) — never used as a generic "technical-looking" typeface for arbitrary UI chrome.
 
@@ -187,6 +197,7 @@ Status badges (Adequate / Marginal / Low, etc.) follow the Four-Step color rule:
 ### Inputs / Fields
 - **Style:** Surface White background, 1px Border Charcoal, `rounded-md`, 40px height, `1rem` label gap above.
 - **Focus:** A 2px ring in Oxblood/Navy at 30% opacity plus a border-color shift to full brand color — never just a border change alone.
+- **Login focus:** On the login screen every field, button and link uses a 2px solid brand outline offset 2px (`focus-visible`) instead of the 30% ring, which was too faint against the charcoal border.
 - **Error:** The field itself doesn't change; a Critical-family message box (tint background, border, text) appears beneath the form.
 
 ### Navigation
