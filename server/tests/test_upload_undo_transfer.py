@@ -56,9 +56,9 @@ class UndoAfterTransferTests(unittest.TestCase):
 
         req = app.create_request(app.CreateRequestBody(supplying_facility_id=bank, blood_type="O+", quantity=2,
                                                        component="Packed RBC", emergency_type="trauma"), requesting_facility_id=hospital)
-        app.accept_request(req["id"], facility_id=bank)
-        app.confirm_release(req["id"], facility_id=bank)  # FEFO: -1 and -2 expire first
-        app.confirm_receipt(req["id"], facility_id=hospital)
+        app.accept_request(req["id"], facility_id=bank, user_id=None)
+        app.confirm_release(req["id"], facility_id=bank, user_id=None)  # FEFO: -1 and -2 expire first
+        app.confirm_receipt(req["id"], facility_id=hospital, user_id=None)
 
         result = app.undo_upload(upload_id, facility_id=bank)
 

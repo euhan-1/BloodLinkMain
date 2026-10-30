@@ -102,13 +102,19 @@ requests, SARIMAX demand forecasting, donor broadcast.
   stays. `request_unit_failures` is still written alongside, and a test asserts the two agree. Requests released before
   the table existed have no rows and none are invented. A test cleanup that deletes requests must delete `request_units`
   rows first.
+- **Every request transition stamps a time and an actor** in its own transaction: `accepted_at/by`, `declined_at/by`,
+  `cancelled_at/by`, and `supplier_confirmed_at` + `released_by`, `requester_confirmed_at` + `received_by` (those two
+  timestamps keep their names). The actor is `get_acting_user_id`, one account per facility, so it names a login, not a
+  person, and is NULL under the dev override. Nothing is backfilled: NULL means "not recorded", never "did not happen".
+  The five transition functions take `user_id`, so tests call them with `user_id=None` (a bare call would pass the
+  `Depends` object into SQL, as for `uploaded_by`).
 - **Undo** reads `inventory_snapshot_write_log` to restore displaced counts, and
   clears `facility_forecast_cache` for the facility.
 
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (377 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (395 tests plus
   134 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`

@@ -44,7 +44,7 @@ def add(facility_id, din, expires_in_days, component="Packed RBC", blood_type="O
 def accepted_request(bank, hospital, quantity=1, component="Packed RBC", blood_type="O+"):
     req = app.create_request(app.CreateRequestBody(supplying_facility_id=bank, blood_type=blood_type, component=component,
                                                    quantity=quantity, emergency_type="trauma"), requesting_facility_id=hospital)
-    app.accept_request(req["id"], facility_id=bank)
+    app.accept_request(req["id"], facility_id=bank, user_id=None)
     return req["id"]
 
 
@@ -118,7 +118,7 @@ class ReleaseMatchesComponentTests(unittest.TestCase):
         add(self.bank, self.din("RBC"), 20)
         rid = accepted_request(self.bank, self.hospital, 1, component="Packed RBC")
 
-        app.confirm_release(rid, facility_id=self.bank)
+        app.confirm_release(rid, facility_id=self.bank, user_id=None)
 
         self.assertEqual(reserved_dins(rid), [self.din("RBC")])
 
@@ -127,7 +127,7 @@ class ReleaseMatchesComponentTests(unittest.TestCase):
         add(self.bank, self.din("PLT"), 4, component="Platelets")
         rid = accepted_request(self.bank, self.hospital, 1, component="Platelets")
 
-        app.confirm_release(rid, facility_id=self.bank)
+        app.confirm_release(rid, facility_id=self.bank, user_id=None)
 
         self.assertEqual(reserved_dins(rid), [self.din("PLT")])
 
@@ -137,7 +137,7 @@ class ReleaseMatchesComponentTests(unittest.TestCase):
         rid = accepted_request(self.bank, self.hospital, 1, component="Packed RBC")
 
         with self.assertRaises(app.HTTPException) as ctx:
-            app.confirm_release(rid, facility_id=self.bank)
+            app.confirm_release(rid, facility_id=self.bank, user_id=None)
 
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("only 0", ctx.exception.detail)
@@ -148,7 +148,7 @@ class ReleaseMatchesComponentTests(unittest.TestCase):
         add(self.bank, self.din("A"), 20, blood_type="A+")
         rid = accepted_request(self.bank, self.hospital, 1, component="Packed RBC", blood_type="O+")
         with self.assertRaises(app.HTTPException):
-            app.confirm_release(rid, facility_id=self.bank)
+            app.confirm_release(rid, facility_id=self.bank, user_id=None)
 
     def test_a_request_with_no_recorded_component_is_refused_with_a_clear_reason(self):
         # The 12 requests that predate the column. Inserted directly, as a migrated row would be.
@@ -159,7 +159,7 @@ class ReleaseMatchesComponentTests(unittest.TestCase):
                             {"h": self.hospital, "b": self.bank}).scalar()
 
         with self.assertRaises(app.HTTPException) as ctx:
-            app.confirm_release(rid, facility_id=self.bank)
+            app.confirm_release(rid, facility_id=self.bank, user_id=None)
 
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("does not say which component", ctx.exception.detail)
@@ -189,14 +189,14 @@ class ReleaseExpiryMarginTests(unittest.TestCase):
         rid = accepted_request(self.bank, self.hospital, 1)
         with mock.patch.dict(app.MIN_DAYS_TO_EXPIRY_AT_RELEASE, clear=True):  # no margin configured at all: the floor remains
             with self.assertRaises(app.HTTPException):
-                app.confirm_release(rid, facility_id=self.bank)
+                app.confirm_release(rid, facility_id=self.bank, user_id=None)
         self.assertEqual(reserved_dins(rid), [])
 
     def test_the_floor_alone_lets_a_unit_expiring_tomorrow_through(self):
         add(self.bank, self.din("TOMORROW"), 1)
         rid = accepted_request(self.bank, self.hospital, 1)
         with mock.patch.dict(app.MIN_DAYS_TO_EXPIRY_AT_RELEASE, clear=True):
-            app.confirm_release(rid, facility_id=self.bank)
+            app.confirm_release(rid, facility_id=self.bank, user_id=None)
         self.assertEqual(reserved_dins(rid), [self.din("TOMORROW")])
 
     def test_packed_rbc_needs_its_full_margin_and_the_unit_exactly_at_the_cutoff_is_released(self):
@@ -204,21 +204,21 @@ class ReleaseExpiryMarginTests(unittest.TestCase):
         add(self.bank, self.din("SHORT"), margin - 1)
         add(self.bank, self.din("EDGE"), margin)
         rid = accepted_request(self.bank, self.hospital, 1)
-        app.confirm_release(rid, facility_id=self.bank)
+        app.confirm_release(rid, facility_id=self.bank, user_id=None)
         self.assertEqual(reserved_dins(rid), [self.din("EDGE")])
 
     def test_the_margin_is_applied_before_fefo_so_the_nearest_expiry_is_not_the_one_chosen(self):
         add(self.bank, self.din("TODAY"), 0)       # FEFO's first choice, and exactly what the margin must remove
         add(self.bank, self.din("LATER"), 10)
         rid = accepted_request(self.bank, self.hospital, 1)
-        app.confirm_release(rid, facility_id=self.bank)
+        app.confirm_release(rid, facility_id=self.bank, user_id=None)
         self.assertEqual(reserved_dins(rid), [self.din("LATER")])
 
     def test_fefo_still_picks_the_earliest_of_the_units_that_qualify(self):
         for n, days in enumerate((30, 5, 12, 0)):
             add(self.bank, self.din(n), days)
         rid = accepted_request(self.bank, self.hospital, 2)
-        app.confirm_release(rid, facility_id=self.bank)
+        app.confirm_release(rid, facility_id=self.bank, user_id=None)
         self.assertEqual(reserved_dins(rid), sorted([self.din(1), self.din(2)]))
 
     def test_each_component_has_its_own_margin(self):
@@ -226,9 +226,9 @@ class ReleaseExpiryMarginTests(unittest.TestCase):
         add(self.bank, self.din("RBC"), 1)                         # not enough for packed RBC (margin 3)
         plt = accepted_request(self.bank, self.hospital, 1, component="Platelets")
         rbc = accepted_request(self.bank, self.hospital, 1, component="Packed RBC")
-        app.confirm_release(plt, facility_id=self.bank)
+        app.confirm_release(plt, facility_id=self.bank, user_id=None)
         with self.assertRaises(app.HTTPException):
-            app.confirm_release(rbc, facility_id=self.bank)
+            app.confirm_release(rbc, facility_id=self.bank, user_id=None)
         self.assertEqual(reserved_dins(plt), [self.din("PLT")])
 
     def test_a_short_release_says_how_many_units_the_margin_held_back(self):
@@ -237,7 +237,7 @@ class ReleaseExpiryMarginTests(unittest.TestCase):
         add(self.bank, self.din("OK"), 20)
         rid = accepted_request(self.bank, self.hospital, 2)
         with self.assertRaises(app.HTTPException) as ctx:
-            app.confirm_release(rid, facility_id=self.bank)
+            app.confirm_release(rid, facility_id=self.bank, user_id=None)
         self.assertIn("only 1", ctx.exception.detail)
         self.assertIn("2 more expire within 3 days", ctx.exception.detail)
         self.assertEqual(reserved_dins(rid), [])
@@ -245,9 +245,9 @@ class ReleaseExpiryMarginTests(unittest.TestCase):
     def test_receipt_is_unchanged_and_still_accepts_a_unit_expiring_on_the_receipt_day(self):
         add(self.bank, self.din("EDGE"), 3)
         rid = accepted_request(self.bank, self.hospital, 1)
-        app.confirm_release(rid, facility_id=self.bank)
+        app.confirm_release(rid, facility_id=self.bank, user_id=None)
         with mock.patch.object(app, "business_today", return_value=TODAY + timedelta(days=3)):
-            result = app.confirm_receipt(rid, facility_id=self.hospital)
+            result = app.confirm_receipt(rid, facility_id=self.hospital, user_id=None)
         self.assertEqual((result["status"], result["units_transferred"]), ("completed", 1))
 
 
@@ -278,11 +278,11 @@ class NearbySearchComponentTests(unittest.TestCase):
                 available = self.search(component=comp)["available"]
                 rid = accepted_request(self.bank, self.hospital, 1, component=comp)
                 if available:
-                    app.confirm_release(rid, facility_id=self.bank)
+                    app.confirm_release(rid, facility_id=self.bank, user_id=None)
                     self.assertEqual(len(reserved_dins(rid)), 1)
                 else:
                     with self.assertRaises(app.HTTPException):
-                        app.confirm_release(rid, facility_id=self.bank)
+                        app.confirm_release(rid, facility_id=self.bank, user_id=None)
 
     def test_units_inside_the_release_margin_are_not_counted(self):
         add(self.bank, self.din("SOON"), 2)   # releasable only with a margin of 2 or less; packed RBC needs 3

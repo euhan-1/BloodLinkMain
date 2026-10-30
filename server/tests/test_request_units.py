@@ -40,7 +40,7 @@ def ledger(request_id):
 
 def receive_on(day_offset, request_id, hospital):
     with mock.patch.object(app, "business_today", return_value=TODAY + timedelta(days=day_offset)):
-        return app.confirm_receipt(request_id, facility_id=hospital)
+        return app.confirm_receipt(request_id, facility_id=hospital, user_id=None)
 
 
 class LedgerBase(unittest.TestCase):
@@ -55,7 +55,7 @@ class LedgerBase(unittest.TestCase):
         for n, days in enumerate(expiries):
             add(self.bank, self.din(n), days)
         rid = accepted_request(self.bank, self.hospital, quantity or len(expiries))
-        app.confirm_release(rid, facility_id=self.bank)
+        app.confirm_release(rid, facility_id=self.bank, user_id=None)
         return rid
 
 
@@ -80,7 +80,7 @@ class ReleaseWritesTheLedgerTests(LedgerBase):
         add(self.bank, self.din(0), 6)
         rid = accepted_request(self.bank, self.hospital, 1)
         with mock.patch.object(app, "business_today", return_value=TODAY + timedelta(days=2)):
-            app.confirm_release(rid, facility_id=self.bank)
+            app.confirm_release(rid, facility_id=self.bank, user_id=None)
         self.assertEqual(ledger(rid)[0][7], 4)
 
     def test_nothing_is_written_for_a_request_that_is_accepted_but_never_released(self):
@@ -92,13 +92,13 @@ class ReleaseWritesTheLedgerTests(LedgerBase):
         add(self.bank, self.din(0), 10)
         rid = accepted_request(self.bank, self.hospital, 2)  # asks for two, one exists
         with self.assertRaises(app.HTTPException):
-            app.confirm_release(rid, facility_id=self.bank)
+            app.confirm_release(rid, facility_id=self.bank, user_id=None)
         self.assertEqual(ledger(rid), [])
 
     def test_a_second_release_of_the_same_request_cannot_double_the_ledger(self):
         rid = self.released([5])
         with self.assertRaises(app.HTTPException):
-            app.confirm_release(rid, facility_id=self.bank)
+            app.confirm_release(rid, facility_id=self.bank, user_id=None)
         self.assertEqual(len(ledger(rid)), 1)
 
 
@@ -212,7 +212,7 @@ class ReceiptOutcomeTests(LedgerBase):
                 for n, days in enumerate(expiries):
                     add(bank, f"{tag}-{n}", days)
                 rid = accepted_request(bank, hospital, len(expiries))
-                app.confirm_release(rid, facility_id=bank)
+                app.confirm_release(rid, facility_id=bank, user_id=None)
                 receive_on(day, rid, hospital)
                 in_ledger = q("SELECT din, expires_date, reason FROM request_units WHERE request_id = :r AND outcome = 'failed' ORDER BY din", r=rid)
                 in_failures = q("SELECT din, expires_date, reason FROM request_unit_failures WHERE request_id = :r ORDER BY din", r=rid)

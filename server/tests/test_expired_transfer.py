@@ -56,6 +56,7 @@ def delete_facilities(ids):
             f"DELETE FROM request_messages WHERE request_id IN {reqs}",
             "DELETE FROM blood_units WHERE facility_id = ANY(:f)",
             "DELETE FROM requests WHERE requesting_facility_id = ANY(:f) OR supplying_facility_id = ANY(:f)",
+            "DELETE FROM users WHERE facility_id = ANY(:f)",  # after requests: requests.*_by point at users
             "DELETE FROM notifications WHERE facility_id = ANY(:f)",
             "DELETE FROM inventory_snapshots WHERE facility_id = ANY(:f)",
             "DELETE FROM upload_history WHERE facility_id = ANY(:f)",
@@ -77,14 +78,14 @@ def add_unit(facility_id, din, expires_in_days):
 def released_request(bank, hospital, quantity):
     req = app.create_request(app.CreateRequestBody(supplying_facility_id=bank, blood_type="O+", quantity=quantity,
                                                    component="Packed RBC", emergency_type="trauma"), requesting_facility_id=hospital)
-    app.accept_request(req["id"], facility_id=bank)
-    app.confirm_release(req["id"], facility_id=bank)
+    app.accept_request(req["id"], facility_id=bank, user_id=None)
+    app.confirm_release(req["id"], facility_id=bank, user_id=None)
     return req["id"]
 
 
 def receive_on(day_offset, request_id, hospital):
     with mock.patch.object(app, "business_today", return_value=TODAY + timedelta(days=day_offset)):
-        return app.confirm_receipt(request_id, facility_id=hospital)
+        return app.confirm_receipt(request_id, facility_id=hospital, user_id=None)
 
 
 class ExpiredBeforeReceiptTests(unittest.TestCase):

@@ -585,7 +585,15 @@ CREATE TABLE public.requests (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     supplier_confirmed_at timestamp with time zone,
     requester_confirmed_at timestamp with time zone,
-    component text
+    component text,
+    accepted_at timestamp with time zone,
+    declined_at timestamp with time zone,
+    cancelled_at timestamp with time zone,
+    accepted_by bigint,
+    declined_by bigint,
+    cancelled_by bigint,
+    released_by bigint,
+    received_by bigint
 );
 
 
@@ -1393,6 +1401,20 @@ CREATE TABLE public.request_units (
 );
 
 CREATE INDEX idx_request_units_unit ON public.request_units USING btree (blood_unit_id);
+
+
+--
+-- Name: requests stage 3 actor foreign keys; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- HAND-WRITTEN (stage 3), appended at the end so users' primary key exists: not pg_dump output. Regenerate this file
+-- after the migration is applied (pg_dump will also emit the COMMENT ON COLUMN lines).
+--
+
+ALTER TABLE ONLY public.requests
+    ADD CONSTRAINT requests_accepted_by_fkey FOREIGN KEY (accepted_by) REFERENCES public.users(id),
+    ADD CONSTRAINT requests_declined_by_fkey FOREIGN KEY (declined_by) REFERENCES public.users(id),
+    ADD CONSTRAINT requests_cancelled_by_fkey FOREIGN KEY (cancelled_by) REFERENCES public.users(id),
+    ADD CONSTRAINT requests_released_by_fkey FOREIGN KEY (released_by) REFERENCES public.users(id),
+    ADD CONSTRAINT requests_received_by_fkey FOREIGN KEY (received_by) REFERENCES public.users(id);
 
 
 --

@@ -4183,6 +4183,9 @@ def create_request(body: CreateRequestBody, requesting_facility_id: int = Depend
     return dict(row)
 
 
+# Every transition stamps when it happened and which account did it (accepted_at/by, declined_at/by, cancelled_at/by,
+# supplier_confirmed_at + released_by, requester_confirmed_at + received_by), in the same transaction as the status change.
+# The actor is the facility's one account (get_acting_user_id), never a named person, and is NULL under the dev override.
 # Status lifecycle: pending -> accepted | declined | cancelled ; accepted ->
 # completed (completed requires supplier_confirmed_at then
 # requester_confirmed_at, in that order — see confirm_release/confirm_receipt
@@ -4273,7 +4276,10 @@ def list_incoming_requests(facility_id: int = Depends(get_acting_facility_id)):
 
 
 @app.post("/requests/{request_id}/accept")
-def accept_request(request_id: int, facility_id: int = Depends(get_acting_facility_id)):
+def accept_request(
+    request_id: int, facility_id: int = Depends(get_acting_facility_id),
+    user_id: Optional[int] = Depends(get_acting_user_id),
+):
     with engine.begin() as conn:
         req = conn.execute(text("SELECT * FROM requests WHERE id = :id"), {"id": request_id}).mappings().first()
         if req is None:
@@ -4283,8 +4289,11 @@ def accept_request(request_id: int, facility_id: int = Depends(get_acting_facili
         if req["status"] != "pending":
             raise HTTPException(status_code=400, detail=f"cannot accept a request with status {req['status']!r}")
         result = conn.execute(
-            text("UPDATE requests SET status = 'accepted' WHERE id = :id AND status = 'pending'"),
-            {"id": request_id},
+            text(
+                "UPDATE requests SET status = 'accepted', accepted_at = now(), accepted_by = :user_id "
+                "WHERE id = :id AND status = 'pending'"
+            ),
+            {"id": request_id, "user_id": user_id},
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=409, detail="request status changed concurrently; refresh and try again")
@@ -4309,7 +4318,10 @@ def accept_request(request_id: int, facility_id: int = Depends(get_acting_facili
 
 
 @app.post("/requests/{request_id}/decline")
-def decline_request(request_id: int, facility_id: int = Depends(get_acting_facility_id)):
+def decline_request(
+    request_id: int, facility_id: int = Depends(get_acting_facility_id),
+    user_id: Optional[int] = Depends(get_acting_user_id),
+):
     with engine.begin() as conn:
         req = conn.execute(text("SELECT * FROM requests WHERE id = :id"), {"id": request_id}).mappings().first()
         if req is None:
@@ -4319,8 +4331,11 @@ def decline_request(request_id: int, facility_id: int = Depends(get_acting_facil
         if req["status"] != "pending":
             raise HTTPException(status_code=400, detail=f"cannot decline a request with status {req['status']!r}")
         result = conn.execute(
-            text("UPDATE requests SET status = 'declined' WHERE id = :id AND status = 'pending'"),
-            {"id": request_id},
+            text(
+                "UPDATE requests SET status = 'declined', declined_at = now(), declined_by = :user_id "
+                "WHERE id = :id AND status = 'pending'"
+            ),
+            {"id": request_id, "user_id": user_id},
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=409, detail="request status changed concurrently; refresh and try again")
@@ -4337,7 +4352,10 @@ def decline_request(request_id: int, facility_id: int = Depends(get_acting_facil
 
 
 @app.post("/requests/{request_id}/cancel")
-def cancel_request(request_id: int, facility_id: int = Depends(get_acting_facility_id)):
+def cancel_request(
+    request_id: int, facility_id: int = Depends(get_acting_facility_id),
+    user_id: Optional[int] = Depends(get_acting_user_id),
+):
     """Requester-initiated withdrawal of their own request — the mirror of
     decline_request (supplier-initiated) above. Only reachable from pending:
     once a supplier has accepted, the requester can no longer unilaterally
@@ -4352,8 +4370,11 @@ def cancel_request(request_id: int, facility_id: int = Depends(get_acting_facili
         if req["status"] != "pending":
             raise HTTPException(status_code=400, detail=f"cannot cancel a request with status {req['status']!r}")
         result = conn.execute(
-            text("UPDATE requests SET status = 'cancelled' WHERE id = :id AND status = 'pending'"),
-            {"id": request_id},
+            text(
+                "UPDATE requests SET status = 'cancelled', cancelled_at = now(), cancelled_by = :user_id "
+                "WHERE id = :id AND status = 'pending'"
+            ),
+            {"id": request_id, "user_id": user_id},
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=409, detail="request status changed concurrently; refresh and try again")
@@ -4382,7 +4403,10 @@ def _select_fefo_units(candidates: list[dict], quantity: int) -> list[dict]:
 
 
 @app.post("/requests/{request_id}/confirm-release")
-def confirm_release(request_id: int, facility_id: int = Depends(get_acting_facility_id)):
+def confirm_release(
+    request_id: int, facility_id: int = Depends(get_acting_facility_id),
+    user_id: Optional[int] = Depends(get_acting_user_id),
+):
     """Supplier confirms release: FEFO-selects specific blood_units and marks
     them reserved_for_request_id. Does NOT move them yet — the actual
     facility_id reassignment only happens once the requester also confirms
@@ -4473,10 +4497,10 @@ def confirm_release(request_id: int, facility_id: int = Depends(get_acting_facil
         )
         result = conn.execute(
             text(
-                "UPDATE requests SET supplier_confirmed_at = now() "
+                "UPDATE requests SET supplier_confirmed_at = now(), released_by = :user_id "
                 "WHERE id = :id AND status = 'accepted' AND supplier_confirmed_at IS NULL"
             ),
-            {"id": request_id},
+            {"id": request_id, "user_id": user_id},
         )
         if result.rowcount == 0:
             raise HTTPException(status_code=409, detail="release already confirmed or request status changed concurrently")
@@ -4494,7 +4518,10 @@ def confirm_release(request_id: int, facility_id: int = Depends(get_acting_facil
 
 
 @app.post("/requests/{request_id}/confirm-receipt")
-def confirm_receipt(request_id: int, facility_id: int = Depends(get_acting_facility_id)):
+def confirm_receipt(
+    request_id: int, facility_id: int = Depends(get_acting_facility_id),
+    user_id: Optional[int] = Depends(get_acting_user_id),
+):
     """Requester confirms receipt: this is the actual transfer — reassigns
     facility_id on the units the supplier reserved, then marks completed.
     Requires supplier to have confirmed release first (enforced ordering).
@@ -4590,11 +4617,11 @@ def confirm_receipt(request_id: int, facility_id: int = Depends(get_acting_facil
         status = "completed" if received_ids else "failed"
         completion = conn.execute(
             text(
-                "UPDATE requests SET requester_confirmed_at = now(), status = :status "
+                "UPDATE requests SET requester_confirmed_at = now(), received_by = :user_id, status = :status "
                 "WHERE id = :id AND status = 'accepted' AND supplier_confirmed_at IS NOT NULL "
                 "AND requester_confirmed_at IS NULL"
             ),
-            {"id": request_id, "status": status},
+            {"id": request_id, "status": status, "user_id": user_id},
         )
         if completion.rowcount == 0:
             raise HTTPException(status_code=409, detail="receipt already confirmed or request status changed concurrently")

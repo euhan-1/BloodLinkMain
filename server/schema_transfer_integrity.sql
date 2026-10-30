@@ -52,3 +52,33 @@ CREATE TABLE IF NOT EXISTS request_units (
 );
 
 CREATE INDEX IF NOT EXISTS idx_request_units_unit ON request_units (blood_unit_id);
+
+-- Stage 3: when each transition happened, and which account did it. All nullable, and NOT backfilled: a request that
+-- changed state before these columns existed has NULL here, and NULL means "not recorded", never "did not happen". A
+-- timestamp derived afterwards from a notification would put scripted test traffic on the record as a clinical event.
+--
+-- supplier_confirmed_at (release) and requester_confirmed_at (receipt) already exist and are not renamed; released_by
+-- and received_by pair with them. Each timestamp is set with now() in the same transaction as its status change, so a
+-- transition that fails writes neither the timestamp nor the actor.
+--
+-- The actor columns are the user id of the logged-in account (main.get_acting_user_id, as upload_history.uploaded_by).
+-- BloodLink has one account per facility by design, so this records WHICH FACILITY'S ACCOUNT acted, not which person at
+-- that facility. NULL also where no real user stands behind the call (the dev-only facility override).
+ALTER TABLE requests
+    ADD COLUMN IF NOT EXISTS accepted_at timestamptz,
+    ADD COLUMN IF NOT EXISTS declined_at timestamptz,
+    ADD COLUMN IF NOT EXISTS cancelled_at timestamptz,
+    ADD COLUMN IF NOT EXISTS accepted_by bigint REFERENCES users(id),
+    ADD COLUMN IF NOT EXISTS declined_by bigint REFERENCES users(id),
+    ADD COLUMN IF NOT EXISTS cancelled_by bigint REFERENCES users(id),
+    ADD COLUMN IF NOT EXISTS released_by bigint REFERENCES users(id),
+    ADD COLUMN IF NOT EXISTS received_by bigint REFERENCES users(id);
+
+COMMENT ON COLUMN requests.accepted_at IS 'When the supplier accepted. NULL = not recorded (requests before this column), or not accepted.';
+COMMENT ON COLUMN requests.declined_at IS 'When the supplier declined. NULL = not recorded (requests before this column), or not declined.';
+COMMENT ON COLUMN requests.cancelled_at IS 'When the requester cancelled. NULL = not recorded (requests before this column), or not cancelled.';
+COMMENT ON COLUMN requests.accepted_by IS 'The supplier facility''s account that accepted. One account per facility: identifies the facility''s login, not a named person. NULL = not recorded.';
+COMMENT ON COLUMN requests.declined_by IS 'The supplier facility''s account that declined. One account per facility: identifies the facility''s login, not a named person. NULL = not recorded.';
+COMMENT ON COLUMN requests.cancelled_by IS 'The requester facility''s account that cancelled. One account per facility: identifies the facility''s login, not a named person. NULL = not recorded.';
+COMMENT ON COLUMN requests.released_by IS 'The supplier facility''s account that confirmed release (pairs with supplier_confirmed_at). One account per facility: not a named person. NULL = not recorded.';
+COMMENT ON COLUMN requests.received_by IS 'The requester facility''s account that confirmed receipt (pairs with requester_confirmed_at). One account per facility: not a named person. NULL = not recorded.';

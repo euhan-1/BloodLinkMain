@@ -178,7 +178,7 @@ class PrioritySortEndpointTests(unittest.TestCase):
         # trauma request is accepted it stops being movable and drops back to where its creation time puts it.
         made = self.seed([("restock", "pending", "restock", 1), ("trauma", "pending", "trauma", 2)])
         self.assertEqual(self.names(app.list_incoming_requests(facility_id=self.bank), made), ["trauma", "restock"])
-        app.accept_request(made["trauma"], facility_id=self.bank)
+        app.accept_request(made["trauma"], facility_id=self.bank, user_id=None)
         self.assertEqual(self.names(app.list_incoming_requests(facility_id=self.bank), made), ["restock", "trauma"])
 
     def test_priority_never_crosses_between_facilities(self):
