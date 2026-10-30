@@ -4688,6 +4688,134 @@ def _require_request_participant(conn, request_id: int, facility_id: int) -> dic
     return dict(req)
 
 
+# The order a request moves through, which is also the order its timeline reads in.
+_TIMELINE_KINDS = ("sent", "accepted", "released", "received", "declined", "cancelled")
+
+
+def _request_timeline(
+    req: dict, names: dict[int, str], emails: dict[int, str], units: list[dict], failures: list[dict],
+) -> list[dict]:
+    """The request's events, DERIVED from its status and timestamps rather than stored in an events table, so they cannot
+    drift out of agreement with the row. The lifecycle is small and fixed: sent, then accepted, released and received, or
+    ended by declined or cancelled.
+
+    An event is listed whenever the request's state shows it happened, even if its time or actor was never captured (a
+    request from before those columns existed): `at` or `user_id` is then None and reads as "not recorded". Nothing is
+    hidden because it is missing. `order_at` is where the event sits among the chat messages: its own time, or the
+    previous event's when it has none.
+
+    `account_email` is the email of the facility's one account (see get_acting_user_id), a login and not a named person;
+    the facility is already named on the event. Nothing records who sent a request, so "sent" never has one. None also
+    where the user id is recorded but no longer resolves to an email.
+
+    `units` (on released) and `outcome` (on received) come from the per-unit ledger when it has rows for this request;
+    otherwise units is None ("not recorded") and the outcome falls back to request_unit_failures, the only record a request
+    released before the ledger existed has.
+    """
+    status = req["status"]
+    requester, supplier = req["requesting_facility_id"], req["supplying_facility_id"]
+    released = req["supplier_confirmed_at"] is not None
+    present = {
+        "sent": True,
+        "accepted": req["accepted_at"] is not None or released or status in ("accepted", "completed", "failed"),
+        "released": released,
+        "received": req["requester_confirmed_at"] is not None,
+        "declined": req["declined_at"] is not None or status == "declined",
+        "cancelled": req["cancelled_at"] is not None or status == "cancelled",
+    }
+    at = {"sent": req["created_at"], "accepted": req["accepted_at"], "released": req["supplier_confirmed_at"],
+          "received": req["requester_confirmed_at"], "declined": req["declined_at"], "cancelled": req["cancelled_at"]}
+    actor = {"sent": None, "accepted": req["accepted_by"], "released": req["released_by"], "received": req["received_by"],
+             "declined": req["declined_by"], "cancelled": req["cancelled_by"]}
+    side = {"sent": requester, "accepted": supplier, "released": supplier, "received": requester, "declined": supplier,
+            "cancelled": requester}
+
+    events, previous = [], req["created_at"]
+    for kind in _TIMELINE_KINDS:
+        if not present[kind]:
+            continue
+        event = {"kind": kind, "at": at[kind], "order_at": at[kind] or previous, "facility_id": side[kind],
+                 "facility_name": names.get(side[kind]),
+                 "account_email": emails.get(actor[kind]) if actor[kind] is not None else None}
+        if kind == "released":
+            event["units"] = (
+                {"count": len(units), "dins": [u["din"] for u in units],
+                 "components": sorted({u["component"] for u in units})} if units else None
+            )
+        if kind == "received":
+            if units:
+                failed = [{"din": u["din"], "reason": u["reason"]} for u in units if u["outcome"] == "failed"]
+                arrived = sum(1 for u in units if u["outcome"] == "received")
+            else:
+                failed = [{"din": f["din"], "reason": f["reason"]} for f in failures]
+                arrived = req["quantity"] - len(failed)
+            event["outcome"] = {"arrived": arrived, "failed": failed, "from_ledger": bool(units)}
+        events.append(event)
+        previous = event["order_at"]
+    return events
+
+
+@app.get("/requests/{request_id}")
+def get_request_detail(request_id: int, facility_id: int = Depends(get_acting_facility_id)):
+    """One request in full, for its chat timeline and its receipt: the request, both facilities, the derived events
+    (see _request_timeline), and the per-unit ledger. Participants only, like the chat. The chat re-fetches this alongside
+    its messages, so the timeline is as fresh as the thread.
+
+    The response shape is decided once here: the timeline and the receipt render the same `timeline` and `units`, and both
+    facilities get exactly the same content (nothing is shaped by who is asking, beyond who may ask).
+    `message_count` is how many chat messages the request holds; the receipt states the count without reproducing them.
+    `units_recorded` is False for a request released before the ledger existed, in which case `units` is empty and the
+    receipt says so instead of hiding the section."""
+    with engine.connect() as conn:
+        req = _require_request_participant(conn, request_id, facility_id)
+        facilities = {
+            r["id"]: dict(r) for r in conn.execute(
+                text("SELECT id, name, facility_type, address, doh_license_number FROM facilities WHERE id IN (:a, :b)"),
+                {"a": req["requesting_facility_id"], "b": req["supplying_facility_id"]},
+            ).mappings().all()
+        }
+        units = [dict(r) for r in conn.execute(
+            text(
+                """
+                SELECT din, blood_type, component, volume_ml, collected_date, expires_date, origin_location,
+                       days_remaining_at_release, outcome, reason, days_remaining_at_receipt
+                FROM request_units WHERE request_id = :r ORDER BY din
+                """
+            ),
+            {"r": request_id},
+        ).mappings().all()]
+        failures = [dict(r) for r in conn.execute(
+            text("SELECT din, reason FROM request_unit_failures WHERE request_id = :r ORDER BY din"), {"r": request_id}
+        ).mappings().all()]
+        actor_ids = [req[k] for k in ("accepted_by", "declined_by", "cancelled_by", "released_by", "received_by") if req[k] is not None]
+        emails = dict(conn.execute(
+            text("SELECT id, email FROM users WHERE id = ANY(:ids)"), {"ids": actor_ids}
+        ).all()) if actor_ids else {}
+        message_count = conn.execute(
+            text("SELECT count(*) FROM request_messages WHERE request_id = :r"), {"r": request_id}
+        ).scalar()
+    timeline = _request_timeline(req, {fid: f["name"] for fid, f in facilities.items()}, emails, units, failures)
+    received = next((e["outcome"] for e in timeline if e["kind"] == "received"), None)
+    return {
+        "request": {
+            "id": req["id"], "status": req["status"], "blood_type": req["blood_type"], "component": req["component"],
+            "quantity": req["quantity"], "emergency_type": req["emergency_type"], "created_at": req["created_at"],
+            "supplier_confirmed_at": req["supplier_confirmed_at"], "requester_confirmed_at": req["requester_confirmed_at"],
+            "requesting_facility": facilities[req["requesting_facility_id"]],
+            "supplying_facility": facilities[req["supplying_facility_id"]],
+        },
+        "timeline": timeline,
+        "units": units,
+        "units_recorded": bool(units),
+        "message_count": message_count,
+        "summary": {
+            "asked": req["quantity"],
+            "received": received["arrived"] if received else None,
+            "failed": len(received["failed"]) if received else None,
+        },
+    }
+
+
 @app.get("/requests/{request_id}/messages")
 def list_request_messages(request_id: int, facility_id: int = Depends(get_acting_facility_id)):
     """Real coordination-chat history for one request/transfer — replaces

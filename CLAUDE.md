@@ -108,13 +108,21 @@ requests, SARIMAX demand forecasting, donor broadcast.
   person, and is NULL under the dev override. Nothing is backfilled: NULL means "not recorded", never "did not happen".
   The five transition functions take `user_id`, so tests call them with `user_id=None` (a bare call would pass the
   `Depends` object into SQL, as for `uploaded_by`).
+- **A request's timeline is derived, not stored** (`_request_timeline`, served by `GET /requests/{id}`, which the chat
+  re-fetches with its messages every 4 s while the browser tab is visible; the Live label is the last poll's result). An
+  event is listed whenever status and timestamps show it happened; a time or account never captured is None and reads
+  "not recorded", never omitted. An event's account is the account's email (not an id), shown to both facilities. The
+  receipt (`/receipt/{id}`, `screens/Receipt.tsx`, printable via `print:` classes) renders the same `timeline` and
+  `units`, the same page for both facilities, states how many chat messages exist without reproducing them, and always
+  says what BloodLink does not record (condition, temperature, transport, signatures). Release and receipt events name the units from `request_units`, falling back to `request_unit_failures`
+  for a request released before the ledger existed.
 - **Undo** reads `inventory_snapshot_write_log` to restore displaced counts, and
   clears `facility_forecast_cache` for the facility.
 
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (395 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (419 tests plus
   134 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
@@ -126,7 +134,8 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `node scripts/check_forecast_source_tags.ts` (per-type forecast source tags) and
   `node scripts/check_trend_chart.ts` (trend chart history/forecast data) and
   `node scripts/check_incoming_groups.ts` (the blood bank's incoming-request sections) and
-  `node scripts/check_components.ts` (request components match the server's), each printing `ok`, plus
+  `node scripts/check_components.ts` (request components match the server's) and
+  `node scripts/check_request_timeline.ts` (status-event wording and the chat thread), each printing `ok`, plus
   `npm run typecheck`. The frontend has no component test runner.
   A red suite is a finding, not a footnote — "known failure" is how a real
   bug hides.
