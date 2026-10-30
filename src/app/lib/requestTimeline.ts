@@ -5,7 +5,7 @@
 // or account that was never captured arrives as null and is shown as "not recorded", never left out.
 
 import { EMERGENCY_TYPE_LABELS, type EmergencyType } from "./requestTypes.ts";
-import { formatDateTime } from "./dateFormat.ts";
+import { dayKey, formatDate, formatDateTime } from "./dateFormat.ts";
 
 // The server's _TIMELINE_KINDS, in lifecycle order (scripts/check_request_timeline.ts compares them).
 export const TIMELINE_KINDS = ["sent", "accepted", "released", "received", "declined", "cancelled"] as const;
@@ -155,6 +155,31 @@ export function mergeThread<M extends { id: number | string; created_at: string 
   ];
   items.sort((a, b) => a.time - b.time || a.rank - b.rank || a.seq - b.seq);
   return items;
+}
+
+export type DayMarker = { type: "day"; key: string; label: string };
+
+// Day separators for the chat bubbles. A bubble carries only a time, and the status events already carry full dates, so the
+// separators have to cover the bubbles and nothing else. When everything in the thread (events and messages) falls on one
+// day there are none: a time is unambiguous. Once the thread spans more than one day, each run of bubbles that starts on a
+// new day, and the first run, gets one ("31 Oct 2026") above it, so every bubble's day can be read. A run is the bubbles
+// since the last day change; events in between do not break it, as they have no separators of their own.
+export function withDaySeparators<M extends { created_at: string }>(
+  items: ThreadItem<M>[], timeZone?: string,
+): (ThreadItem<M> | DayMarker)[] {
+  const dayOf = (time: number) => dayKey(new Date(time), timeZone);
+  if (new Set(items.map((i) => dayOf(i.time))).size < 2) return items;
+  const out: (ThreadItem<M> | DayMarker)[] = [];
+  let lastBubbleDay = "";
+  for (const item of items) {
+    if (item.type === "message") {
+      const day = dayOf(item.time);
+      if (day !== lastBubbleDay) out.push({ type: "day", key: `d-${day}-${item.key}`, label: formatDate(new Date(item.time), timeZone) });
+      lastBubbleDay = day;
+    }
+    out.push(item);
+  }
+  return out;
 }
 
 // Whether the request list the screen holds has fallen behind what the server just reported for this request, so the lists

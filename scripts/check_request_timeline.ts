@@ -2,7 +2,7 @@
 // Run: node scripts/check_request_timeline.ts
 import { readFileSync } from "node:fs";
 import {
-  describeEvent, eventAccountText, eventDetail, eventTimeText, EVENT_LABELS, listIsBehind, mergeThread, receiptTimeText, TIMELINE_KINDS, unitOutcomeText, type RequestDetail, type TimelineEvent,
+  describeEvent, eventAccountText, eventDetail, eventTimeText, EVENT_LABELS, listIsBehind, mergeThread, receiptTimeText, withDaySeparators, TIMELINE_KINDS, unitOutcomeText, type RequestDetail, type TimelineEvent,
 } from "../src/app/lib/requestTimeline.ts";
 
 const eq = (a: unknown, b: unknown, m: string) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m}: ${JSON.stringify(a)} !== ${JSON.stringify(b)}`); };
@@ -70,6 +70,32 @@ eq(mergeThread([], []).length, 0, "empty");
 const before = [ev("sent", 0)].map((e) => e.kind);
 mergeThread([msg(1, 1)], [ev("sent", 0)]);
 eq(before, ["sent"], "input untouched");
+
+// day separators: only the bubbles need them, and only once the thread spans more than one day
+const at = (day: string) => ({ ...ev("sent", 0), at: day, order_at: day });
+const bubble = (id: number, when: string) => ({ id, created_at: when, message: `m${id}` });
+const shape = (items: ReturnType<typeof withDaySeparators>) => items.map((i) => (i.type === "day" ? `DAY ${i.label}` : i.key));
+const day1 = "2026-10-30T12:27:00Z", day1b = "2026-10-30T13:00:00Z", day2 = "2026-10-31T06:30:00Z", day2b = "2026-10-31T09:00:00Z";
+const one = mergeThread([bubble(1, day1), bubble(2, day1b)], [ev("sent", 0, { at: "2026-10-30T12:00:00Z", order_at: "2026-10-30T12:00:00Z" })]);
+eq(shape(withDaySeparators(one, "UTC")), ["e-sent", "m-1", "m-2"], "one day, no separators");
+eq(withDaySeparators(one, "UTC") === one, true, "and the same items come back untouched");
+// REQ-54's case: a message at 20:27 (Manila) and another at 14:30 the next day, nothing between them
+const req54 = mergeThread([bubble(1, "2026-10-30T12:27:00Z"), bubble(2, "2026-10-31T06:30:00Z")], [ev("sent", 0, { at: "2026-10-30T12:25:00Z", order_at: "2026-10-30T12:25:00Z" })]);
+eq(shape(withDaySeparators(req54, "Asia/Manila")), ["e-sent", "DAY 30 Oct 2026", "m-1", "DAY 31 Oct 2026", "m-2"], "two days of bubbles: a separator above each run");
+// several bubbles on the same day share one separator
+const runs = mergeThread([bubble(1, day1), bubble(2, day1b), bubble(3, day2), bubble(4, day2b)], [ev("sent", 0, { at: "2026-10-30T11:00:00Z", order_at: "2026-10-30T11:00:00Z" })]);
+eq(shape(withDaySeparators(runs, "UTC")), ["e-sent", "DAY 30 Oct 2026", "m-1", "m-2", "DAY 31 Oct 2026", "m-3", "m-4"], "one separator per run");
+// an event in the middle of a day's run does not break it, and one on a new day does not get a separator (it has its own date)
+const withEvent = mergeThread([bubble(1, "2026-10-30T10:00:00Z"), bubble(2, "2026-10-30T14:00:00Z")], [ev("sent", 0, { at: "2026-10-30T09:00:00Z", order_at: "2026-10-30T09:00:00Z" }), ev("released", 2, { at: "2026-10-30T12:00:00Z", order_at: "2026-10-30T12:00:00Z" }), ev("received", 3, { at: "2026-10-31T09:00:00Z", order_at: "2026-10-31T09:00:00Z" })]);
+eq(shape(withDaySeparators(withEvent, "UTC")), ["e-sent", "DAY 30 Oct 2026", "m-1", "e-released", "m-2", "e-received"], "events never break a run and never get a separator");
+// the bubbles are all on one day but the thread is not: the bubbles still need their day
+const lateChat = mergeThread([bubble(1, day2)], [ev("sent", 0, { at: day1, order_at: day1 })]);
+eq(shape(withDaySeparators(lateChat, "UTC")), ["e-sent", "DAY 31 Oct 2026", "m-1"], "a thread spanning days labels even a single run");
+// a day is the viewer's calendar day: 23:30 and 00:30 Manila are the same instant range apart in UTC, a different day in Manila
+const around = mergeThread([bubble(1, "2026-10-31T15:30:00Z"), bubble(2, "2026-10-31T16:30:00Z")], []);
+eq(shape(withDaySeparators(around, "Asia/Manila")), ["DAY 31 Oct 2026", "m-1", "DAY 1 Nov 2026", "m-2"], "midnight in Manila is a day change");
+eq(shape(withDaySeparators(around, "UTC")), ["m-1", "m-2"], "and not in UTC");
+eq(withDaySeparators([], "UTC"), [], "empty");
 
 // the lists catch up when the server reports a different phase
 const row = { status: "accepted", supplier_confirmed_at: null, requester_confirmed_at: null };

@@ -21,6 +21,12 @@ export function formatDate(at: string | Date, timeZone?: string): string {
   return `${p.day} ${MONTHS[p.month - 1]} ${p.year}`;
 }
 
+// "2026-10-30": which calendar day an instant falls on, in `timeZone` (default the viewer's own). For comparing days, not display.
+export function dayKey(at: string | Date, timeZone?: string): string {
+  const p = parts(at, timeZone);
+  return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`;
+}
+
 // "20:27", the same 24-hour clock, for places that already say which day (a chat message under its day's events).
 export function formatTime(at: string | Date, timeZone?: string): string {
   const p = parts(at, timeZone);

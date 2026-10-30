@@ -21,10 +21,11 @@ import { TransferHistory } from "./TransferHistory";
 // since a coordination chat is a live conversation, not a background alert.
 const CHAT_MESSAGE_POLL_MS = 4000;
 
-// A blood bank's incoming list refreshes this often while the Request and chats tab is open and the browser tab is
-// visible (the same interval as the Dashboard's own polls). A request that arrives while a supplier is looking at the
-// page then shows up, in its place in the priority order, without a reload.
-const INCOMING_POLL_MS = 25000;
+// Both sides' request lists refresh this often while the browser tab is visible (the same interval as the Dashboard's own
+// polls), so a status change made by the other facility shows up on this one within the same window whichever side made it:
+// a request that arrives at a supplier appears in its place in the priority order, and a requester's "Awaiting response"
+// becomes "accepted" without a reload. Silent: no loading state, and a failed refresh leaves what is on screen alone.
+const REQUEST_LISTS_POLL_MS = 25000;
 
 type RequestTab = "sourcing" | "transfer" | "history";
 
@@ -458,13 +459,16 @@ export function RequestsScreen({
   // "cancelled on unmount" flag wouldn't stop a slower earlier response from
   // landing after a faster later one and silently reverting the list.
   const requestsRequestIdRef = useRef(0);
-  function fetchRequests() {
+  // silent = a background refresh, as for fetchIncoming below. The tab badge counts come from this list, so they refresh with it.
+  function fetchRequests(silent = false) {
     const requestId = ++requestsRequestIdRef.current;
-    setRequestsLoading(true);
-    setRequestsError(null);
+    if (!silent) {
+      setRequestsLoading(true);
+      setRequestsError(null);
+    }
     apiGet<RequestRow[]>("/requests")
       .then((data) => { if (requestId === requestsRequestIdRef.current) setRequests(data); })
-      .catch((err) => { if (requestId === requestsRequestIdRef.current) setRequestsError(err instanceof Error ? err.message : "Failed to load"); })
+      .catch((err) => { if (!silent && requestId === requestsRequestIdRef.current) setRequestsError(err instanceof Error ? err.message : "Failed to load"); })
       .finally(() => { if (requestId === requestsRequestIdRef.current) setRequestsLoading(false); });
   }
 
@@ -493,14 +497,19 @@ export function RequestsScreen({
     fetchIncoming();
   }, [actingFacilityId]);
 
-  // Keep the supplier's inbox fresh while they are looking at it: only blood banks have one, only on this tab, and not
-  // while the browser tab is in the background.
+  // Keep both lists fresh while the browser tab is visible, and catch up at once when it becomes visible again (a hidden tab
+  // does not poll, so it can be a long way behind). The requester's own list (and the badge counts built from it) is polled
+  // on every tab, since the badge is on every tab; the supplier's inbox only on the tab that shows it, and only blood banks
+  // have one.
   useEffect(() => {
-    if (!isBloodBankRequester || tab !== "transfer") return;
-    const timer = setInterval(() => {
-      if (document.visibilityState === "visible") fetchIncoming(true);
-    }, INCOMING_POLL_MS);
-    return () => clearInterval(timer);
+    const refresh = () => {
+      if (document.visibilityState !== "visible") return;
+      fetchRequests(true);
+      if (isBloodBankRequester && tab === "transfer") fetchIncoming(true);
+    };
+    const timer = setInterval(refresh, REQUEST_LISTS_POLL_MS);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isBloodBankRequester, tab, actingFacilityId]);
 
@@ -581,7 +590,7 @@ export function RequestsScreen({
         const key = `${det.request.status}:${det.request.supplier_confirmed_at}:${det.request.requester_confirmed_at}`;
         if (listIsBehind(listed, det.request) && key !== lastSyncedKey) {
           lastSyncedKey = key; // once per change, so a row that never matches cannot refetch every poll
-          fetchRequests();
+          fetchRequests(true);
           fetchIncoming(true);
         }
       } catch (err) {

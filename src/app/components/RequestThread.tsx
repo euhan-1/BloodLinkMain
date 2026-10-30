@@ -1,7 +1,8 @@
 import { Ban, CheckCircle, Package, PackageCheck, Send, XCircle, type LucideIcon } from "lucide-react";
 import { formatTime } from "../lib/dateFormat";
 import {
-  describeEvent, eventAccountText, eventTimeText, type RequestDetail, type ThreadItem, type TimelineEvent, type TimelineKind,
+  describeEvent, eventAccountText, eventTimeText, withDaySeparators, type DayMarker, type RequestDetail, type ThreadItem, type TimelineEvent,
+  type TimelineKind,
 } from "../lib/requestTimeline";
 
 type Message = { id: number; sender_facility_id: number; sender_facility_name: string; message: string; created_at: string };
@@ -50,14 +51,27 @@ function MessageBubble({ msg, own }: { msg: Message; own: boolean }) {
   );
 }
 
+// "31 Oct 2026" between runs of bubbles on different days: a hairline either side, the date in the middle.
+function DaySeparator({ label }: { label: string }) {
+  return (
+    <div role="separator" aria-label={label} className="flex items-center gap-3 text-[12px] font-semibold text-gray-600">
+      <span aria-hidden="true" className="flex-1 border-t border-gray-300" />
+      <span aria-hidden="true">{label}</span>
+      <span aria-hidden="true" className="flex-1 border-t border-gray-300" />
+    </div>
+  );
+}
+
 // The coordination chat and the request's history as one thread, in time order.
 export function RequestThread({
   items, request, actingFacilityId,
 }: { items: ThreadItem<Message>[]; request: RequestDetail["request"]; actingFacilityId: number | null }) {
   return (
     <>
-      {items.map((item) =>
-        item.type === "event" ? (
+      {withDaySeparators(items).map((item) =>
+        item.type === "day" ? (
+          <DaySeparator key={(item as DayMarker).key} label={(item as DayMarker).label} />
+        ) : item.type === "event" ? (
           <EventRow key={item.key} event={item.event} request={request} />
         ) : (
           <MessageBubble key={item.key} msg={item.message} own={item.message.sender_facility_id === actingFacilityId} />
