@@ -1,31 +1,26 @@
 import { useState, useRef, useEffect } from "react";
-import { AlertTriangle, ArrowRight, CheckCircle, Clock, MapPin, MessageSquare, Send } from "lucide-react";
-import { apiGet, apiPost } from "../lib/api";
+import { AlertTriangle, ArrowRight, CheckCircle, ChevronDown, Clock, MapPin, MessageSquare, Send } from "lucide-react";
+import { apiGet, apiPost, getMyFacilityProfile } from "../lib/api";
 import { getCurrentUser } from "../lib/session";
 import { getDevFacilityId, isDevModeEnabled } from "../lib/devMode";
 import { BloodTypeBadge } from "../components/BloodTypeBadge";
 import { Modal } from "../components/Modal";
 import { FacilityNetworkMap, type Facility } from "../components/FacilityNetworkMap";
+import { HospitalSourcingView } from "./HospitalSourcing";
 import { useFlashOnChange } from "../lib/motion";
-import { ALL_BLOOD_TYPES } from "../lib/statusTokens";
-import { EMERGENCY_TYPE_LABELS, type EmergencyType, type RequestRow } from "../lib/requestTypes";
+import { ALL_BLOOD_TYPES, BLOOD_COMPATIBILITY } from "../lib/statusTokens";
+import { EMERGENCY_TYPE_LABELS, groupIncomingRequests, isImmediateUse, type EmergencyType, type RequestRow } from "../lib/requestTypes";
 
 // Chat messages poll faster than notifications (App.tsx's NOTIFICATION_POLL_MS)
 // since a coordination chat is a live conversation, not a background alert.
 const CHAT_MESSAGE_POLL_MS = 4000;
 
-type RequestTab = "sourcing" | "transfer";
+// A blood bank's incoming list refreshes this often while the Request and chats tab is open and the browser tab is
+// visible (the same interval as the Dashboard's own polls). A request that arrives while a supplier is looking at the
+// page then shows up, in its place in the priority order, without a reload.
+const INCOMING_POLL_MS = 25000;
 
-const bloodCompatibility: Record<string, string[]> = {
-  "A+":  ["A+", "A-", "O+", "O-"],
-  "A-":  ["A-", "O-"],
-  "B+":  ["B+", "B-", "O+", "O-"],
-  "B-":  ["B-", "O-"],
-  "O+":  ["O+", "O-"],
-  "O-":  ["O-"],
-  "AB+": ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"],
-  "AB-": ["A-", "B-", "O-", "AB-"],
-};
+type RequestTab = "sourcing" | "transfer";
 
 // ─── Requests (Emergency Sourcing + Transfer) ─────────────────────────────────
 
@@ -70,14 +65,34 @@ type RequestMessage = {
   created_at: string;
 };
 
+// The reason as a tag. Two looks, because the server has two tiers: immediate use (trauma and scheduled surgery) and
+// restock. Scheduled surgery used to be blue, which meant nothing here.
+function ReasonTag({ reason }: { reason: string }) {
+  const label = EMERGENCY_TYPE_LABELS[reason as EmergencyType] ?? reason;
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded-full text-[12px] font-semibold border ${
+        isImmediateUse(reason)
+          ? "bg-status-critical-tint text-status-critical-text border-status-critical-border"
+          : "bg-secondary text-foreground border-border"
+      }`}
+    >
+      {label.charAt(0) + label.slice(1).toLowerCase()}
+    </span>
+  );
+}
+
+// `position` is given only for a request that is waiting for a decision: its place in the order the supplier should
+// work in. Such a card shows the reason as a tag; every other card keeps the plain line.
 function IncomingRequestCard({
-  req, busy, onAction, isChatSelected, onOpenChat,
+  req, busy, onAction, isChatSelected, onOpenChat, position,
 }: {
   req: RequestRow;
   busy: boolean;
   onAction: (id: number, action: RequestAction) => void;
   isChatSelected: boolean;
   onOpenChat: (id: number) => void;
+  position?: number;
 }) {
   // Flashes once when this request's actual phase changes (pending ->
   // accepted -> released -> completed) — not on every poll/re-render, only
@@ -92,16 +107,33 @@ function IncomingRequestCard({
         isChatSelected ? "border-primary bg-primary-tint" : "border-info-border bg-card hover:bg-info-tint"
       } ${flash ? "animate-value-flash-bg" : ""}`}
     >
-      <div className="flex items-center justify-between mb-1.5">
-        <div className="text-[14px] font-semibold text-foreground">
-          {req.requesting_facility_name ?? "Unknown facility"}
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <div className="flex items-center gap-2 min-w-0">
+          {position !== undefined && (
+            <span
+              aria-label={`Position ${position}`}
+              className="w-6 h-6 rounded-full bg-primary-tint text-primary text-[12px] font-bold flex items-center justify-center shrink-0"
+            >
+              {position}
+            </span>
+          )}
+          <div className="text-[14px] font-semibold text-foreground">
+            {req.requesting_facility_name ?? "Unknown facility"}
+          </div>
         </div>
         <BloodTypeBadge type={req.blood_type} size="md" />
       </div>
-      <div className="flex items-center gap-1.5 mb-2 text-[12px] text-muted-foreground">
-        <MessageSquare size={12} className="text-info shrink-0" />
-        {req.quantity} units · {EMERGENCY_TYPE_LABELS[req.emergency_type]}
-      </div>
+      {position !== undefined ? (
+        <div className="flex items-center gap-2 mb-2 text-[13px] text-foreground">
+          <span>{req.quantity} {req.quantity === 1 ? "unit" : "units"}</span>
+          <ReasonTag reason={req.emergency_type} />
+        </div>
+      ) : (
+        <div className="flex items-center gap-1.5 mb-2 text-[12px] text-muted-foreground">
+          <MessageSquare size={12} className="text-info shrink-0" />
+          {req.quantity} units · {EMERGENCY_TYPE_LABELS[req.emergency_type]}
+        </div>
+      )}
 
       {req.status === "pending" && (
         <div className="flex gap-1.5">
@@ -144,6 +176,86 @@ function IncomingRequestCard({
 
       {req.status === "cancelled" && (
         <span className="text-[12px] font-semibold text-muted-foreground">Cancelled by requester</span>
+      )}
+    </div>
+  );
+}
+
+// A blood bank's incoming requests in three sections: waiting for a decision, in progress, finished. The server lists
+// pending requests in priority order but leaves every other row where its creation time puts it, so in one flat list
+// the order could not be seen. Split like this, "waiting" reads top to bottom as the order to work in: immediate use
+// first (trauma and scheduled surgery), then restock, oldest first in each, numbered 1, 2, 3.
+function IncomingSections({
+  rows, busyId, onAction, selectedRequestId, onOpenChat,
+}: {
+  rows: RequestRow[];
+  busyId: number | null;
+  onAction: (id: number, action: RequestAction) => void;
+  selectedRequestId: number | null;
+  onOpenChat: (id: number) => void;
+}) {
+  const g = groupIncomingRequests(rows);
+  const [showFinished, setShowFinished] = useState(false);
+  const card = (req: RequestRow, position?: number) => (
+    <IncomingRequestCard
+      key={req.id}
+      req={req}
+      busy={busyId === req.id}
+      onAction={onAction}
+      isChatSelected={selectedRequestId === req.id}
+      onOpenChat={onOpenChat}
+      position={position}
+    />
+  );
+  const tier = (label: string, list: RequestRow[], firstPosition: number) =>
+    list.length === 0 ? null : (
+      <div>
+        <div className="text-[13px] font-semibold text-foreground mb-1.5">{label}</div>
+        <div className="space-y-2">{list.map((req, i) => card(req, firstPosition + i))}</div>
+      </div>
+    );
+
+  return (
+    <div className="space-y-5">
+      <section aria-labelledby="incoming-waiting">
+        <h4 id="incoming-waiting" className="text-[14px] font-semibold text-foreground">Waiting for a decision ({g.waiting.length})</h4>
+        {g.waiting.length === 0 ? (
+          <p className="text-[13px] text-muted-foreground mt-1.5">Nothing is waiting for a decision.</p>
+        ) : (
+          <>
+            <p className="text-[13px] text-muted-foreground mt-0.5 mb-3">
+              In the order to work in: trauma and scheduled surgery first, then restock, oldest first within each.
+            </p>
+            <div className="space-y-4">
+              {tier("Immediate use", g.immediate, 1)}
+              {tier("Restock", g.restock, g.immediate.length + 1)}
+            </div>
+          </>
+        )}
+      </section>
+
+      {g.inProgress.length > 0 && (
+        <section aria-labelledby="incoming-progress">
+          <h4 id="incoming-progress" className="text-[14px] font-semibold text-foreground mb-2">In progress ({g.inProgress.length})</h4>
+          <div className="space-y-2">{g.inProgress.map((req) => card(req))}</div>
+        </section>
+      )}
+
+      {g.finished.length > 0 && (
+        <section>
+          <h4 className="text-[14px] font-semibold text-foreground">
+            <button
+              type="button"
+              onClick={() => setShowFinished((v) => !v)}
+              aria-expanded={showFinished}
+              className="flex items-center gap-1.5 rounded-sm hover:underline hover:underline-offset-2"
+            >
+              <ChevronDown size={15} className={`transition-transform ${showFinished ? "" : "-rotate-90"}`} />
+              Finished ({g.finished.length})
+            </button>
+          </h4>
+          {showFinished && <div className="space-y-2 mt-2">{g.finished.map((req) => card(req))}</div>}
+        </section>
       )}
     </div>
   );
@@ -237,7 +349,24 @@ export function RequestsScreen({
   const isBloodBankRequester = isDevModeEnabled()
     ? facilities.find((f) => f.id === actingFacilityId)?.facility_type === "bloodbank"
     : getCurrentUser()?.facility_type === "bloodbank";
-  const [emergencyType, setEmergencyType] = useState<EmergencyType>(isBloodBankRequester ? "restock" : "trauma");
+  // A hospital has no reason until it chooses one: the reason decides where the request is listed among the
+  // supplier's pending requests (trauma and scheduled surgery ahead of restock), so it is never pre-selected. A blood
+  // bank's is always restock.
+  const [emergencyType, setEmergencyType] = useState<EmergencyType | null>(isBloodBankRequester ? "restock" : null);
+
+  // This facility's own location, for the "You" marker on the hospital's map. Not wanted by the blood-bank map, and not
+  // under the dev facility override, where /facilities/me would describe the wrong facility.
+  const [origin, setOrigin] = useState<[number, number] | null>(null);
+  useEffect(() => {
+    if (isBloodBankRequester || (isDevModeEnabled() && getDevFacilityId() !== null)) return;
+    let cancelled = false;
+    getMyFacilityProfile()
+      .then((profile) => {
+        if (!cancelled && profile.latitude !== null && profile.longitude !== null) setOrigin([profile.latitude, profile.longitude]);
+      })
+      .catch(() => {}); // the map simply has no "You" marker
+    return () => { cancelled = true; };
+  }, [isBloodBankRequester]);
   const [selectedBank, setSelectedBank] = useState<number | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [selectedRequestId, setSelectedRequestId] = useState<number | null>(initialHighlightRequestId ?? null);
@@ -328,20 +457,36 @@ export function RequestsScreen({
   }, []);
 
   const incomingRequestIdRef = useRef(0);
-  function fetchIncoming() {
+  // silent = a background refresh: no loading state, and a failure leaves what is already on screen alone.
+  function fetchIncoming(silent = false) {
     if (actingFacilityId === null) return;
     const requestId = ++incomingRequestIdRef.current;
-    setIncomingLoading(true);
-    setIncomingError(null);
+    if (!silent) {
+      setIncomingLoading(true);
+      setIncomingError(null);
+    }
     apiGet<RequestRow[]>("/requests/incoming")
       .then((data) => { if (requestId === incomingRequestIdRef.current) setIncomingRequests(data); })
-      .catch((err) => { if (requestId === incomingRequestIdRef.current) setIncomingError(err instanceof Error ? err.message : "Failed to load"); })
+      .catch((err) => { if (!silent && requestId === incomingRequestIdRef.current) setIncomingError(err instanceof Error ? err.message : "Failed to load"); })
+      // Cleared by whichever request is the latest, silent or not, so a refresh that supersedes a slower load cannot
+      // leave "Loading…" stuck on screen.
       .finally(() => { if (requestId === incomingRequestIdRef.current) setIncomingLoading(false); });
   }
 
   useEffect(() => {
     fetchIncoming();
   }, [actingFacilityId]);
+
+  // Keep the supplier's inbox fresh while they are looking at it: only blood banks have one, only on this tab, and not
+  // while the browser tab is in the background.
+  useEffect(() => {
+    if (!isBloodBankRequester || tab !== "transfer") return;
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") fetchIncoming(true);
+    }, INCOMING_POLL_MS);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBloodBankRequester, tab, actingFacilityId]);
 
   async function performRequestAction(requestId: number, action: RequestAction) {
     if (actingFacilityId === null) return;
@@ -359,6 +504,8 @@ export function RequestsScreen({
   }
 
   async function sendRequest(bankId: number) {
+    const reason = emergencyType ?? (isBloodBankRequester ? "restock" : null);
+    if (reason === null) return; // a hospital must choose a reason first
     setSubmitting(true);
     setSubmitError(null);
     try {
@@ -366,9 +513,10 @@ export function RequestsScreen({
         supplying_facility_id: bankId,
         blood_type: searchType,
         quantity: quantityNeeded,
-        emergency_type: emergencyType,
+        emergency_type: reason,
       });
       setJustSentBankId(bankId);
+      if (!isBloodBankRequester) setEmergencyType(null); // the next request is chosen afresh, never inherited
       fetchRequests();
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Failed to send request");
@@ -472,7 +620,9 @@ export function RequestsScreen({
                 : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
           >
-            {t === "sourcing" ? "Emergency Sourcing" : "Request and Chats"}
+            {isBloodBankRequester
+              ? (t === "sourcing" ? "Emergency Sourcing" : "Request and Chats")
+              : (t === "sourcing" ? "Emergency sourcing" : "Request and chats")}
             {t === "transfer" && pendingOnly.length > 0 && (
               <span className="absolute -top-1 -right-1 w-4 h-4 bg-primary text-white text-[10px] font-bold rounded-full flex items-center justify-center">
                 {pendingOnly.length}
@@ -482,7 +632,29 @@ export function RequestsScreen({
         ))}
       </div>
 
-      {tab === "sourcing" && (
+      {tab === "sourcing" && !isBloodBankRequester && (
+        <HospitalSourcingView
+          searchType={searchType}
+          onSearchType={setSearchType}
+          quantity={quantityNeeded}
+          onQuantity={setQuantityNeeded}
+          banks={banks}
+          loading={banksLoading}
+          error={banksError}
+          selectedBank={selectedBank}
+          onSelectBank={setSelectedBank}
+          origin={origin}
+          reason={emergencyType}
+          onReason={setEmergencyType}
+          submitting={submitting}
+          submitError={submitError}
+          justSentBankId={justSentBankId}
+          onSend={sendRequest}
+          onOpenRequests={() => setTab("transfer")}
+        />
+      )}
+
+      {tab === "sourcing" && isBloodBankRequester && (
         <div className="grid lg:grid-cols-5 gap-5">
           {/* Left: search + results */}
           <div className="lg:col-span-2 space-y-4">
@@ -532,7 +704,7 @@ export function RequestsScreen({
 
             {/* Blood type compatibility notice */}
             {(() => {
-              const compatible = (bloodCompatibility[searchType] ?? []).filter((t) => t !== searchType);
+              const compatible = (BLOOD_COMPATIBILITY[searchType] ?? []).filter((t) => t !== searchType);
               // Only claim "no exact match" once the list has loaded and nothing in it is available.
               const noExactMatch = !banksLoading && !banksError && !banks.some((b) => b.available);
               return compatible.length > 0 ? (
@@ -848,18 +1020,13 @@ export function RequestsScreen({
                   </div>
                 )}
                 {!incomingLoading && !incomingError && incomingRequests.length > 0 && (
-                  <div className="space-y-2">
-                    {incomingRequests.map((req) => (
-                      <IncomingRequestCard
-                        key={req.id}
-                        req={req}
-                        busy={actionPendingId === req.id}
-                        onAction={performRequestAction}
-                        isChatSelected={selectedRequestId === req.id}
-                        onOpenChat={setSelectedRequestId}
-                      />
-                    ))}
-                  </div>
+                  <IncomingSections
+                    rows={incomingRequests}
+                    busyId={actionPendingId}
+                    onAction={performRequestAction}
+                    selectedRequestId={selectedRequestId}
+                    onOpenChat={setSelectedRequestId}
+                  />
                 )}
               </div>
             )}
@@ -1065,11 +1232,6 @@ export function RequestsScreen({
                 <tbody>
                   {pendingOnly
                     .map((req) => {
-                      const reasonStyle = {
-                        trauma: "bg-status-critical-tint text-status-critical-text border-status-critical-border",
-                        scheduled_surgery: "bg-info-tint text-info-text border-info-border",
-                        restock: "bg-secondary text-muted-foreground border-border",
-                      }[req.emergency_type];
                       const submittedTime = new Date(req.created_at).toLocaleTimeString([], {
                         hour: "2-digit",
                         minute: "2-digit",
@@ -1085,9 +1247,7 @@ export function RequestsScreen({
                           </td>
                           <td className="py-3 px-4 font-semibold text-foreground tabular-nums">{req.quantity}</td>
                           <td className="py-3 px-4">
-                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[12px] font-semibold border ${reasonStyle}`}>
-                              {EMERGENCY_TYPE_LABELS[req.emergency_type]}
-                            </span>
+                            <ReasonTag reason={req.emergency_type} />
                           </td>
                           <td className="py-3 px-4 font-mono text-[13px] text-muted-foreground">{submittedTime}</td>
                           <td className="py-3 px-4">

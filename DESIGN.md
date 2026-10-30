@@ -172,7 +172,7 @@ Elevation is structural, not decorative: every top-level card gets the same soft
 ### Named Rules
 **The Structural Lift Rule.** Card elevation is never optional or state-gated — a card without `--shadow-card` reads as a bug, not a quieter variant. If a surface shouldn't look elevated, it shouldn't be a `rounded-xl` card in the first place.
 
-**The Two-Raised-Surfaces Rule (hospital dashboard).** The hospital dashboard has exactly two raised surfaces, Action Required and the Your requests column, and they carry no border. Everything else on that screen (the summary line, the stock chart, the expiry list) sits flat on Warm Paper with no card and no shadow. This is a deliberate exception to the Structural Lift Rule: a hospital consumes blood and is on the screen to act, so the page has one place to act and one place to check, and depth marks exactly those two. The hospital Inventory goes further and has no raised surface at all: it is a table of hairline-separated rows on the page background, with Upload History as a flat list. None of this has been rolled out to the blood-bank screens.
+**The Two-Raised-Surfaces Rule (hospital dashboard).** The hospital dashboard has exactly two raised surfaces, Action Required and the Your requests column, and they carry no border. Everything else on that screen (the summary line, the stock chart, the expiry list) sits flat on Warm Paper with no card and no shadow. This is a deliberate exception to the Structural Lift Rule: a hospital consumes blood and is on the screen to act, so the page has one place to act and one place to check, and depth marks exactly those two. The hospital Inventory goes further and has no raised surface at all: it is a table of hairline-separated rows on the page background, with Upload History as a flat list. The hospital Emergency Sourcing screen has exactly two: the map and the request panel, with the controls and the ranked list flat on the page. None of this has been rolled out to the blood-bank screens.
 
 ## Shapes
 
@@ -219,6 +219,9 @@ Two small, deliberately literal components that carry the "printed on a real lab
 - **Do** use JetBrains Mono only for things that represent a physical printed identifier (DIN, dates, request IDs).
 - **Do** keep status color (safe/watch/critical) completely independent of role-accent color (Oxblood/Navy) — a Hospital and a Blood Bank account must always see the same red for the same shortage.
 - **Do** use the one shared `BloodTypeBadge` component at whatever size fits, never a bespoke inline badge for a blood type.
+- **Do** keep the request reason unselected until the user chooses it. It decides where the request is listed in the supplier's pending requests (trauma and scheduled surgery ahead of restock), so a default would put every careless request at the top of that list. Send stays disabled until one is chosen.
+- **Do** name the server's two priority tiers, Immediate use (trauma and scheduled surgery) and Restock, wherever requests are grouped or tagged by reason, not three reasons. The blood bank's incoming list shows them as numbered positions in the order to work in. Scheduled surgery is never blue.
+- **Do** keep the clinical caveat ("always verify with clinical staff") attached to the compatible-types line on Emergency Sourcing. It is the one place that screen admits it is not a clinical authority.
 - **Do** write hospital-dashboard labels in sentence case ("Total units", "Expiring soon") and give each fact its own sentence or clause.
 
 ### Don't:

@@ -10,6 +10,19 @@ export const BLOOD_TYPE_ORDER = ["A-", "A+", "AB-", "AB+", "B-", "B+", "O-", "O+
 // list to match the other, since changing either changes visible UI order.
 export const ALL_BLOOD_TYPES = ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"];
 
+// For a patient who needs the key, the donor types whose blood they can receive (the key itself included). Standard
+// donor-recipient compatibility, shown as a suggestion only: Emergency Sourcing always says to verify with clinical staff.
+export const BLOOD_COMPATIBILITY: Record<string, string[]> = {
+  "A+":  ["A+", "A-", "O+", "O-"],
+  "A-":  ["A-", "O-"],
+  "B+":  ["B+", "B-", "O+", "O-"],
+  "B-":  ["B-", "O-"],
+  "O+":  ["O+", "O-"],
+  "O-":  ["O-"],
+  "AB+": ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"],
+  "AB-": ["A-", "B-", "O-", "AB-"],
+};
+
 // Mirrors the backend's NOTIFY_EXPIRY_CRITICAL_DAYS / NOTIFY_EXPIRY_NEAR_DAYS
 // (server/main.py) — can't literally share a constant across languages, but
 // the two values must stay in sync: this is what decides "critical"/"near

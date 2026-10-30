@@ -622,3 +622,15 @@
   from { opacity: 0; transform: scale(1.035); }
   to { opacity: 1; transform: scale(1); }
 }
+
+/* The "You" label on the Emergency Sourcing map: text only, with a white halo, so it never boxes over a nearby pin. */
+.leaflet-tooltip.origin-label {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+  color: var(--role-accent);
+  font: 800 12px/1 var(--font-display);
+  text-shadow: -1px 0 #fff, 1px 0 #fff, 0 -1px #fff, 0 1px #fff, 0 0 4px #fff;
+}
+.leaflet-tooltip-bottom.origin-label::before { display: none; }
