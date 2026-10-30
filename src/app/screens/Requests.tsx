@@ -13,7 +13,9 @@ import { listIsBehind, mergeThread, type RequestDetail } from "../lib/requestTim
 import { usesRedCellCompatibility, type BloodComponent } from "../lib/bloodComponents";
 import { useFlashOnChange } from "../lib/motion";
 import { ALL_BLOOD_TYPES, BLOOD_COMPATIBILITY } from "../lib/statusTokens";
-import { EMERGENCY_TYPE_LABELS, groupIncomingRequests, isImmediateUse, requestUnitsText, type EmergencyType, type RequestRow } from "../lib/requestTypes";
+import { EMERGENCY_TYPE_LABELS, groupIncomingRequests, requestUnitsText, type EmergencyType, type RequestRow } from "../lib/requestTypes";
+import { ReasonTag } from "../components/ReasonTag";
+import { TransferHistory } from "./TransferHistory";
 
 // Chat messages poll faster than notifications (App.tsx's NOTIFICATION_POLL_MS)
 // since a coordination chat is a live conversation, not a background alert.
@@ -24,7 +26,7 @@ const CHAT_MESSAGE_POLL_MS = 4000;
 // page then shows up, in its place in the priority order, without a reload.
 const INCOMING_POLL_MS = 25000;
 
-type RequestTab = "sourcing" | "transfer";
+type RequestTab = "sourcing" | "transfer" | "history";
 
 // ─── Requests (Emergency Sourcing + Transfer) ─────────────────────────────────
 
@@ -68,23 +70,6 @@ type RequestMessage = {
   message: string;
   created_at: string;
 };
-
-// The reason as a tag. Two looks, because the server has two tiers: immediate use (trauma and scheduled surgery) and
-// restock. Scheduled surgery used to be blue, which meant nothing here.
-function ReasonTag({ reason }: { reason: string }) {
-  const label = EMERGENCY_TYPE_LABELS[reason as EmergencyType] ?? reason;
-  return (
-    <span
-      className={`inline-flex items-center px-2 py-0.5 rounded-full text-[12px] font-semibold border ${
-        isImmediateUse(reason)
-          ? "bg-status-critical-tint text-status-critical-text border-status-critical-border"
-          : "bg-secondary text-foreground border-border"
-      }`}
-    >
-      {label.charAt(0) + label.slice(1).toLowerCase()}
-    </span>
-  );
-}
 
 const FINISHED_STATUSES = ["completed", "failed", "declined", "cancelled"];
 
@@ -675,7 +660,7 @@ export function RequestsScreen({
     <div className="max-w-screen-2xl mx-auto px-6 py-6">
       {/* Sub-tabs */}
       <div className="flex gap-1 mb-6 bg-secondary rounded-lg p-1 w-fit">
-        {(["sourcing", "transfer"] as RequestTab[]).map((t) => (
+        {(["sourcing", "transfer", "history"] as RequestTab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -685,7 +670,7 @@ export function RequestsScreen({
                 : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
           >
-            {t === "sourcing" ? "Emergency sourcing" : "Request and chats"}
+            {t === "sourcing" ? "Emergency sourcing" : t === "transfer" ? "Request and chats" : "Transfer history"}
             {t === "transfer" && pendingOnly.length > 0 && (
               <span className="absolute -top-1 -right-1 w-4 h-4 bg-primary text-white text-[10px] font-bold rounded-full flex items-center justify-center">
                 {pendingOnly.length}
@@ -694,6 +679,8 @@ export function RequestsScreen({
           </button>
         ))}
       </div>
+
+      {tab === "history" && <TransferHistory isBloodBank={isBloodBankRequester} />}
 
       {tab === "sourcing" && !isBloodBankRequester && (
         <HospitalSourcingView

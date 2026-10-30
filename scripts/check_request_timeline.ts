@@ -56,6 +56,7 @@ eq(eventDetail(ev("declined", 1), request), null, "declined has no detail");
 eq(["received", "failed", "reserved"].map((o) => unitOutcomeText({ outcome: o as "received", reason: o === "failed" ? "expired_before_receipt" : null })),
   ["Received", "Failed: expired before receipt", "Reserved, not yet received"], "unit outcomes");
 if (!/\d/.test(eventTimeText({ at: iso(5) }))) throw new Error("a recorded time shows a time");
+eq(eventTimeText({ at: iso(5) }), receiptTimeText(iso(5)), "the chat timeline writes a time exactly as the receipt does");
 
 // the thread: one time order, events before messages at the same instant, lifecycle order among events
 const msg = (id: number, h: number) => ({ id, created_at: iso(h), message: `m${id}` });

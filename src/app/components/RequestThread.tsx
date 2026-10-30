@@ -1,4 +1,5 @@
 import { Ban, CheckCircle, Package, PackageCheck, Send, XCircle, type LucideIcon } from "lucide-react";
+import { formatTime } from "../lib/dateFormat";
 import {
   describeEvent, eventAccountText, eventTimeText, type RequestDetail, type ThreadItem, type TimelineEvent, type TimelineKind,
 } from "../lib/requestTimeline";
@@ -32,7 +33,7 @@ function EventRow({ event, request }: { event: TimelineEvent; request: RequestDe
 }
 
 function MessageBubble({ msg, own }: { msg: Message; own: boolean }) {
-  const time = new Date(msg.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const time = formatTime(msg.created_at);
   return (
     <div className={`flex flex-col ${own ? "items-end" : "items-start"}`}>
       <div className={`text-[12px] font-semibold mb-1 ${own ? "text-primary" : "text-muted-foreground"}`}>

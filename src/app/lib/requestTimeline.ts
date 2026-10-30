@@ -5,6 +5,7 @@
 // or account that was never captured arrives as null and is shown as "not recorded", never left out.
 
 import { EMERGENCY_TYPE_LABELS, type EmergencyType } from "./requestTypes.ts";
+import { formatDateTime } from "./dateFormat.ts";
 
 // The server's _TIMELINE_KINDS, in lifecycle order (scripts/check_request_timeline.ts compares them).
 export const TIMELINE_KINDS = ["sent", "accepted", "released", "received", "declined", "cancelled"] as const;
@@ -122,10 +123,10 @@ export function unitOutcomeText(u: Pick<LedgerUnit, "outcome" | "reason">): stri
   return "Reserved, not yet received";
 }
 
-// "Oct 30, 8:27 PM", or "time not recorded".
+// "30 Oct 2026, 20:27", or "time not recorded". The same writer and format as the receipt (receiptTimeText), so the chat's
+// timeline and the receipt, which render the same events, never differ in how a time is written.
 export function eventTimeText(e: Pick<TimelineEvent, "at">): string {
-  if (!e.at) return "time not recorded";
-  return new Date(e.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return e.at ? formatDateTime(e.at) : "time not recorded";
 }
 
 // The account behind an event, by its email. One account per facility, so this names a login, not a person.
@@ -133,10 +134,10 @@ export function eventAccountText(e: Pick<TimelineEvent, "account_email">): strin
   return e.account_email ?? "account not recorded";
 }
 
-// "30 Oct 2026, 20:27" for the receipt: a record, so it carries the year and the 24-hour clock (no AM/PM to misread); or "not recorded".
+// "30 Oct 2026, 20:27" for the receipt: a record, so it carries the year and the 24-hour clock (no AM/PM to misread); or
+// "not recorded". Written by lib/dateFormat.ts, the same writer the transfer history uses.
 export function receiptTimeText(at: string | null): string {
-  if (!at) return "not recorded";
-  return new Date(at).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+  return at ? formatDateTime(at) : "not recorded";
 }
 
 export type ThreadItem<M extends { created_at: string }> =
