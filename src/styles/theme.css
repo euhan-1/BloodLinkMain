@@ -634,3 +634,8 @@
   text-shadow: -1px 0 #fff, 1px 0 #fff, 0 -1px #fff, 0 1px #fff, 0 0 4px #fff;
 }
 .leaflet-tooltip-bottom.origin-label::before { display: none; }
+
+/* The transfer record (screens/Receipt.tsx) prints on its own page: modest margins, nothing else. */
+@page {
+  margin: 14mm;
+}

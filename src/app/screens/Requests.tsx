@@ -8,6 +8,8 @@ import { Modal } from "../components/Modal";
 import { FacilityNetworkMap, type Facility } from "../components/FacilityNetworkMap";
 import { HospitalSourcingView } from "./HospitalSourcing";
 import { ComponentPicker } from "../components/ComponentPicker";
+import { RequestThread } from "../components/RequestThread";
+import { listIsBehind, mergeThread, type RequestDetail } from "../lib/requestTimeline";
 import { usesRedCellCompatibility, type BloodComponent } from "../lib/bloodComponents";
 import { useFlashOnChange } from "../lib/motion";
 import { ALL_BLOOD_TYPES, BLOOD_COMPATIBILITY } from "../lib/statusTokens";
@@ -81,6 +83,25 @@ function ReasonTag({ reason }: { reason: string }) {
     >
       {label.charAt(0) + label.slice(1).toLowerCase()}
     </span>
+  );
+}
+
+const FINISHED_STATUSES = ["completed", "failed", "declined", "cancelled"];
+
+// A quiet link to a finished request's transfer record (/receipt/{id}, in a new tab). Muted text, underlined, no fill or
+// border, so it never competes with a card's real action (Confirm receipt). It stops the click reaching the card, which
+// opens the chat.
+function ReceiptLink({ requestId }: { requestId: number }) {
+  return (
+    <a
+      href={`/receipt/${requestId}`}
+      target="_blank"
+      rel="noopener"
+      onClick={(e) => e.stopPropagation()}
+      className="shrink-0 text-[12px] text-gray-600 underline underline-offset-2 hover:text-foreground"
+    >
+      Receipt
+    </a>
   );
 }
 
@@ -164,14 +185,15 @@ function IncomingRequestCard({
         <span className="inline-block animate-success-pop text-[12px] font-semibold text-status-watch-text">Released — awaiting requester confirmation</span>
       )}
 
-      {(req.status === "completed" || req.status === "failed") && <ReceiptOutcome req={req} size={12} />}
-
-      {req.status === "declined" && (
-        <span className="text-[12px] font-semibold text-muted-foreground">Declined</span>
-      )}
-
-      {req.status === "cancelled" && (
-        <span className="text-[12px] font-semibold text-muted-foreground">Cancelled by requester</span>
+      {FINISHED_STATUSES.includes(req.status) && (
+        <div className="flex items-end justify-between gap-3">
+          <div>
+            {(req.status === "completed" || req.status === "failed") && <ReceiptOutcome req={req} size={12} />}
+            {req.status === "declined" && <span className="text-[12px] font-semibold text-muted-foreground">Declined</span>}
+            {req.status === "cancelled" && <span className="text-[12px] font-semibold text-muted-foreground">Cancelled by requester</span>}
+          </div>
+          <ReceiptLink requestId={req.id} />
+        </div>
       )}
     </div>
   );
@@ -288,7 +310,10 @@ function AcceptedRequestCard({
       </div>
 
       {req.status === "completed" || req.status === "failed" ? (
-        <ReceiptOutcome req={req} size={13} />
+        <div className="flex items-end justify-between gap-3">
+          <ReceiptOutcome req={req} size={13} />
+          <ReceiptLink requestId={req.id} />
+        </div>
       ) : !req.supplier_confirmed_at ? (
         <span className="text-[13px] text-muted-foreground">Waiting for supplier to confirm release</span>
       ) : canConfirmReceipt ? (
@@ -373,6 +398,12 @@ export function RequestsScreen({
   const [messages, setMessages] = useState<RequestMessage[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messagesError, setMessagesError] = useState<string | null>(null);
+  // The selected request as the server describes it now (its status events and units), fetched with the messages.
+  const [detail, setDetail] = useState<RequestDetail | null>(null);
+  // "live" only while the last poll of the thread succeeded; "lost" after one fails, until the next succeeds.
+  const [chatLive, setChatLive] = useState<"connecting" | "live" | "lost">("connecting");
+  // The two request lists as of the latest render, for the poll below to compare against without going stale.
+  const listsRef = useRef<{ requests: RequestRow[]; incoming: RequestRow[] }>({ requests: [], incoming: [] });
   const [sendingMessage, setSendingMessage] = useState(false);
   const chatRef = useRef<HTMLDivElement>(null);
 
@@ -532,35 +563,60 @@ export function RequestsScreen({
     }
   }, [messages]);
 
-  // Real coordination-chat history for whichever request is selected, scoped
-  // server-side to the two facilities on either side of it. Polled rather than
-  // pushed — there's no websocket layer in this app, and 4s is close enough to
-  // "live" at this scale.
+  // The selected request's thread: its messages and its own record (GET /requests/{id}, from which the status events are
+  // derived), fetched together every few seconds. Polled rather than pushed, there is no websocket layer in this app.
+  // "Live" is the result of the last poll, not a property of having a request selected. A hidden browser tab does not
+  // poll, and polls at once on becoming visible. If the server reports the request has moved on from what the lists
+  // hold (the other side accepted, released or confirmed receipt), the lists are fetched again.
   useEffect(() => {
     if (selectedRequestId === null) {
       setMessages([]);
       setMessagesError(null);
+      setDetail(null);
       return;
     }
     let cancelled = false;
-    function fetchMessages() {
-      apiGet<RequestMessage[]>(`/requests/${selectedRequestId}/messages`)
-        .then((data) => {
-          if (cancelled) return;
-          setMessages(data);
-          setMessagesError(null);
-        })
-        .catch((err) => {
-          if (!cancelled) setMessagesError(err instanceof Error ? err.message : "Failed to load");
-        })
-        .finally(() => {
-          if (!cancelled) setMessagesLoading(false);
-        });
+    let inFlight = false;
+    let lastSyncedKey = "";
+    async function poll() {
+      if (inFlight || document.visibilityState !== "visible") return;
+      inFlight = true;
+      try {
+        const [msgs, det] = await Promise.all([
+          apiGet<RequestMessage[]>(`/requests/${selectedRequestId}/messages`),
+          apiGet<RequestDetail>(`/requests/${selectedRequestId}`),
+        ]);
+        if (cancelled) return;
+        setMessages(msgs);
+        setDetail(det);
+        setMessagesError(null);
+        setChatLive("live");
+        const { requests: mine, incoming } = listsRef.current;
+        const listed = [...mine, ...incoming].find((r) => r.id === det.request.id);
+        const key = `${det.request.status}:${det.request.supplier_confirmed_at}:${det.request.requester_confirmed_at}`;
+        if (listIsBehind(listed, det.request) && key !== lastSyncedKey) {
+          lastSyncedKey = key; // once per change, so a row that never matches cannot refetch every poll
+          fetchRequests();
+          fetchIncoming(true);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setMessagesError(err instanceof Error ? err.message : "Failed to load");
+          setChatLive("lost");
+        }
+      } finally {
+        inFlight = false;
+        if (!cancelled) setMessagesLoading(false);
+      }
     }
+    const onVisible = () => { if (document.visibilityState === "visible") poll(); };
     setMessagesLoading(true);
-    fetchMessages();
-    const interval = setInterval(fetchMessages, CHAT_MESSAGE_POLL_MS);
-    return () => { cancelled = true; clearInterval(interval); };
+    setDetail(null);
+    setChatLive("connecting");
+    poll();
+    const interval = setInterval(poll, CHAT_MESSAGE_POLL_MS);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { cancelled = true; clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
   }, [selectedRequestId]);
 
   useEffect(() => {
@@ -612,6 +668,7 @@ export function RequestsScreen({
     }
   }
 
+  listsRef.current = { requests, incoming: incomingRequests };
   const pendingOnly = requests.filter((r) => r.status === "pending");
 
   return (
@@ -1102,9 +1159,31 @@ export function RequestsScreen({
                       </p>
                     </div>
                     {selectedRequestId !== null && (
-                      <div className="flex items-center gap-1.5 text-[13px] font-semibold text-status-safe-text">
-                        <span className="w-2 h-2 rounded-full bg-status-safe animate-pulse" />
-                        Live
+                      <div className="flex items-center gap-4">
+                        {detail !== null && (detail.request.supplier_confirmed_at || FINISHED_STATUSES.includes(detail.request.status)) && (
+                          <a
+                            href={`/receipt/${detail.request.id}`}
+                            target="_blank"
+                            rel="noopener"
+                            className="h-8 px-3 inline-flex items-center rounded-md border border-border bg-card text-[13px] font-semibold text-foreground hover:bg-secondary transition-colors"
+                          >
+                            Receipt
+                          </a>
+                        )}
+                      <div
+                        role="status"
+                        className={`flex items-center gap-1.5 text-[13px] font-semibold ${
+                          chatLive === "live" ? "text-status-safe-text" : chatLive === "lost" ? "text-status-critical-text" : "text-muted-foreground"
+                        }`}
+                      >
+                        <span
+                          aria-hidden="true"
+                          className={`w-2 h-2 rounded-full ${
+                            chatLive === "live" ? "bg-status-safe animate-pulse" : chatLive === "lost" ? "bg-status-critical" : "bg-gray-400"
+                          }`}
+                        />
+                        {chatLive === "live" ? "Live" : chatLive === "lost" ? "Connection lost, retrying" : "Connecting…"}
+                      </div>
                       </div>
                     )}
                   </div>
@@ -1127,7 +1206,7 @@ export function RequestsScreen({
                     {selectedRequestId !== null && messagesError && (
                       <div className="text-center text-[13px] text-status-critical-text py-2">{messagesError}</div>
                     )}
-                    {selectedRequestId !== null && !messagesLoading && messages.length === 0 && !messagesError && (
+                    {selectedRequestId !== null && !messagesLoading && messages.length === 0 && !messagesError && detail === null && (
                       <div className="h-full flex flex-col items-center justify-center text-center px-8">
                         <div className="w-14 h-14 rounded-full bg-primary-tint flex items-center justify-center mb-4">
                           <MessageSquare size={22} className="text-primary" />
@@ -1138,26 +1217,16 @@ export function RequestsScreen({
                         </p>
                       </div>
                     )}
-                    {messages.map((msg) => {
-                      const isOwn = msg.sender_facility_id === actingFacilityId;
-                      const time = new Date(msg.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-                      return (
-                        <div key={msg.id} className={`flex flex-col ${isOwn ? "items-end" : "items-start"}`}>
-                          <div className={`text-[12px] font-semibold mb-1 ${isOwn ? "text-primary" : "text-muted-foreground"}`}>
-                            {msg.sender_facility_name} · {time}
-                          </div>
-                          <div
-                            className={`max-w-[80%] px-4 py-3 rounded-2xl text-[14px] leading-relaxed ${
-                              isOwn
-                                ? "bg-primary text-white rounded-br-md"
-                                : "bg-gray-200 text-foreground rounded-bl-md"
-                            }`}
-                          >
-                            {msg.message}
-                          </div>
-                        </div>
-                      );
-                    })}
+                    {detail !== null && (
+                      <RequestThread
+                        items={mergeThread(messages, detail.timeline)}
+                        request={detail.request}
+                        actingFacilityId={actingFacilityId}
+                      />
+                    )}
+                    {detail !== null && messages.length === 0 && (
+                      <p className="text-center text-[13px] text-muted-foreground pt-1">No messages yet.</p>
+                    )}
                   </div>
 
                   {(() => {
@@ -1165,9 +1234,8 @@ export function RequestsScreen({
                     // sending is only meaningful once the other side can actually
                     // see it (the requester's own chat access only opens up once
                     // accepted), so a still-pending request can't send either.
-                    const canSend = selectedRequest
-                      ? ["accepted", "completed", "failed"].includes(selectedRequest.status)
-                      : false;
+                    const currentStatus = detail?.request.status ?? selectedRequest?.status;
+                    const canSend = currentStatus !== undefined && ["accepted", "completed", "failed"].includes(currentStatus);
                     const placeholder =
                       selectedRequestId === null
                         ? "Select a request first…"

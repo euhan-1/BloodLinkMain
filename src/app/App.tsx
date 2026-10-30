@@ -22,6 +22,7 @@ const ChatScreen = lazy(() => import("./screens/Donors").then((m) => ({ default:
 const AdminDashboardScreen = lazy(() => import("./screens/Admin").then((m) => ({ default: m.AdminDashboardScreen })));
 const ResetPasswordScreen = lazy(() => import("./screens/ResetPassword").then((m) => ({ default: m.ResetPasswordScreen })));
 const RegisterFacilityScreen = lazy(() => import("./screens/RegisterFacility").then((m) => ({ default: m.RegisterFacilityScreen })));
+const ReceiptScreen = lazy(() => import("./screens/Receipt").then((m) => ({ default: m.ReceiptScreen })));
 const CompleteProfileScreen = lazy(() => import("./screens/CompleteProfile").then((m) => ({ default: m.CompleteProfileScreen })));
 import { LoginScreen } from "./screens/Login";
 import {
@@ -285,6 +286,19 @@ export default function App() {
       <div style={{ fontFamily: "var(--font-body)" }} className="animate-page-enter">
         <Suspense fallback={<ScreenFallback />}>
           <CompleteProfileScreen user={currentUser} onComplete={() => withViewTransition(() => setCurrentUser(getCurrentUser()))} />
+        </Suspense>
+      </div>
+    );
+  }
+
+  // A transfer record opens on its own page, without the app chrome, so printing it prints the record and nothing else.
+  // Behind the same login and profile gates as everything above; the server lets only the request's two facilities read it.
+  const receiptMatch = window.location.pathname.match(/^\/receipt\/(\d+)\/?$/);
+  if (receiptMatch) {
+    return (
+      <div style={{ fontFamily: "var(--font-body)" }}>
+        <Suspense fallback={<ScreenFallback />}>
+          <ReceiptScreen requestId={Number(receiptMatch[1])} />
         </Suspense>
       </div>
     );
