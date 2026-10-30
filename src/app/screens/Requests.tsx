@@ -285,9 +285,10 @@ function AcceptedRequestCard({
         <div className="text-[16px] font-semibold text-foreground">{req.supplying_facility_name}</div>
         <BloodTypeBadge type={req.blood_type} size="lg" />
       </div>
-      <div className="flex items-center gap-1.5 mb-2 text-[13px] text-muted-foreground">
+      <div className="flex items-center gap-2 mb-2 text-[13px] text-foreground">
         <MessageSquare size={13} className="text-info shrink-0" />
-        {req.quantity} units · {EMERGENCY_TYPE_LABELS[req.emergency_type]}
+        <span>{req.quantity} {req.quantity === 1 ? "unit" : "units"}</span>
+        <ReasonTag reason={req.emergency_type} />
       </div>
 
       {req.status === "completed" || req.status === "failed" ? (
@@ -1033,7 +1034,7 @@ export function RequestsScreen({
 
             {/* Outgoing requests — requester-side confirmation */}
             <div className="bg-card border border-border rounded-xl p-5">
-              <h3 className="font-semibold text-foreground mb-1">Your Requests Awaiting Confirmation</h3>
+              <h3 className="font-semibold text-foreground mb-1">Your requests awaiting confirmation</h3>
               <p className="text-[13px] text-muted-foreground mb-4">Requests you sent that have been accepted</p>
 
               {requestsLoading && (
@@ -1078,7 +1079,7 @@ export function RequestsScreen({
                 <>
                   <div className="px-5 py-4 border-b border-border flex items-center justify-between">
                     <div>
-                      <h3 className="font-semibold text-foreground">Coordination Chat</h3>
+                      <h3 className="font-semibold text-foreground">Coordination chat</h3>
                       <p className="text-[13px] text-muted-foreground">
                         {selectedRequest
                           ? `REQ-${selectedRequest.id} · ${resolveFacilityName(selectedRequest.requesting_facility_id, selectedRequest.requesting_facility_name)} ↔ ${resolveFacilityName(selectedRequest.supplying_facility_id, selectedRequest.supplying_facility_name)} · ${selectedRequest.blood_type} · ${selectedRequest.quantity} units`
@@ -1192,7 +1193,7 @@ export function RequestsScreen({
         <div className="space-y-4 mt-5">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="font-semibold text-foreground">Outgoing Requests</h3>
+              <h3 className="font-semibold text-foreground">Outgoing requests</h3>
               <p className="text-[14px] text-muted-foreground mt-0.5">
                 Immediate-use requests shown first, then by submission time — accepted requests aren't reshuffled
               </p>
