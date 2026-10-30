@@ -4688,6 +4688,27 @@ def _require_request_participant(conn, request_id: int, facility_id: int) -> dic
     return dict(req)
 
 
+def _received_counts(quantity: int, ledger: Optional[tuple[int, int]], failure_rows: int) -> tuple[int, int]:
+    """(arrived, failed) for a request whose receipt was confirmed. The ledger's own (received, failed) counts when it has
+    rows for the request; otherwise request_unit_failures is all a request released before the ledger existed has, and
+    every unit it does not list as failed arrived, because confirm_receipt only settles a request whose reserved units
+    match its quantity. One rule for the timeline, the detail's summary and the transfer history."""
+    if ledger is not None:
+        return ledger
+    return quantity - failure_rows, failure_rows
+
+
+def _request_block(req: dict, facilities: dict[int, dict]) -> dict:
+    """The `request` object of GET /requests/{id}, and of every row of GET /transfers: one shape, built in one place."""
+    return {
+        "id": req["id"], "status": req["status"], "blood_type": req["blood_type"], "component": req["component"],
+        "quantity": req["quantity"], "emergency_type": req["emergency_type"], "created_at": req["created_at"],
+        "supplier_confirmed_at": req["supplier_confirmed_at"], "requester_confirmed_at": req["requester_confirmed_at"],
+        "requesting_facility": facilities[req["requesting_facility_id"]],
+        "supplying_facility": facilities[req["supplying_facility_id"]],
+    }
+
+
 # The order a request moves through, which is also the order its timeline reads in.
 _TIMELINE_KINDS = ("sent", "accepted", "released", "received", "declined", "cancelled")
 
@@ -4745,14 +4766,167 @@ def _request_timeline(
         if kind == "received":
             if units:
                 failed = [{"din": u["din"], "reason": u["reason"]} for u in units if u["outcome"] == "failed"]
-                arrived = sum(1 for u in units if u["outcome"] == "received")
+                ledger = (sum(1 for u in units if u["outcome"] == "received"), len(failed))
             else:
                 failed = [{"din": f["din"], "reason": f["reason"]} for f in failures]
-                arrived = req["quantity"] - len(failed)
+                ledger = None
+            arrived, _ = _received_counts(req["quantity"], ledger, len(failures))
             event["outcome"] = {"arrived": arrived, "failed": failed, "from_ledger": bool(units)}
         events.append(event)
         previous = event["order_at"]
     return events
+
+
+# The outcome of a transfer, as the history filters and labels it. `expired_in_transit` is a filter only: partly or none.
+# `declined` and `cancelled` are requests that never became transfers: they are listed only when one of them is chosen.
+TRANSFER_OUTCOMES = ("received_in_full", "partly_received", "none_received", "expired_in_transit", "in_progress", "declined", "cancelled")
+TRANSFERS_MAX_ROWS = 500
+
+
+def _transfer_outcome(status: str, failed: Optional[int]) -> str:
+    if status in ("accepted", "declined", "cancelled"):
+        return "in_progress" if status == "accepted" else status
+    if status == "failed":
+        return "none_received"
+    return "partly_received" if failed else "received_in_full"
+
+
+@app.get("/transfers")
+def list_transfers(
+    include_active: bool = False,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    other_facility_id: Optional[int] = None,
+    blood_type: Optional[str] = None,
+    component: Optional[str] = None,
+    outcome: Optional[str] = None,
+    limit: int = TRANSFERS_MAX_ROWS,
+    facility_id: int = Depends(get_acting_facility_id),
+):
+    """Every transfer the acting facility has been part of, in both directions, newest first: the history behind "what did
+    we send Riverside in October", "how many units have we received this quarter", "which transfers had units expire in
+    transit". A transfer is a request that was accepted, so the default is finished ones (completed, failed) and
+    `include_active` adds accepted ones still in progress. Pending, declined and cancelled requests never became transfers,
+    so they are excluded by default; choosing outcome `declined` or `cancelled` lists those requests instead (and only those),
+    which is how a facility sees what it asked for and was refused. Such a row has no units: `summary.received` and
+    `summary.failed` are null, and it is dated by when it was requested, not by a decision time that old rows never captured.
+
+    `direction` is the flow of blood relative to the caller: "sent" when it was the supplier, "received" when it was the
+    requester. Each row is the `request` block of GET /requests/{id} plus its `summary` (asked, received, failed), so the
+    history and the receipt cannot disagree; the unit-level detail stays behind the receipt.
+
+    The date is when the transfer happened: receipt confirmed for a finished one, release for one in progress that has been
+    released, otherwise when it was requested. The range is in Manila business dates (date_from and date_to inclusive) and
+    is applied as instants, so no SQL date function and no viewer time zone is involved. The filters other than the
+    status scope apply to `transfers` and `totals`; `other_facilities` (for the facility filter) lists every facility this one
+    has dealt with in any request, so no filter ever empties the list of choices. `total` counts everything matching; `transfers` holds at most `limit`
+    (up to TRANSFERS_MAX_ROWS) and `truncated` says when rows were left out. `totals` cover everything matching, not just
+    the rows returned.
+    """
+    if blood_type is not None and blood_type not in VALID_BLOOD_TYPES:
+        raise HTTPException(status_code=422, detail=f"blood_type must be one of {sorted(VALID_BLOOD_TYPES)}")
+    if component is not None and (error := _component_error(component)) is not None:
+        raise HTTPException(status_code=422, detail=error)
+    if outcome is not None and outcome not in TRANSFER_OUTCOMES:
+        raise HTTPException(status_code=422, detail=f"outcome must be one of {list(TRANSFER_OUTCOMES)}")
+    if date_from is not None and date_to is not None and date_from > date_to:
+        raise HTTPException(status_code=422, detail="date_from must not be after date_to")
+    limit = max(1, min(limit, TRANSFERS_MAX_ROWS))
+    statuses = [outcome] if outcome in ("declined", "cancelled") else ["completed", "failed"] + (["accepted"] if include_active else [])
+
+    with engine.connect() as conn:
+        rows = [dict(r) for r in conn.execute(
+            text(
+                """
+                SELECT * FROM requests
+                WHERE (requesting_facility_id = :f OR supplying_facility_id = :f) AND status = ANY(:statuses)
+                """
+            ),
+            {"f": facility_id, "statuses": statuses},
+        ).mappings().all()]
+        ids = [r["id"] for r in rows]
+        ledger = {r["request_id"]: (r["received"], r["failed"]) for r in conn.execute(
+            text(
+                "SELECT request_id, count(*) FILTER (WHERE outcome = 'received') AS received, "
+                "count(*) FILTER (WHERE outcome = 'failed') AS failed FROM request_units "
+                "WHERE request_id = ANY(:ids) GROUP BY request_id"
+            ),
+            {"ids": ids},
+        ).mappings().all()} if ids else {}
+        failure_rows = dict(conn.execute(
+            text("SELECT request_id, count(*) FROM request_unit_failures WHERE request_id = ANY(:ids) GROUP BY request_id"),
+            {"ids": ids},
+        ).all()) if ids else {}
+        # Every facility this one has dealt with, in any request, so the facility filter's choices never depend on which
+        # status scope or outcome is chosen (and a chosen facility is always still in the list).
+        dealt_with = [r[0] for r in conn.execute(
+            text(
+                "SELECT DISTINCT CASE WHEN supplying_facility_id = :f THEN requesting_facility_id ELSE supplying_facility_id END "
+                "FROM requests WHERE requesting_facility_id = :f OR supplying_facility_id = :f"
+            ),
+            {"f": facility_id},
+        ).all()]
+        facility_ids = sorted({r[k] for r in rows for k in ("requesting_facility_id", "supplying_facility_id")} | set(dealt_with))
+        facilities = {
+            f["id"]: dict(f) for f in conn.execute(
+                text("SELECT id, name, facility_type, address, doh_license_number FROM facilities WHERE id = ANY(:ids)"),
+                {"ids": facility_ids},
+            ).mappings().all()
+        } if facility_ids else {}
+
+    def row_for(req: dict) -> dict:
+        sent = req["supplying_facility_id"] == facility_id
+        other = req["requesting_facility_id"] if sent else req["supplying_facility_id"]
+        if req["status"] in ("declined", "cancelled"):
+            received = failed = None  # nothing was ever released, so there is nothing to count: not 0
+            happened = req["created_at"]
+        elif req["status"] == "accepted":
+            received = failed = None
+            happened = req["supplier_confirmed_at"] or req["created_at"]
+        else:
+            received, failed = _received_counts(req["quantity"], ledger.get(req["id"]), failure_rows.get(req["id"], 0))
+            happened = req["requester_confirmed_at"] or req["supplier_confirmed_at"] or req["created_at"]
+        return {
+            "request": _request_block(req, facilities), "direction": "sent" if sent else "received", "other_facility_id": other,
+            "transfer_at": happened, "outcome": _transfer_outcome(req["status"], failed),
+            "summary": {"asked": req["quantity"], "received": received, "failed": failed},
+        }
+
+    everything = [row_for(r) for r in rows]
+    other_facilities = sorted(
+        ({"id": fid, "name": facilities[fid]["name"]} for fid in dealt_with), key=lambda f: f["name"].lower()
+    )
+
+    start = datetime.combine(date_from, datetime.min.time(), tzinfo=BUSINESS_TZ) if date_from else None
+    end = datetime.combine(date_to + timedelta(days=1), datetime.min.time(), tzinfo=BUSINESS_TZ) if date_to else None
+
+    def keep(t: dict) -> bool:
+        r = t["request"]
+        return (
+            (other_facility_id is None or t["other_facility_id"] == other_facility_id)
+            and (blood_type is None or r["blood_type"] == blood_type)
+            and (component is None or r["component"] == component)
+            and (start is None or t["transfer_at"] >= start)
+            and (end is None or t["transfer_at"] < end)
+            and (outcome is None or t["outcome"] == outcome
+                 or (outcome == "expired_in_transit" and t["outcome"] in ("partly_received", "none_received")))
+        )
+
+    matching = sorted((t for t in everything if keep(t)), key=lambda t: (t["transfer_at"], t["request"]["id"]), reverse=True)
+    settled = [t for t in matching if t["summary"]["received"] is not None]
+    return {
+        "transfers": matching[:limit],
+        "total": len(matching),
+        "truncated": len(matching) > limit,
+        "other_facilities": other_facilities,
+        "totals": {
+            "transfers": len(matching),
+            "units_sent": sum(t["summary"]["received"] for t in settled if t["direction"] == "sent"),
+            "units_received": sum(t["summary"]["received"] for t in settled if t["direction"] == "received"),
+            "units_failed": sum(t["summary"]["failed"] for t in settled),
+            "transfers_with_expired_units": sum(1 for t in settled if t["summary"]["failed"]),
+        },
+    }
 
 
 @app.get("/requests/{request_id}")
@@ -4797,13 +4971,7 @@ def get_request_detail(request_id: int, facility_id: int = Depends(get_acting_fa
     timeline = _request_timeline(req, {fid: f["name"] for fid, f in facilities.items()}, emails, units, failures)
     received = next((e["outcome"] for e in timeline if e["kind"] == "received"), None)
     return {
-        "request": {
-            "id": req["id"], "status": req["status"], "blood_type": req["blood_type"], "component": req["component"],
-            "quantity": req["quantity"], "emergency_type": req["emergency_type"], "created_at": req["created_at"],
-            "supplier_confirmed_at": req["supplier_confirmed_at"], "requester_confirmed_at": req["requester_confirmed_at"],
-            "requesting_facility": facilities[req["requesting_facility_id"]],
-            "supplying_facility": facilities[req["supplying_facility_id"]],
-        },
+        "request": _request_block(req, facilities),
         "timeline": timeline,
         "units": units,
         "units_recorded": bool(units),
