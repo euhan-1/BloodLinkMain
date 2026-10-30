@@ -52,9 +52,11 @@ def _cleanup_facility(conn, facility_id: int) -> None:
 
 
 class CreateRequestBody:
-    def __init__(self, supplying_facility_id: int, blood_type: str = "O+", quantity: int = 1, emergency_type: str = "restock"):
+    def __init__(self, supplying_facility_id: int, blood_type: str = "O+", quantity: int = 1, emergency_type: str = "restock",
+                 component: str = "Packed RBC"):
         self.supplying_facility_id = supplying_facility_id
         self.blood_type = blood_type
+        self.component = component
         self.quantity = quantity
         self.emergency_type = emergency_type
 
@@ -92,7 +94,7 @@ class FacilityDeactivationTests(unittest.TestCase):
             facility_type="bloodbank", is_active=False, profile_completed=True, latitude=14.6, longitude=121.1
         )
 
-        results = main.get_nearby_facilities(blood_type="O+", quantity=1, acting_facility_id=origin_id)
+        results = main.get_nearby_facilities(blood_type="O+", component="Packed RBC", quantity=1, acting_facility_id=origin_id)
         ids = {r["id"] for r in results}
         self.assertIn(active_bank_id, ids)
         self.assertNotIn(inactive_bank_id, ids)
@@ -104,7 +106,7 @@ class FacilityDeactivationTests(unittest.TestCase):
         located_id = self._facility(profile_completed=True, latitude=14.6, longitude=121.1)
         unpinned_id = self._facility(profile_completed=True, latitude=14.6, longitude=None)
 
-        ids = {r["id"] for r in main.get_nearby_facilities(blood_type="O+", quantity=1, acting_facility_id=origin_id)}
+        ids = {r["id"] for r in main.get_nearby_facilities(blood_type="O+", component="Packed RBC", quantity=1, acting_facility_id=origin_id)}
         self.assertIn(located_id, ids)
         self.assertNotIn(unpinned_id, ids)
 

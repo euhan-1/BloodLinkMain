@@ -87,14 +87,21 @@ requests, SARIMAX demand forecasting, donor broadcast.
 - **Uploads are batched** — `INSERT … SELECT … FROM unnest(...)`, never
   row-by-row. Three CSV parsers require exact column names, filter extras, and
   reject on a missing required column.
+- **A request names its component** (`COMPONENTS` in `server/main.py`: Packed RBC, Platelets; required, never
+  defaulted, no DB CHECK). `confirm_release` and `/facilities/nearby` match it exactly, so search and release agree.
+  A unit expiring on the release day is never released (`RELEASE_EXPIRY_FLOOR_DAYS`); `MIN_DAYS_TO_EXPIRY_AT_RELEASE`
+  is per-component clinical configuration, unconfirmed by clinical staff, applied before FEFO. `requests.component` is
+  NULL on the 12 requests that predate it (meaning not recorded, not releasable). Compatible alternatives are
+  red-cell compatibility, offered only for `RED_CELL_COMPONENTS`. Adding a component: one line in `COMPONENTS`, one in
+  `src/app/lib/bloodComponents.ts`.
 - **Undo** reads `inventory_snapshot_write_log` to restore displaced counts, and
   clears `facility_forecast_cache` for the facility.
 
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (325 tests plus
-  121 subtests; use `server/.venv`, system Python lacks pytest). Never run
+  local scratch Postgres: `python -m pytest server/tests -q` (353 tests plus
+  131 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
   refuses to run without it or against a non-local host, overrides
@@ -104,7 +111,8 @@ requests, SARIMAX demand forecasting, donor broadcast.
   Frontend checks: `node scripts/check_stock_bands.ts` (stock band rules) and
   `node scripts/check_forecast_source_tags.ts` (per-type forecast source tags) and
   `node scripts/check_trend_chart.ts` (trend chart history/forecast data) and
-  `node scripts/check_incoming_groups.ts` (the blood bank's incoming-request sections), each printing `ok`, plus
+  `node scripts/check_incoming_groups.ts` (the blood bank's incoming-request sections) and
+  `node scripts/check_components.ts` (request components match the server's), each printing `ok`, plus
   `npm run typecheck`. The frontend has no component test runner.
   A red suite is a finding, not a footnote — "known failure" is how a real
   bug hides.

@@ -3,6 +3,8 @@ import { CheckCircle, Minus, Plus } from "lucide-react";
 import { BloodTypeBadge } from "../components/BloodTypeBadge";
 import { FacilityNetworkMap, type Facility } from "../components/FacilityNetworkMap";
 import { Skeleton } from "../components/Skeleton";
+import { ComponentPicker } from "../components/ComponentPicker";
+import { usesRedCellCompatibility, type BloodComponent } from "../lib/bloodComponents";
 import { ALL_BLOOD_TYPES, BLOOD_COMPATIBILITY } from "../lib/statusTokens";
 import { EMERGENCY_TYPE_LABELS, type EmergencyType } from "../lib/requestTypes";
 
@@ -18,10 +20,14 @@ const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 const sentence = (s: string) => s.charAt(0) + s.slice(1).toLowerCase();
 const REASONS = Object.keys(EMERGENCY_TYPE_LABELS) as EmergencyType[];
 const RAISED = "shadow-[var(--shadow-raised)]";
+// "O+ Packed RBC": what is being searched for and requested. A request names both, so the screen does too.
+const what = (p: { searchType: string; component: BloodComponent | null }) => (p.component ? `${p.searchType} ${p.component}` : p.searchType);
 
 export type HospitalSourcingProps = {
   searchType: string;
   onSearchType: (type: string) => void;
+  component: BloodComponent | null;
+  onComponent: (component: BloodComponent) => void;
   quantity: number;
   onQuantity: (n: number) => void;
   banks: Facility[];
@@ -83,7 +89,7 @@ export function HospitalSourcingView(p: HospitalSourcingProps) {
               <p role="alert" className="p-6 text-[15px] text-status-critical-text">Failed to load facilities: {p.error}</p>
             ) : (
               <FacilityNetworkMap
-                key={`${p.searchType}-${p.origin ? "origin" : "no-origin"}`}
+                key={`${p.searchType}-${p.component}-${p.origin ? "origin" : "no-origin"}`}
                 variant="ranked"
                 banks={p.banks}
                 origin={p.origin}
@@ -119,7 +125,8 @@ export function HospitalSourcingView(p: HospitalSourcingProps) {
 // ─── Controls (flat) ────────────────────────────────────────────────────────
 
 function Controls(p: HospitalSourcingProps) {
-  const compatible = (BLOOD_COMPATIBILITY[p.searchType] ?? []).filter((t) => t !== p.searchType);
+  // Red-cell compatibility only: it does not describe platelets, so for them (or before a component is chosen) it is not shown.
+  const compatible = usesRedCellCompatibility(p.component) ? (BLOOD_COMPATIBILITY[p.searchType] ?? []).filter((t) => t !== p.searchType) : [];
   // Only claim "nothing available" once the list has loaded.
   const nobodyHasIt = !p.loading && !p.error && !p.banks.some((b) => b.available);
   return (
@@ -128,6 +135,7 @@ function Controls(p: HospitalSourcingProps) {
         Find blood supply
       </h2>
       <div className="mt-4 flex flex-wrap items-end gap-x-10 gap-y-4">
+        <ComponentPicker value={p.component} onChange={p.onComponent} />
         <fieldset>
           <legend className="text-[14px] font-semibold text-foreground mb-1.5">Blood type needed</legend>
           <div className="grid grid-cols-4 gap-1.5 sm:flex">
@@ -176,7 +184,7 @@ function Controls(p: HospitalSourcingProps) {
           the types are a suggestion, and staff verify them. */}
       {compatible.length > 0 && (
         <p className="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-[14px] text-foreground">
-          {nobodyHasIt && <span className="font-semibold">No facility has {p.searchType} right now.</span>}
+          {nobodyHasIt && <span className="font-semibold">No facility has {what(p)} right now.</span>}
           <span>Also compatible with {p.searchType}:</span>
           {compatible.map((t) => (
             <button
@@ -219,6 +227,7 @@ function FacilityList(p: HospitalSourcingProps) {
       </div>
     );
   }
+  if (p.component === null) return <p className="text-[15px] text-foreground">Choose a component to see which facilities can supply it.</p>;
   if (p.banks.length === 0) return <p className="text-[15px] text-foreground">No blood banks with a known location were found near you.</p>;
 
   // Rank is the server's order: exact type available, then unavailable with an alternative in stock, then the rest.
@@ -228,9 +237,9 @@ function FacilityList(p: HospitalSourcingProps) {
 
   return (
     <div aria-busy={p.loading} className={p.loading ? "opacity-60 transition-opacity" : "transition-opacity"}>
-      <h3 className="text-[15px] font-semibold text-foreground pb-2 border-b border-gray-300">Can supply {p.searchType}</h3>
+      <h3 className="text-[15px] font-semibold text-foreground pb-2 border-b border-gray-300">Can supply {what(p)}</h3>
       {can.length === 0 ? (
-        <p className="py-3 text-[15px] text-foreground">No facility has {p.searchType} right now.</p>
+        <p className="py-3 text-[15px] text-foreground">No facility has {what(p)} right now.</p>
       ) : (
         <ul>
           {can.map(({ bank, rank }) => (
@@ -240,7 +249,7 @@ function FacilityList(p: HospitalSourcingProps) {
       )}
       {cant.length > 0 && (
         <>
-          <h3 className="mt-4 text-[15px] font-semibold text-foreground pb-2 border-b border-gray-300">Can't supply {p.searchType}</h3>
+          <h3 className="mt-4 text-[15px] font-semibold text-foreground pb-2 border-b border-gray-300">Can't supply {what(p)}</h3>
           <ul>
             {cant.map(({ bank, rank }) => (
               <UnavailableRow
@@ -343,8 +352,8 @@ function RequestPanel(p: HospitalSourcingProps & { selected: Facility | null }) 
         <>
           <h2 id="request-heading" className="font-display font-bold text-lg tracking-tight text-foreground">Request</h2>
           <p className="mt-1.5 text-[15px] text-foreground">
-            Select a facility from the list or the map.
-            {!p.loading && !p.error && p.banks.length > 0 && !anyAvailable && ` No facility has ${p.searchType} right now.`}
+            {p.component === null ? "Choose a component, then select a facility from the list or the map." : "Select a facility from the list or the map."}
+            {!p.loading && !p.error && p.banks.length > 0 && !anyAvailable && ` No facility has ${what(p)} right now.`}
           </p>
         </>
       )}
@@ -352,7 +361,7 @@ function RequestPanel(p: HospitalSourcingProps & { selected: Facility | null }) 
       {selected !== null && !selected.available && (
         <>
           <h2 id="request-heading" className="font-display font-bold text-lg tracking-tight text-foreground">
-            {selected.name} can't supply {p.searchType}
+            {selected.name} can't supply {what(p)}
           </h2>
           {selected.compatible_alternatives.length > 0 ? (
             <>
@@ -383,7 +392,7 @@ function RequestPanel(p: HospitalSourcingProps & { selected: Facility | null }) 
             <CheckCircle size={20} className="text-status-safe-text shrink-0" /> Request sent
           </h2>
           <p className="mt-2 text-[15px] text-foreground">
-            {selected.name} has your request for {units} of {p.searchType}. Follow its status and message them in Request and chats.
+            {selected.name} has your request for {units} of {what(p)}. Follow its status and message them in Request and chats.
             The number on that tab counts requests still waiting for a reply.
           </p>
           <button
@@ -399,7 +408,7 @@ function RequestPanel(p: HospitalSourcingProps & { selected: Facility | null }) 
       {selected !== null && selected.available && !sent && (
         <>
           <h2 id="request-heading" className="font-display font-bold text-lg tracking-tight text-foreground">
-            <span className="block">Request {units} of {p.searchType}</span>{" "}
+            <span className="block">Request {units} of {what(p)}</span>{" "}
             <span className="block text-[14px] font-[500] tracking-normal font-sans text-foreground mt-0.5">from {selected.name}</span>
           </h2>
 

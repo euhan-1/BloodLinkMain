@@ -5,7 +5,7 @@ import { groupIncomingRequests, IMMEDIATE_USE_TYPES, isImmediateUse, type Reques
 const eq = (a: unknown, b: unknown, m: string) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m}: ${JSON.stringify(a)} !== ${JSON.stringify(b)}`); };
 const T0 = Date.UTC(2026, 0, 1);
 const req = (id: string, status: string, emergency_type: string, hours: number): RequestRow => ({
-  id: id as unknown as number, requesting_facility_id: 1, supplying_facility_id: 2, blood_type: "O+", quantity: 2,
+  id: id as unknown as number, requesting_facility_id: 1, supplying_facility_id: 2, blood_type: "O+", component: "Packed RBC", quantity: 2,
   emergency_type: emergency_type as RequestRow["emergency_type"], status, created_at: new Date(T0 + hours * 3600e3).toISOString(),
   supplier_confirmed_at: null, requester_confirmed_at: null, failed_units: [],
 });

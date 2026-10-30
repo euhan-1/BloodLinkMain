@@ -584,7 +584,8 @@ CREATE TABLE public.requests (
     status text DEFAULT 'pending'::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     supplier_confirmed_at timestamp with time zone,
-    requester_confirmed_at timestamp with time zone
+    requester_confirmed_at timestamp with time zone,
+    component text
 );
 
 

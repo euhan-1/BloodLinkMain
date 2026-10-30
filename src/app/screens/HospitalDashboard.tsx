@@ -273,7 +273,7 @@ function YourRequests({ requests, failed, onViewRequests }: { requests: RequestR
                 <BloodTypeBadge type={req.blood_type} size="md" />
                 <div className="min-w-0 flex-1">
                   <div className="text-[15px] font-semibold text-foreground">
-                    {req.quantity} {plural(req.quantity, "unit", "units")} for {EMERGENCY_TYPE_LABELS[req.emergency_type].toLowerCase()}
+                    {req.quantity} {plural(req.quantity, "unit", "units")}{req.component ? ` of ${req.component}` : ""} for {EMERGENCY_TYPE_LABELS[req.emergency_type].toLowerCase()}
                   </div>
                   <div className="text-[14px] text-foreground">{req.supplying_facility_name ?? `Facility ${req.supplying_facility_id}`}</div>
                   <div className={`text-[14px] font-semibold mt-0.5 ${needsRequesterAction(req) ? "text-primary" : "text-foreground"}`}>

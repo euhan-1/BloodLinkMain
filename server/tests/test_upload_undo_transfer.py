@@ -39,13 +39,13 @@ class UndoAfterTransferTests(unittest.TestCase):
             ]
             # Stock the bank already held before the upload.
             c.execute(text("INSERT INTO blood_units (din, blood_type, component, location, volume_ml, collected_date, "
-                           "expires_date, facility_id, created_at) VALUES (:d, 'O+', 'Whole Blood', 'Fridge A', 450, "
+                           "expires_date, facility_id, created_at) VALUES (:d, 'O+', 'Packed RBC', 'Fridge A', 450, "
                            ":col, :exp, :f, now() - interval '1 day')"),
                       {"d": f"{tag}-OLD", "col": TODAY - timedelta(days=2), "exp": TODAY + timedelta(days=60), "f": bank})
 
         col = TODAY - timedelta(days=2)
         csv_text = "din,blood_type,component,location,volume_ml,collected_date,expires_date\n" + "\n".join(
-            f"{din},O+,Whole Blood,{loc},450,{col},{TODAY + timedelta(days=days)}"
+            f"{din},O+,Packed RBC,{loc},450,{col},{TODAY + timedelta(days=days)}"
             for din, loc, days in [(f"{tag}-1", "Fridge A", 10), (f"{tag}-2", "Fridge A", 11),
                                    (f"{tag}-3", "Fridge A", 30), (f"{tag}-OLD", "Fridge B", 60)]
         )
@@ -55,7 +55,7 @@ class UndoAfterTransferTests(unittest.TestCase):
         upload_id = q("SELECT id FROM upload_history WHERE facility_id = :f", f=bank)[0][0]
 
         req = app.create_request(app.CreateRequestBody(supplying_facility_id=bank, blood_type="O+", quantity=2,
-                                                       emergency_type="trauma"), requesting_facility_id=hospital)
+                                                       component="Packed RBC", emergency_type="trauma"), requesting_facility_id=hospital)
         app.accept_request(req["id"], facility_id=bank)
         app.confirm_release(req["id"], facility_id=bank)  # FEFO: -1 and -2 expire first
         app.confirm_receipt(req["id"], facility_id=hospital)

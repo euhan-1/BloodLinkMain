@@ -75,7 +75,7 @@ def add_unit(facility_id, din, expires_in_days):
 
 def released_request(bank, hospital, quantity):
     req = app.create_request(app.CreateRequestBody(supplying_facility_id=bank, blood_type="O+", quantity=quantity,
-                                                   emergency_type="trauma"), requesting_facility_id=hospital)
+                                                   component="Packed RBC", emergency_type="trauma"), requesting_facility_id=hospital)
     app.accept_request(req["id"], facility_id=bank)
     app.confirm_release(req["id"], facility_id=bank)
     return req["id"]
@@ -95,12 +95,12 @@ class ExpiredBeforeReceiptTests(unittest.TestCase):
         return f"{self.tag}-{n}"
 
     def test_partial_receipt_transfers_usable_units_and_fails_the_expired_one(self):
-        add_unit(self.bank, self.din(1), 1)   # expired by receipt day
-        add_unit(self.bank, self.din(2), 2)   # expires ON receipt day: still usable
+        add_unit(self.bank, self.din(1), 3)   # the least time the release margin lets through; gone by receipt day
+        add_unit(self.bank, self.din(2), 5)   # expires ON receipt day: still usable
         add_unit(self.bank, self.din(3), 30)
         rid = released_request(self.bank, self.hospital, 3)
 
-        result = receive_on(2, rid, self.hospital)
+        result = receive_on(5, rid, self.hospital)
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["units_transferred"], 2)
@@ -113,7 +113,7 @@ class ExpiredBeforeReceiptTests(unittest.TestCase):
         self.assertEqual((facility, reserved), (self.bank, None))
         self.assertIsNotNone(archived)
         self.assertEqual(q("SELECT din, expires_date, reason FROM request_unit_failures WHERE request_id = :r", r=rid),
-                         [(self.din(1), TODAY + timedelta(days=1), "expired_before_receipt")])
+                         [(self.din(1), TODAY + timedelta(days=3), "expired_before_receipt")])
         # Both sides are told which unit and why.
         for f in (self.bank, self.hospital):
             msgs = [m for (m,) in q("SELECT message FROM notifications WHERE facility_id = :f "
@@ -127,11 +127,11 @@ class ExpiredBeforeReceiptTests(unittest.TestCase):
         self.assertEqual(incoming["failed_units"], listed["failed_units"])
 
     def test_every_unit_expired_fails_the_request_and_moves_nothing(self):
-        add_unit(self.bank, self.din(1), 1)
-        add_unit(self.bank, self.din(2), 1)
+        add_unit(self.bank, self.din(1), 3)
+        add_unit(self.bank, self.din(2), 3)
         rid = released_request(self.bank, self.hospital, 2)
 
-        result = receive_on(3, rid, self.hospital)
+        result = receive_on(5, rid, self.hospital)
 
         self.assertEqual((result["status"], result["units_transferred"], len(result["failed_units"])), ("failed", 0, 2))
         self.assertEqual(q("SELECT count(*) FROM blood_units WHERE facility_id = :f", f=self.hospital)[0][0], 0)
@@ -140,7 +140,7 @@ class ExpiredBeforeReceiptTests(unittest.TestCase):
         self.assertIsNotNone(confirmed)
         # Still a terminal state: a second confirm can't re-run it.
         with self.assertRaises(app.HTTPException):
-            receive_on(3, rid, self.hospital)
+            receive_on(5, rid, self.hospital)
         # The two facilities can still talk about it.
         app.send_request_message(rid, app.SendRequestMessageBody(message="Sending replacements"), facility_id=self.bank)
 
@@ -160,17 +160,17 @@ class ArchiveSkipsReservedUnitsTests(unittest.TestCase):
     def test_expired_reserved_unit_is_not_archived_then_fails_at_receipt(self):
         tag = uuid.uuid4().hex[:6].upper()
         bank, hospital = make_pair(self, tag)
-        add_unit(bank, f"{tag}-R", 1)
+        add_unit(bank, f"{tag}-R", 3)
         rid = released_request(bank, hospital, 1)
         add_unit(bank, f"{tag}-FREE", 1)  # expired too, but not reserved
 
-        with mock.patch.object(app, "business_today", return_value=TODAY + timedelta(days=2)):
+        with mock.patch.object(app, "business_today", return_value=TODAY + timedelta(days=4)):
             self.assertEqual(app.archive_expired_inventory(facility_id=bank)["archived_count"], 1)
         archived = dict(q("SELECT din, archived_at IS NOT NULL FROM blood_units WHERE facility_id = :f", f=bank))
         self.assertEqual(archived, {f"{tag}-R": False, f"{tag}-FREE": True})
 
         # The request still settles it: recorded as failed, and only then archived.
-        self.assertEqual(receive_on(2, rid, hospital)["status"], "failed")
+        self.assertEqual(receive_on(4, rid, hospital)["status"], "failed")
         self.assertTrue(q("SELECT archived_at IS NOT NULL FROM blood_units WHERE din = :d", d=f"{tag}-R")[0][0])
 
 
@@ -180,12 +180,12 @@ class UndoAfterFailedTransferTests(unittest.TestCase):
         bank, hospital = make_pair(self, tag)
         col = TODAY - timedelta(days=2)
         csv_text = "din,blood_type,component,location,volume_ml,collected_date,expires_date\n" + "\n".join(
-            f"{tag}-{n},O+,Whole Blood,Fridge A,450,{col},{TODAY + timedelta(days=d)}" for n, d in [(1, 1), (2, 30)])
+            f"{tag}-{n},O+,Packed RBC,Fridge A,450,{col},{TODAY + timedelta(days=d)}" for n, d in [(1, 3), (2, 30)])
         asyncio.run(app.upload_inventory(
             file=UploadFile(file=io.BytesIO(csv_text.encode()), filename="u.csv"), facility_id=bank, uploaded_by=None))
         upload_id = q("SELECT id FROM upload_history WHERE facility_id = :f", f=bank)[0][0]
         rid = released_request(bank, hospital, 1)  # FEFO reserves -1
-        receive_on(2, rid, hospital)
+        receive_on(4, rid, hospital)
 
         result = app.undo_upload(upload_id, facility_id=bank)
 

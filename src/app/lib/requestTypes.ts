@@ -14,6 +14,8 @@ export type RequestRow = {
   requesting_facility_id: number;
   supplying_facility_id: number;
   blood_type: string;
+  // null on a request made before components were recorded; such a request cannot be released.
+  component: string | null;
   quantity: number;
   emergency_type: EmergencyType;
   status: string;
@@ -24,6 +26,12 @@ export type RequestRow = {
   requesting_facility_name?: string;
   failed_units: { din: string; expires_date: string }[];
 };
+
+// "3 units of Packed RBC", or "3 units, component not recorded" for a request that predates components.
+export function requestUnitsText(req: Pick<RequestRow, "quantity" | "component">): string {
+  const units = `${req.quantity} ${req.quantity === 1 ? "unit" : "units"}`;
+  return req.component ? `${units} of ${req.component}` : `${units}, component not recorded`;
+}
 
 // Not yet resolved: still waiting on the supplier, or accepted and not yet received.
 export function isOutstandingRequest(req: RequestRow): boolean {

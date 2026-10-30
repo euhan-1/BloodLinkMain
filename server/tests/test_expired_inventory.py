@@ -148,7 +148,7 @@ class ExpiredExcludedFromAvailabilityTests(unittest.TestCase):
             _cleanup_facility(conn, self.supplier_id)
 
     def test_supplier_with_only_expired_stock_is_not_offered_as_available(self):
-        results = main.get_nearby_facilities(blood_type="O+", quantity=1, acting_facility_id=self.origin_id)
+        results = main.get_nearby_facilities(blood_type="O+", component="Packed RBC", quantity=1, acting_facility_id=self.origin_id)
         supplier_result = next(r for r in results if r["id"] == self.supplier_id)
         # matching_units counts only non-expired stock server-side — 5
         # expired units at this facility must read as 0, not 5.

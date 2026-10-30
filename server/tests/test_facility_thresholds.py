@@ -189,7 +189,7 @@ class NearbyFacilitiesUsesEachCandidatesOwnThresholdTests(unittest.TestCase):
                 _cleanup_facility(conn, fid)
 
     def test_each_candidate_is_judged_against_its_own_threshold_not_a_shared_one(self):
-        results = main.get_nearby_facilities(blood_type="O+", quantity=1, acting_facility_id=self.origin)
+        results = main.get_nearby_facilities(blood_type="O+", component="Packed RBC", quantity=1, acting_facility_id=self.origin)
         by_id = {r["id"]: r for r in results}
 
         strict = by_id[self.strict_candidate]

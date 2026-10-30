@@ -3823,8 +3823,46 @@ DEFAULT_THRESHOLDS: list[tuple[str, int, int]] = [
 ]
 
 
-def _evaluate_facility_stock(stock_by_type: dict[str, int], thresholds: dict[str, int], blood_type: str, quantity: int) -> dict:
-    """Pure: given one facility's non-expired stock counts and that SAME
+# What a transfer request can ask for. These are the two values blood_units.component holds in production; a request
+# names one, release only reserves units of exactly that component, and the nearby search counts only that component.
+# Adding one is this line and COMPONENTS in src/app/lib/bloodComponents.ts (scripts/check_components.ts compares them).
+# Do not add a component the system has never handled. There is deliberately no database CHECK, as for emergency_type.
+COMPONENTS = ("Packed RBC", "Platelets")
+
+# BLOOD_COMPATIBILITY above is red-cell compatibility. Platelets follow other rules, so a search for them offers no
+# compatible alternatives until clinical staff supply the table for them.
+RED_CELL_COMPONENTS = {"Packed RBC"}
+
+# CLINICAL CONFIGURATION, not code logic. The fewest days a unit must still have before it expires, counted from the day
+# the supplier releases it, for the release to reserve it (and for the nearby search to count it). A unit whose
+# expires_date is on the release day itself is never released: RELEASE_EXPIRY_FLOOR_DAYS is the hard floor and no entry
+# below it takes effect. Receipt still only requires expires_date >= its own day (see confirm_receipt).
+#
+# Defaults, to be confirmed by the blood banks' own clinical staff before they are relied on:
+#   Packed RBC 3: the longest release-to-receipt gap on the three completed transfers in production was 2 days 12 hours
+#     (request 10); 3 days covers that gap and leaves the unit valid on the day it arrives. Three transfers, one of them
+#     slow, is a thin basis.
+#   Platelets 1: the floor. Platelets keep only about five days (general knowledge, not measured here), so a larger
+#     margin would exclude most of their life. They are also moved in hours, not days.
+# The setting applies to the requested component only, and a component missing here gets the floor.
+RELEASE_EXPIRY_FLOOR_DAYS = 1
+MIN_DAYS_TO_EXPIRY_AT_RELEASE = {"Packed RBC": 3, "Platelets": 1}
+
+
+def _release_expiry_cutoff(component: str, today: date) -> date:
+    """The earliest expires_date a unit of `component` may have to be released on `today`."""
+    return today + timedelta(days=max(RELEASE_EXPIRY_FLOOR_DAYS, MIN_DAYS_TO_EXPIRY_AT_RELEASE.get(component, 0)))
+
+
+def _component_error(component: str) -> str | None:
+    return None if component in COMPONENTS else f"component must be one of {list(COMPONENTS)}"
+
+
+def _evaluate_facility_stock(
+    stock_by_type: dict[str, int], thresholds: dict[str, int], blood_type: str, quantity: int,
+    compatibility: dict[str, list[str]] = BLOOD_COMPATIBILITY,
+) -> dict:
+    """Pure: given one facility's releasable stock counts and that SAME
     facility's own safety thresholds, compute exact-type availability plus
     any compatible-but-not-exact donor types that themselves have enough
     usable stock to cover the request.
@@ -3836,7 +3874,7 @@ def _evaluate_facility_stock(stock_by_type: dict[str, int], thresholds: dict[str
     usable_units = matching_units - thresholds.get(blood_type, 0)
 
     alternatives = []
-    for alt_type in BLOOD_COMPATIBILITY.get(blood_type, []):
+    for alt_type in compatibility.get(blood_type, []):
         if alt_type == blood_type:
             continue
         alt_usable = stock_by_type.get(alt_type, 0) - thresholds.get(alt_type, 0)
@@ -3854,13 +3892,20 @@ def _evaluate_facility_stock(stock_by_type: dict[str, int], thresholds: dict[str
 
 @app.get("/facilities/nearby")
 def get_nearby_facilities(
-    blood_type: str, quantity: int = 1, acting_facility_id: int = Depends(get_acting_facility_id)
+    blood_type: str, component: str, quantity: int = 1, acting_facility_id: int = Depends(get_acting_facility_id)
 ):
     """Blood banks ranked in three tiers — exact-type available, then
     unavailable-but-with-a-compatible-alternative in stock, then fully
     unavailable — with real haversine distance from the logged-in user's own
     facility as the tiebreaker within each tier (see _evaluate_facility_stock
     for the availability/alternatives check).
+
+    `component` is required and counts only units of that component, so a bank
+    holding only platelets is not "Available" for packed red cells and release
+    does not then fail. Only units confirm_release would reserve are counted:
+    those with enough time left before expiry (see _release_expiry_cutoff).
+    Compatible alternatives are red-cell compatibility, so only a red-cell
+    component gets them.
 
     Expired units are excluded on purpose — expired stock isn't usable, so it
     can't count as available. Safety reserve is each CANDIDATE facility's own
@@ -3872,6 +3917,9 @@ def get_nearby_facilities(
     (which was never in the bloodbank-only candidate list, so this never
     came up before).
     """
+    if (component_error := _component_error(component)) is not None:
+        raise HTTPException(status_code=422, detail=component_error)
+    today = business_today()
     with engine.connect() as conn:
         origin = conn.execute(
             text("SELECT latitude, longitude FROM facilities WHERE id = :id"),
@@ -3894,11 +3942,11 @@ def get_nearby_facilities(
                 """
                 SELECT facility_id, blood_type, count(*) AS unit_count
                 FROM blood_units
-                WHERE expires_date >= :today
+                WHERE component = :component AND expires_date >= :cutoff
                 GROUP BY facility_id, blood_type
                 """
             ),
-            {"today": business_today()},
+            {"component": component, "cutoff": _release_expiry_cutoff(component, today)},
         ).mappings().all()
 
         # profile_completed facilities only — an admin-onboarded blood bank
@@ -3930,7 +3978,7 @@ def get_nearby_facilities(
     for facility in facility_rows:
         evaluation = _evaluate_facility_stock(
             stock_by_facility.get(facility["id"], {}), thresholds_by_facility.get(facility["id"], {}),
-            blood_type, quantity,
+            blood_type, quantity, BLOOD_COMPATIBILITY if component in RED_CELL_COMPONENTS else {},
         )
         results.append({
             **dict(facility),
@@ -4033,8 +4081,17 @@ EMERGENCY_TYPES = ("trauma", "scheduled_surgery", "restock")
 class CreateRequestBody(BaseModel):
     supplying_facility_id: int
     blood_type: str
+    # Required, never defaulted: release reserves units of exactly this component, so the requester always chooses.
+    component: str
     quantity: int
     emergency_type: str
+
+    @field_validator("component")
+    @classmethod
+    def _component_valid(cls, v: str) -> str:
+        if (error := _component_error(v)) is not None:
+            raise ValueError(error)
+        return v
 
     @field_validator("emergency_type")
     @classmethod
@@ -4095,10 +4152,10 @@ def create_request(body: CreateRequestBody, requesting_facility_id: int = Depend
             text(
                 """
                 INSERT INTO requests
-                    (requesting_facility_id, supplying_facility_id, blood_type, quantity, emergency_type, status)
+                    (requesting_facility_id, supplying_facility_id, blood_type, component, quantity, emergency_type, status)
                 VALUES
-                    (:requesting_facility_id, :supplying_facility_id, :blood_type, :quantity, :emergency_type, 'pending')
-                RETURNING id, requesting_facility_id, supplying_facility_id, blood_type, quantity,
+                    (:requesting_facility_id, :supplying_facility_id, :blood_type, :component, :quantity, :emergency_type, 'pending')
+                RETURNING id, requesting_facility_id, supplying_facility_id, blood_type, component, quantity,
                           emergency_type, status, created_at
                 """
             ),
@@ -4106,6 +4163,7 @@ def create_request(body: CreateRequestBody, requesting_facility_id: int = Depend
                 "requesting_facility_id": requesting_facility_id,
                 "supplying_facility_id": body.supplying_facility_id,
                 "blood_type": body.blood_type,
+                "component": body.component,
                 "quantity": body.quantity,
                 "emergency_type": emergency_type,
             },
@@ -4117,8 +4175,9 @@ def create_request(body: CreateRequestBody, requesting_facility_id: int = Depend
         _create_notification(
             conn, body.supplying_facility_id, "incoming_request",
             # The supplier decides what to handle first, so the reason goes in the text: the stored value (a blood
-            # bank's is always restock), "scheduled_surgery" read as "scheduled surgery".
-            f"New {body.quantity}-unit {body.blood_type} {emergency_type.replace('_', ' ')} request from {requester['name']}",
+            # bank's is always restock), "scheduled_surgery" read as "scheduled surgery". The component is named because
+            # the supplier will be asked for exactly that and nothing else.
+            f"New {body.quantity}-unit {body.blood_type} {body.component} {emergency_type.replace('_', ' ')} request from {requester['name']}",
             f"requests:{row['id']}",
         )
     return dict(row)
@@ -4176,7 +4235,7 @@ def list_requests(facility_id: int = Depends(get_acting_facility_id)):
             text(
                 f"""
                 SELECT r.id, r.requesting_facility_id, r.supplying_facility_id,
-                       r.blood_type, r.quantity, r.emergency_type, r.status, r.created_at,
+                       r.blood_type, r.component, r.quantity, r.emergency_type, r.status, r.created_at,
                        r.supplier_confirmed_at, r.requester_confirmed_at,
                        sf.name AS supplying_facility_name, {_FAILED_UNITS_SQL}
                 FROM requests r
@@ -4199,7 +4258,7 @@ def list_incoming_requests(facility_id: int = Depends(get_acting_facility_id)):
             text(
                 f"""
                 SELECT r.id, r.requesting_facility_id, r.supplying_facility_id,
-                       r.blood_type, r.quantity, r.emergency_type, r.status, r.created_at,
+                       r.blood_type, r.component, r.quantity, r.emergency_type, r.status, r.created_at,
                        r.supplier_confirmed_at, r.requester_confirmed_at,
                        rf.name AS requesting_facility_name, {_FAILED_UNITS_SQL}
                 FROM requests r
@@ -4317,7 +4376,7 @@ def _select_fefo_units(candidates: list[dict], quantity: int) -> list[dict]:
     sorted_candidates = sorted(candidates, key=lambda u: u["expires_date"])
     if len(sorted_candidates) < quantity:
         raise ValueError(
-            f"only {len(sorted_candidates)} matching unreserved, non-expired units available; need {quantity}"
+            f"only {len(sorted_candidates)} matching unreserved units with enough time before expiry available; need {quantity}"
         )
     return sorted_candidates[:quantity]
 
@@ -4338,6 +4397,13 @@ def confirm_release(request_id: int, facility_id: int = Depends(get_acting_facil
             raise HTTPException(status_code=400, detail=f"cannot confirm release for status {req['status']!r}")
         if req["supplier_confirmed_at"] is not None:
             raise HTTPException(status_code=400, detail="release already confirmed")
+        # A request made before components existed names none. Matching on a NULL would reserve nothing and report a
+        # misleading "0 units available", so say what is wrong; the requester cancels it and asks again.
+        if req["component"] is None:
+            raise HTTPException(
+                status_code=400,
+                detail="this request does not say which component it needs, so it cannot be released; decline it and ask the requester to send it again",
+            )
 
         # FOR UPDATE locks the matching rows for the rest of this transaction:
         # a concurrent confirm-release (e.g. for a different request on the
@@ -4345,22 +4411,42 @@ def confirm_release(request_id: int, facility_id: int = Depends(get_acting_facil
         # blocks until we commit, then re-evaluates reserved_for_request_id
         # IS NULL against our now-committed reservation — so it naturally
         # excludes whatever we just claimed instead of racing to overwrite it.
+        # The component is matched exactly, and the expiry filter comes before FEFO picks, so the units nearest their
+        # expiry (the ones FEFO would otherwise prefer) are the ones a margin removes (see _release_expiry_cutoff).
+        today = business_today()
+        cutoff = _release_expiry_cutoff(req["component"], today)
         candidates = conn.execute(
             text(
                 """
                 SELECT id, expires_date FROM blood_units
-                WHERE facility_id = :facility_id AND blood_type = :blood_type
-                  AND expires_date >= :today AND reserved_for_request_id IS NULL
+                WHERE facility_id = :facility_id AND blood_type = :blood_type AND component = :component
+                  AND expires_date >= :cutoff AND reserved_for_request_id IS NULL
                 FOR UPDATE
                 """
             ),
-            {"facility_id": facility_id, "blood_type": req["blood_type"], "today": business_today()},
+            {"facility_id": facility_id, "blood_type": req["blood_type"], "component": req["component"], "cutoff": cutoff},
         ).mappings().all()
 
         try:
             selected = _select_fefo_units([dict(c) for c in candidates], req["quantity"])
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            # Name the units the margin held back, or a supplier whose inventory screen shows enough stock is left guessing.
+            held_back = conn.execute(
+                text(
+                    """
+                    SELECT count(*) FROM blood_units
+                    WHERE facility_id = :facility_id AND blood_type = :blood_type AND component = :component
+                      AND expires_date >= :today AND expires_date < :cutoff AND reserved_for_request_id IS NULL
+                    """
+                ),
+                {"facility_id": facility_id, "blood_type": req["blood_type"], "component": req["component"],
+                 "today": today, "cutoff": cutoff},
+            ).scalar()
+            detail = str(exc)
+            if held_back:
+                days = (cutoff - today).days
+                detail += f" ({held_back} more expire within {days} {'day' if days == 1 else 'days'} and are not released)"
+            raise HTTPException(status_code=400, detail=detail)
 
         conn.execute(
             text(

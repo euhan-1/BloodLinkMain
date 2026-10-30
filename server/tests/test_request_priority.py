@@ -169,7 +169,7 @@ class PrioritySortEndpointTests(unittest.TestCase):
         self.assertEqual(self.names(app.list_incoming_requests(facility_id=self.bank), made), ["older", "old"])
         # A trauma request arrives now, through the real create path.
         new = app.create_request(app.CreateRequestBody(supplying_facility_id=self.bank, blood_type="O+", quantity=1,
-                                                       emergency_type="trauma"), requesting_facility_id=self.hospital)
+                                                       component="Packed RBC", emergency_type="trauma"), requesting_facility_id=self.hospital)
         made["new"] = new["id"]
         self.assertEqual(self.names(app.list_incoming_requests(facility_id=self.bank), made), ["new", "older", "old"])
 
@@ -202,24 +202,24 @@ class SupplierNotificationTests(unittest.TestCase):
 
     def send(self, emergency_type, quantity=3, blood_type="A+", requester=None):
         return app.create_request(app.CreateRequestBody(supplying_facility_id=self.bank, blood_type=blood_type, quantity=quantity,
-                                                        emergency_type=emergency_type), requesting_facility_id=requester or self.hospital)
+                                                        component="Packed RBC", emergency_type=emergency_type), requesting_facility_id=requester or self.hospital)
 
     def test_the_supplier_is_told_the_reason(self):
         for etype, words in (("trauma", "trauma"), ("scheduled_surgery", "scheduled surgery"), ("restock", "restock")):
             with self.subTest(etype):
                 self.send(etype)
-                self.assertEqual(self.notified()[-1], f"New 3-unit A+ {words} request from {self.hospital_name}")
+                self.assertEqual(self.notified()[-1], f"New 3-unit A+ Packed RBC {words} request from {self.hospital_name}")
 
     def test_quantity_and_type_are_still_in_the_text(self):
         self.send("trauma", quantity=7, blood_type="O-")
-        self.assertEqual(self.notified()[-1], f"New 7-unit O- trauma request from {self.hospital_name}")
+        self.assertEqual(self.notified()[-1], f"New 7-unit O- Packed RBC trauma request from {self.hospital_name}")
 
     def test_a_blood_banks_request_is_announced_as_restock_whatever_it_asked_for(self):
         # The server forces a bank's reason to restock; the notification must say what was stored, not what was sent.
         other_bank, = make_pair(self, self.tag + "X")[:1]
         other_name = q("SELECT name FROM facilities WHERE id = :i", i=other_bank)[0][0]
         self.send("trauma", requester=other_bank)
-        self.assertEqual(self.notified()[-1], f"New 3-unit A+ restock request from {other_name}")
+        self.assertEqual(self.notified()[-1], f"New 3-unit A+ Packed RBC restock request from {other_name}")
         self.assertEqual(q("SELECT emergency_type FROM requests WHERE requesting_facility_id = :f", f=other_bank)[0][0], "restock")
 
 
@@ -253,7 +253,7 @@ class ReasonValidationTests(unittest.TestCase):
         self.addCleanup(app.app.dependency_overrides.pop, app.get_acting_facility_id, None)
 
     def body(self, emergency_type):
-        return {"supplying_facility_id": self.bank, "blood_type": "A+", "quantity": 2, "emergency_type": emergency_type}
+        return {"supplying_facility_id": self.bank, "blood_type": "A+", "component": "Packed RBC", "quantity": 2, "emergency_type": emergency_type}
 
     def rows(self):
         return q("SELECT emergency_type FROM requests WHERE requesting_facility_id = :h", h=self.hospital)

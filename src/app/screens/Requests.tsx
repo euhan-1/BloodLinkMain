@@ -7,9 +7,11 @@ import { BloodTypeBadge } from "../components/BloodTypeBadge";
 import { Modal } from "../components/Modal";
 import { FacilityNetworkMap, type Facility } from "../components/FacilityNetworkMap";
 import { HospitalSourcingView } from "./HospitalSourcing";
+import { ComponentPicker } from "../components/ComponentPicker";
+import { usesRedCellCompatibility, type BloodComponent } from "../lib/bloodComponents";
 import { useFlashOnChange } from "../lib/motion";
 import { ALL_BLOOD_TYPES, BLOOD_COMPATIBILITY } from "../lib/statusTokens";
-import { EMERGENCY_TYPE_LABELS, groupIncomingRequests, isImmediateUse, type EmergencyType, type RequestRow } from "../lib/requestTypes";
+import { EMERGENCY_TYPE_LABELS, groupIncomingRequests, isImmediateUse, requestUnitsText, type EmergencyType, type RequestRow } from "../lib/requestTypes";
 
 // Chat messages poll faster than notifications (App.tsx's NOTIFICATION_POLL_MS)
 // since a coordination chat is a live conversation, not a background alert.
@@ -125,7 +127,7 @@ function IncomingRequestCard({
       </div>
       <div className="flex items-center gap-2 mb-2 text-[13px] text-foreground">
         {position === undefined && <MessageSquare size={12} className="text-info shrink-0" />}
-        <span>{req.quantity} {req.quantity === 1 ? "unit" : "units"}</span>
+        <span>{requestUnitsText(req)}</span>
         <ReasonTag reason={req.emergency_type} />
       </div>
 
@@ -281,7 +283,7 @@ function AcceptedRequestCard({
       </div>
       <div className="flex items-center gap-2 mb-2 text-[13px] text-foreground">
         <MessageSquare size={13} className="text-info shrink-0" />
-        <span>{req.quantity} {req.quantity === 1 ? "unit" : "units"}</span>
+        <span>{requestUnitsText(req)}</span>
         <ReasonTag reason={req.emergency_type} />
       </div>
 
@@ -348,6 +350,9 @@ export function RequestsScreen({
   // supplier's pending requests (trauma and scheduled surgery ahead of restock), so it is never pre-selected. A blood
   // bank's is always restock.
   const [emergencyType, setEmergencyType] = useState<EmergencyType | null>(isBloodBankRequester ? "restock" : null);
+  // Which component to look for and request. Never pre-selected, for either role: release reserves units of exactly this
+  // component, and the search below does not run until it is chosen.
+  const [component, setComponent] = useState<BloodComponent | null>(null);
 
   // This facility's own location, for the "You" marker on the hospital's map. Not wanted by the blood-bank map, and not
   // under the dev facility override, where /facilities/me would describe the wrong facility.
@@ -500,13 +505,14 @@ export function RequestsScreen({
 
   async function sendRequest(bankId: number) {
     const reason = emergencyType ?? (isBloodBankRequester ? "restock" : null);
-    if (reason === null) return; // a hospital must choose a reason first
+    if (reason === null || component === null) return; // a hospital must choose a reason first, and anyone a component
     setSubmitting(true);
     setSubmitError(null);
     try {
       await apiPost("/requests", {
         supplying_facility_id: bankId,
         blood_type: searchType,
+        component,
         quantity: quantityNeeded,
         emergency_type: reason,
       });
@@ -559,11 +565,18 @@ export function RequestsScreen({
 
   useEffect(() => {
     let cancelled = false;
-    setBanksLoading(true);
     setBanksError(null);
     setJustSentBankId(null);
     setSubmitError(null);
-    const params = new URLSearchParams({ blood_type: searchType, quantity: String(quantityNeeded) });
+    if (component === null) {
+      // Stock is counted per component, so there is nothing true to show until one is chosen.
+      setBanks([]);
+      setSelectedBank(null);
+      setBanksLoading(false);
+      return;
+    }
+    setBanksLoading(true);
+    const params = new URLSearchParams({ blood_type: searchType, component, quantity: String(quantityNeeded) });
     apiGet<Facility[]>(`/facilities/nearby?${params}`)
       .then((data) => {
         if (cancelled) return;
@@ -580,7 +593,7 @@ export function RequestsScreen({
         if (!cancelled) setBanksLoading(false);
       });
     return () => { cancelled = true; };
-  }, [searchType, quantityNeeded]);
+  }, [searchType, quantityNeeded, component]);
 
   async function sendMessage() {
     if (!chatInput.trim() || selectedRequestId === null || sendingMessage) return;
@@ -629,6 +642,8 @@ export function RequestsScreen({
         <HospitalSourcingView
           searchType={searchType}
           onSearchType={setSearchType}
+          component={component}
+          onComponent={setComponent}
           quantity={quantityNeeded}
           onQuantity={setQuantityNeeded}
           banks={banks}
@@ -653,6 +668,9 @@ export function RequestsScreen({
           <div className="lg:col-span-2 space-y-4">
             <div className="bg-card border border-border rounded-xl p-5">
               <h3 className="font-semibold text-foreground mb-4">Find blood supply</h3>
+              <div className="mb-3">
+                <ComponentPicker value={component} onChange={setComponent} />
+              </div>
               <div className="mb-3">
                 <label className="text-[13px] font-semibold text-muted-foreground block mb-1.5">
                   Blood type needed
@@ -697,7 +715,7 @@ export function RequestsScreen({
 
             {/* Blood type compatibility notice */}
             {(() => {
-              const compatible = (BLOOD_COMPATIBILITY[searchType] ?? []).filter((t) => t !== searchType);
+              const compatible = usesRedCellCompatibility(component) ? (BLOOD_COMPATIBILITY[searchType] ?? []).filter((t) => t !== searchType) : [];
               // Only claim "no exact match" once the list has loaded and nothing in it is available.
               const noExactMatch = !banksLoading && !banksError && !banks.some((b) => b.available);
               return compatible.length > 0 ? (
@@ -728,8 +746,13 @@ export function RequestsScreen({
 
             <div className="space-y-2">
               <div className="text-[14px] font-semibold text-foreground px-1">
-                Nearest facilities — {searchType} available
+                Nearest facilities — {searchType}{component ? ` ${component}` : ""} available
               </div>
+              {component === null && (
+                <div className="bg-card border border-border rounded-xl p-6 text-center text-[13px] text-muted-foreground">
+                  Choose a component to see which facilities can supply it.
+                </div>
+              )}
               {banksLoading && (
                 <div className="bg-card border border-border rounded-xl p-6 text-center text-[13px] text-muted-foreground">
                   Loading facilities…
@@ -857,7 +880,7 @@ export function RequestsScreen({
                       real coordinates; the selected one is the larger, primary-
                       colored pin. Click any pin to select that facility. */}
                   <div className="mx-6 mt-5 rounded-xl overflow-hidden border border-border" style={{ height: 360 }}>
-                    <FacilityNetworkMap key={searchType} banks={banks} selectedBankId={selectedBank} onSelectBank={setSelectedBank} />
+                    <FacilityNetworkMap key={`${searchType}-${component}`} banks={banks} selectedBankId={selectedBank} onSelectBank={setSelectedBank} />
                   </div>
 
                   <div className="px-6 py-5 space-y-3">
@@ -865,7 +888,7 @@ export function RequestsScreen({
                       {[
                         { label: "Distance", value: `${bank.distance_km} km` },
                         { label: "Availability", value: bank.available ? "Available" : "Unavailable" },
-                        { label: "Blood type needed", value: `${searchType} (${quantityNeeded} units)` },
+                        { label: "Blood type needed", value: `${searchType}${component ? ` ${component}` : ""} (${quantityNeeded} units)` },
                         // No exact stock number here — a facility never sees another
                         // facility's raw inventory count, matching the paper's
                         // Availability Status definition. "Availability" above is
@@ -1074,7 +1097,7 @@ export function RequestsScreen({
                       <h3 className="font-semibold text-foreground">Coordination chat</h3>
                       <p className="text-[13px] text-muted-foreground">
                         {selectedRequest
-                          ? `REQ-${selectedRequest.id} · ${resolveFacilityName(selectedRequest.requesting_facility_id, selectedRequest.requesting_facility_name)} ↔ ${resolveFacilityName(selectedRequest.supplying_facility_id, selectedRequest.supplying_facility_name)} · ${selectedRequest.blood_type} · ${selectedRequest.quantity} units`
+                          ? `REQ-${selectedRequest.id} · ${resolveFacilityName(selectedRequest.requesting_facility_id, selectedRequest.requesting_facility_name)} ↔ ${resolveFacilityName(selectedRequest.supplying_facility_id, selectedRequest.supplying_facility_name)} · ${selectedRequest.blood_type}${selectedRequest.component ? ` ${selectedRequest.component}` : ""} · ${selectedRequest.quantity} units`
                           : "Select a request from the left to view its coordination chat"}
                       </p>
                     </div>
@@ -1215,7 +1238,7 @@ export function RequestsScreen({
               <table className="w-full text-[14px]">
                 <thead>
                   <tr className="border-b border-border bg-secondary">
-                    {["Request ID", "Supplying facility", "Blood type", "Qty", "Reason", "Submitted", "Status", ""].map((h) => (
+                    {["Request ID", "Supplying facility", "Blood type", "Component", "Qty", "Reason", "Submitted", "Status", ""].map((h) => (
                       <th key={h} className="text-left py-3 px-4 text-[13px] font-semibold text-gray-600 whitespace-nowrap">
                         {h}
                       </th>
@@ -1238,6 +1261,7 @@ export function RequestsScreen({
                           <td className="py-3 px-4">
                             <BloodTypeBadge type={req.blood_type} size="md" />
                           </td>
+                          <td className="py-3 px-4 text-[14px] text-foreground whitespace-nowrap">{req.component ?? "Not recorded"}</td>
                           <td className="py-3 px-4 font-semibold text-foreground tabular-nums">{req.quantity}</td>
                           <td className="py-3 px-4">
                             <ReasonTag reason={req.emergency_type} />
@@ -1275,7 +1299,7 @@ export function RequestsScreen({
           <Modal title="Cancel Request" onClose={() => setCancelConfirmId(null)}>
             <div className="space-y-4">
               <p className="text-[14px] text-muted-foreground">
-                Cancel the {req.quantity}-unit {req.blood_type} request to {req.supplying_facility_name}?
+                Cancel the {req.quantity}-unit {req.blood_type}{req.component ? ` ${req.component}` : ""} request to {req.supplying_facility_name}?
                 This can't be undone — you'll need to submit a new request if you still need this blood type.
               </p>
               <div className="flex gap-2">

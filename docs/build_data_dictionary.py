@@ -143,6 +143,7 @@ D = {
         "created_at": "When the request was made.",
         "supplier_confirmed_at": "When the supplier confirmed the hand-over; NULL until then.",
         "requester_confirmed_at": "When the requester confirmed receipt; NULL until then. Both confirmations complete the transfer.",
+        "component": "The blood component requested ('Packed RBC' or 'Platelets'); release reserves only units of exactly this component. NULL on requests made before components were recorded, meaning not recorded, and such a request cannot be released. Free text; no database CHECK.",
     },
     "request_messages": {
         "id": "Unique identifier of the message.",

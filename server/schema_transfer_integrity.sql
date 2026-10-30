@@ -1,0 +1,11 @@
+-- Transfer integrity. ONE migration, built in stages; each stage appends its section below and the whole file stays
+-- idempotent (re-running it changes nothing). Not applied to any database yet.
+--
+-- Stage 1: the component a request asks for. Release reserves only units of exactly this component, and the nearby
+-- search counts only it (see main.CreateRequestBody, confirm_release, get_nearby_facilities).
+--
+-- Nullable on purpose: the 12 requests that exist were made before components, and nothing can say which component
+-- they meant. NULL reads as "not recorded", never as a component. confirm_release refuses a request whose component
+-- is NULL; new requests always carry one (the API requires it). No CHECK constraint, as for emergency_type: the list
+-- lives in main.COMPONENTS so that adding one is a single line, not a second production migration.
+ALTER TABLE requests ADD COLUMN IF NOT EXISTS component text;
