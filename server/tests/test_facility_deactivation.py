@@ -43,6 +43,7 @@ def _make_facility(
 
 
 def _cleanup_facility(conn, facility_id: int) -> None:
+    conn.execute(text("DELETE FROM request_units WHERE request_id IN (SELECT id FROM requests WHERE requesting_facility_id = :fid OR supplying_facility_id = :fid)"), {"fid": facility_id})
     conn.execute(text("DELETE FROM requests WHERE requesting_facility_id = :fid OR supplying_facility_id = :fid"), {"fid": facility_id})
     conn.execute(text("DELETE FROM notifications WHERE facility_id = :fid"), {"fid": facility_id})
     conn.execute(text("DELETE FROM users WHERE facility_id = :fid"), {"fid": facility_id})

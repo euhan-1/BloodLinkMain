@@ -603,6 +603,7 @@ ALTER TABLE public.requests ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
 );
 
 
+
 --
 -- Name: synthetic_forecast_cache; Type: TABLE; Schema: public; Owner: -
 --
@@ -1358,6 +1359,40 @@ ALTER TABLE ONLY public.upload_history
 
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_facility_id_fkey FOREIGN KEY (facility_id) REFERENCES public.facilities(id);
+
+
+--
+-- Name: request_units; Type: TABLE; Schema: public; Owner: -
+-- HAND-WRITTEN (stage 2), inline constraints, appended at the end so the keys it references exist: not pg_dump output.
+-- Regenerate this file after the migration is applied.
+--
+
+CREATE TABLE public.request_units (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    request_id bigint NOT NULL REFERENCES public.requests(id),
+    blood_unit_id bigint REFERENCES public.blood_units(id) ON DELETE SET NULL,
+    din text NOT NULL,
+    blood_type text NOT NULL,
+    component text NOT NULL,
+    volume_ml integer NOT NULL,
+    collected_date date NOT NULL,
+    expires_date date NOT NULL,
+    origin_location text NOT NULL,
+    days_remaining_at_release integer NOT NULL,
+    outcome text DEFAULT 'reserved'::text NOT NULL,
+    reason text,
+    days_remaining_at_receipt integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    UNIQUE (request_id, blood_unit_id),
+    UNIQUE (request_id, din),
+    CONSTRAINT request_units_outcome_valid CHECK (outcome IN ('reserved', 'received', 'failed')),
+    CONSTRAINT request_units_reason_matches_outcome CHECK (
+        (outcome = 'failed' AND reason IS NOT NULL AND reason = 'expired_before_receipt') OR (outcome <> 'failed' AND reason IS NULL)
+    ),
+    CONSTRAINT request_units_receipt_days_when_settled CHECK ((outcome = 'reserved') = (days_remaining_at_receipt IS NULL))
+);
+
+CREATE INDEX idx_request_units_unit ON public.request_units USING btree (blood_unit_id);
 
 
 --

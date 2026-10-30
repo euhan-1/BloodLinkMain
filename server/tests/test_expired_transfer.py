@@ -51,6 +51,7 @@ def delete_facilities(ids):
     reqs = "(SELECT id FROM requests WHERE requesting_facility_id = ANY(:f) OR supplying_facility_id = ANY(:f))"
     with engine.begin() as c:
         for sql in (
+            f"DELETE FROM request_units WHERE request_id IN {reqs}",
             f"DELETE FROM request_unit_failures WHERE request_id IN {reqs}",
             f"DELETE FROM request_messages WHERE request_id IN {reqs}",
             "DELETE FROM blood_units WHERE facility_id = ANY(:f)",

@@ -34,6 +34,7 @@ TABLE_DOC = {
     "blood_type_thresholds": "Per-facility minimum and maximum stock levels for each blood type; they drive low-stock and overstock status and restock recommendations. Operational configuration.",
     "requests": "Blood transfer requests between two facilities (one requests, one supplies) and their lifecycle from pending to completed. Operational.",
     "request_messages": "The chat thread attached to a transfer request, letting the two facilities coordinate. Operational.",
+    "request_units": "The per-unit ledger of a transfer: one row per unit the supplier reserved at release, copied as it stood then (DIN, type, component, volume, dates, shelf), then settled as received or failed when the requester confirms receipt. A snapshot, so a later CSV re-upload cannot rewrite what was released. Operational (audit).",
     "request_unit_failures": "One row per reserved unit that could not be received because it expired between the supplier's release and the requester's receipt. Records which DIN failed and why, so a short delivery is never unexplained. Operational (audit).",
     "notifications": "In-app notifications shown to a facility (incoming requests, expiring units, forecast shortages, and so on). Operational.",
     "upload_history": "An audit record of each CSV upload (inventory, donors or historical stock), including the raw file and any per-row errors, so an upload can be undone. Operational (audit).",
@@ -151,6 +152,23 @@ D = {
         "sender_facility_id": "The facility that wrote the message.",
         "message": "The message text.",
         "created_at": "When it was sent.",
+    },
+    "request_units": {
+        "id": "Unique identifier of the ledger row.",
+        "request_id": "The transfer request the unit was reserved for.",
+        "blood_unit_id": "The unit, while it still exists. NULL once the unit has been deleted from inventory (ON DELETE SET NULL); the DIN below keeps the record.",
+        "din": "The unit's donation identification number at release.",
+        "blood_type": "The unit's blood type at release (a later CSV re-upload may change the live unit).",
+        "component": "The unit's component at release.",
+        "volume_ml": "The unit's volume in millilitres at release.",
+        "collected_date": "The unit's collection date at release.",
+        "expires_date": "The unit's expiry date at release (a snapshot; never updated).",
+        "origin_location": "The supplier's shelf or storage location for the unit at release.",
+        "days_remaining_at_release": "Whole days between the release day (Manila business date) and expires_date.",
+        "outcome": "'reserved' from release until receipt, then 'received' or 'failed' (database CHECK).",
+        "reason": "Why the unit failed; set exactly when outcome is 'failed'. Only 'expired_before_receipt' exists (database CHECK).",
+        "days_remaining_at_receipt": "Whole days between the receipt day and the live unit's expiry at receipt, the value the received/failed decision was made on; NULL until receipt. Zero or negative for a unit that expired in transit. It differs from expires_date minus the receipt day only if the unit's expiry was changed after release.",
+        "created_at": "When the supplier confirmed release and the row was written.",
     },
     "request_unit_failures": {
         "id": "Unique identifier of the failure record.",
@@ -347,7 +365,7 @@ def main():
         attn = {(r[0], r[1]): r[2] for r in c.execute(text("select attrelid::regclass::text, attnum, attname from pg_attribute where attnum>0 and not attisdropped and attrelid in (select oid from pg_class where relnamespace='public'::regnamespace)"))}
         missing = [t for t in tabs if t not in TABLE_DOC]
         assert not missing, f"undocumented tables: {missing}"
-        pk, uk, fk, fkrows, cascade_fks = {}, {}, {}, [], []
+        pk, uk, fk, fkrows, cascade_fks, setnull_fks = {}, {}, {}, [], [], []
         for k in cons:
             cols = [attn[(k["t"], n)] for n in k["conkey"]]
             if k["contype"] == "p":
@@ -362,6 +380,8 @@ def main():
                 fkrows.append((k["t"], cols[0], k["ft"], pcol))
                 if k["confdeltype"] == "c":
                     cascade_fks.append(f"{k['t']}.{cols[0]}")
+                if k["confdeltype"] == "n":
+                    setnull_fks.append(f"{k['t']}.{cols[0]}")
         md, totals, nullable = [], {}, {}
         for t in tabs:
             cols = [dict(r) for r in c.execute(text("select column_name,data_type,character_maximum_length cl,numeric_precision np,numeric_scale ns,is_nullable from information_schema.columns where table_schema='public' and table_name=:t order by ordinal_position"), {"t": t}).mappings()]
@@ -423,10 +443,13 @@ def main():
             card = "1:1" if (ct, cc) in uniq_single else ("many : 0..1" if nullable[(ct, cc)] else "many : 1")
             fkmd.append(f"| {ct}.{cc} | {pt}.{pc} | {card} | {'yes' if nullable[(ct, cc)] else 'no'} |")
         delrules = {k["confdeltype"] for k in cons if k["contype"] == "f"}
-        assert delrules <= {"a", "c"}, f"a delete rule other than NO ACTION / CASCADE exists: {delrules}; update the prose"
+        assert delrules <= {"a", "c", "n"}, f"a delete rule other than NO ACTION / CASCADE / SET NULL exists: {delrules}; update the prose"
         check_tables = sorted({k["t"] for k in cons if k["contype"] == "c"})
         n_checks = sum(1 for k in cons if k["contype"] == "c")
         assert not {"users", "requests", "facilities"} & set(check_tables), "users/requests/facilities now have CHECKs; the free-text sentence below is wrong"
+        # request_units.blood_unit_id is SET NULL on purpose: the ledger row outlives a unit deleted from inventory.
+        setnull_names = ", ".join(f"`{x}`" for x in sorted(setnull_fks))
+        setnull_note = f" {setnull_names} is `SET NULL`: the row outlives the parent, which is the point of a ledger." if setnull_fks else ""
         cascade_names = [f"`{x}`" for x in sorted(cascade_fks)]
         cascade_text = " and ".join([", ".join(cascade_names[:-1]), cascade_names[-1]]) if len(cascade_names) > 1 else cascade_names[0]
         # what inventory_snapshots holds, for the Research vs operational table
@@ -444,7 +467,7 @@ deployed; example values are real values from actual rows, with the exceptions d
 
 * **{total} tables** in the `public` schema, {sum(v[1] for v in totals.values())} columns in all, {len(fkrows)} foreign keys. Views: {', '.join(views) or 'none'}.
 * **No unexpected tables.** Every table maps to a feature: identity (`facilities`, `users`, `password_reset_requests`, `facility_registration_requests`, `otp_codes`), inventory
-  (`blood_units`, `blood_type_thresholds`, `upload_history`, `inventory_snapshot_write_log`), transfers (`requests`, `request_messages`, `request_unit_failures`), notification
+  (`blood_units`, `blood_type_thresholds`, `upload_history`, `inventory_snapshot_write_log`), transfers (`requests`, `request_messages`, `request_units`, `request_unit_failures`), notification
   (`notifications`), donor outreach (`donors`, `blasts`, `blast_messages`, `blast_replies`) and forecasting (`inventory_snapshots`,
   `facility_forecast_cache`, `facility_sarimax_order`, `forecast_alert_state`, `synthetic_inventory_snapshots`, `synthetic_forecast_cache`). The ones easiest to
   overlook are `facility_sarimax_order` (the SARIMAX order chosen offline per facility and blood type), `forecast_alert_state` (alert de-duplication), `upload_history` (audit; holds the raw CSV text and drives undo), `inventory_snapshot_write_log` (lets undo restore overwritten snapshots) and the
@@ -453,7 +476,7 @@ deployed; example values are real values from actual rows, with the exceptions d
   answers). Full column lists below.
 * **`facilities` carries more than name, type, address, coordinates and `is_active`.** The onboarding migration also added
   `department`, `doh_license_number` and `profile_completed`, so the table has 10 columns.
-* **Referential integrity:** every foreign key is `NO ACTION` on delete (a parent row cannot be deleted while children exist), except {cascade_text}, which `CASCADE` because those rows have no meaning without their parent (a pure log and derived selection results).
+* **Referential integrity:** every foreign key is `NO ACTION` on delete (a parent row cannot be deleted while children exist), except {cascade_text}, which `CASCADE` because those rows have no meaning without their parent (a pure log and derived selection results).{setnull_note}
   {n_checks} CHECK constraints exist, on {check_text}; each is shown under its table. Enumerations such as `users.role`, `requests.status`
   and `facilities.facility_type` are free text validated in application code only.
 
@@ -482,7 +505,7 @@ deployed; example values are real values from actual rows, with the exceptions d
 ## Foreign key map
 
 Every foreign key constraint in the deployed schema. `requests` joins `facilities` twice (requesting and supplying);
-`blood_units.reserved_for_request_id` is nullable. All are `ON DELETE NO ACTION` except {cascade_text}, which are `ON DELETE CASCADE`. Cardinality reads child : parent.
+`blood_units.reserved_for_request_id` is nullable. All are `ON DELETE NO ACTION` except {cascade_text}, which are `ON DELETE CASCADE`.{setnull_note} Cardinality reads child : parent.
 
 """ + "\n".join(fkmd) + f"""
 

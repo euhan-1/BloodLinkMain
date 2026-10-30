@@ -4455,6 +4455,22 @@ def confirm_release(request_id: int, facility_id: int = Depends(get_acting_facil
             ),
             {"rid": request_id, "uids": [unit["id"] for unit in selected]},
         )
+        # The ledger: one row per reserved unit, copied from the unit as it stands now. It is a snapshot, so a later CSV
+        # re-upload that rewrites the unit's component, blood type or expiry cannot change what was released. Same
+        # transaction as the reservation: no reserved unit without a row, no row without a reservation.
+        conn.execute(
+            text(
+                """
+                INSERT INTO request_units
+                    (request_id, blood_unit_id, din, blood_type, component, volume_ml, collected_date, expires_date,
+                     origin_location, days_remaining_at_release, outcome)
+                SELECT :rid, id, din, blood_type, component, volume_ml, collected_date, expires_date,
+                       location, expires_date - CAST(:today AS date), 'reserved'
+                FROM blood_units WHERE id = ANY(:uids)
+                """
+            ),
+            {"rid": request_id, "uids": [unit["id"] for unit in selected], "today": today},
+        )
         result = conn.execute(
             text(
                 "UPDATE requests SET supplier_confirmed_at = now() "
@@ -4536,6 +4552,24 @@ def confirm_receipt(request_id: int, facility_id: int = Depends(get_acting_facil
                 ),
                 {"requesting_facility_id": req["requesting_facility_id"], "ids": received_ids},
             )
+        # Settle the ledger rows written at release (see confirm_release), in this same transaction as the move. Days
+        # remaining at receipt is counted from the LIVE unit's expiry, the value the received/failed decision above was
+        # made on, so the ledger cannot disagree with the decision it records. The row's own expires_date stays the
+        # release-time snapshot: if a CSV re-upload changed the expiry in transit, the two differ and that is visible.
+        # The figure is zero or negative for a unit that expired in transit. A request released before the ledger existed
+        # has no rows, and none are invented here: a snapshot made at receipt would not be a snapshot of release.
+        for outcome, reason, units in (("received", None, [u for u in reserved if u["expires_date"] >= today]),
+                                       ("failed", "expired_before_receipt", expired)):
+            if units:
+                conn.execute(
+                    text(
+                        "UPDATE request_units ru SET outcome = :outcome, reason = :reason, "
+                        "days_remaining_at_receipt = b.expires_date - CAST(:today AS date) "
+                        "FROM blood_units b WHERE ru.blood_unit_id = b.id "
+                        "AND ru.request_id = :request_id AND ru.blood_unit_id = ANY(:ids)"
+                    ),
+                    {"outcome": outcome, "reason": reason, "today": today, "request_id": request_id, "ids": [u["id"] for u in units]},
+                )
         if expired:
             expired_ids = [u["id"] for u in expired]
             conn.execute(

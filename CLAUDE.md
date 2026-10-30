@@ -94,14 +94,22 @@ requests, SARIMAX demand forecasting, donor broadcast.
   NULL on the 12 requests that predate it (meaning not recorded, not releasable). Compatible alternatives are
   red-cell compatibility, offered only for `RED_CELL_COMPONENTS`. Adding a component: one line in `COMPONENTS`, one in
   `src/app/lib/bloodComponents.ts`.
+- **The transfer ledger** (`request_units`): `confirm_release` writes one row per reserved unit, copied from the unit at
+  release (DIN, type, component, volume, dates, supplier shelf, days left), and `confirm_receipt` settles each as
+  `received` or `failed` with days left at receipt (from the live unit's expiry, the value the decision used; the row's
+  own `expires_date` stays the release snapshot, so a mid-transit re-upload shows as a difference), in the same transactions. A CSV re-upload rewrites the live unit and
+  cannot rewrite the row. `blood_unit_id` is `ON DELETE SET NULL` because `DELETE /inventory/{din}` hard-deletes; the DIN
+  stays. `request_unit_failures` is still written alongside, and a test asserts the two agree. Requests released before
+  the table existed have no rows and none are invented. A test cleanup that deletes requests must delete `request_units`
+  rows first.
 - **Undo** reads `inventory_snapshot_write_log` to restore displaced counts, and
   clears `facility_forecast_cache` for the facility.
 
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (353 tests plus
-  131 subtests; use `server/.venv`, system Python lacks pytest). Never run
+  local scratch Postgres: `python -m pytest server/tests -q` (377 tests plus
+  134 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
   refuses to run without it or against a non-local host, overrides
