@@ -4022,11 +4022,26 @@ def notify_nearby_hospitals_of_expiring_unit(din: str, acting_facility_id: int =
     return {"notified_count": len(notified_names), "notified_facilities": notified_names}
 
 
+# The reasons a request can carry. The reason decides one thing: where the request is listed among the supplier's
+# pending requests (see IMMEDIATE_USE_TYPES and _apply_priority_sort below), and a value that is not recognised ranks
+# as restock without a word. So it is constrained here, at the API. There is deliberately no database CHECK: that is a
+# production migration and a separate decision, so a row written some other way can still hold another value and rank
+# as restock.
+EMERGENCY_TYPES = ("trauma", "scheduled_surgery", "restock")
+
+
 class CreateRequestBody(BaseModel):
     supplying_facility_id: int
     blood_type: str
     quantity: int
     emergency_type: str
+
+    @field_validator("emergency_type")
+    @classmethod
+    def _emergency_type_valid(cls, v: str) -> str:
+        if v not in EMERGENCY_TYPES:
+            raise ValueError(f"emergency_type must be one of {list(EMERGENCY_TYPES)}")
+        return v
 
     @field_validator("quantity")
     @classmethod
@@ -4101,7 +4116,9 @@ def create_request(body: CreateRequestBody, requesting_facility_id: int = Depend
         ).mappings().first()
         _create_notification(
             conn, body.supplying_facility_id, "incoming_request",
-            f"New {body.quantity}-unit {body.blood_type} request from {requester['name']}",
+            # The supplier decides what to handle first, so the reason goes in the text: the stored value (a blood
+            # bank's is always restock), "scheduled_surgery" read as "scheduled surgery".
+            f"New {body.quantity}-unit {body.blood_type} {emergency_type.replace('_', ' ')} request from {requester['name']}",
             f"requests:{row['id']}",
         )
     return dict(row)
