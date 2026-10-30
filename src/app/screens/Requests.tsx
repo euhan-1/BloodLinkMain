@@ -83,7 +83,7 @@ function ReasonTag({ reason }: { reason: string }) {
 }
 
 // `position` is given only for a request that is waiting for a decision: its place in the order the supplier should
-// work in. Such a card shows the reason as a tag; every other card keeps the plain line.
+// work in. Every card shows the reason as the same tag.
 function IncomingRequestCard({
   req, busy, onAction, isChatSelected, onOpenChat, position,
 }: {
@@ -123,17 +123,11 @@ function IncomingRequestCard({
         </div>
         <BloodTypeBadge type={req.blood_type} size="md" />
       </div>
-      {position !== undefined ? (
-        <div className="flex items-center gap-2 mb-2 text-[13px] text-foreground">
-          <span>{req.quantity} {req.quantity === 1 ? "unit" : "units"}</span>
-          <ReasonTag reason={req.emergency_type} />
-        </div>
-      ) : (
-        <div className="flex items-center gap-1.5 mb-2 text-[12px] text-muted-foreground">
-          <MessageSquare size={12} className="text-info shrink-0" />
-          {req.quantity} units · {EMERGENCY_TYPE_LABELS[req.emergency_type]}
-        </div>
-      )}
+      <div className="flex items-center gap-2 mb-2 text-[13px] text-foreground">
+        {position === undefined && <MessageSquare size={12} className="text-info shrink-0" />}
+        <span>{req.quantity} {req.quantity === 1 ? "unit" : "units"}</span>
+        <ReasonTag reason={req.emergency_type} />
+      </div>
 
       {req.status === "pending" && (
         <div className="flex gap-1.5">
@@ -621,9 +615,7 @@ export function RequestsScreen({
                 : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
           >
-            {isBloodBankRequester
-              ? (t === "sourcing" ? "Emergency Sourcing" : "Request and Chats")
-              : (t === "sourcing" ? "Emergency sourcing" : "Request and chats")}
+            {t === "sourcing" ? "Emergency sourcing" : "Request and chats"}
             {t === "transfer" && pendingOnly.length > 0 && (
               <span className="absolute -top-1 -right-1 w-4 h-4 bg-primary text-white text-[10px] font-bold rounded-full flex items-center justify-center">
                 {pendingOnly.length}
@@ -660,7 +652,7 @@ export function RequestsScreen({
           {/* Left: search + results */}
           <div className="lg:col-span-2 space-y-4">
             <div className="bg-card border border-border rounded-xl p-5">
-              <h3 className="font-semibold text-foreground mb-4">Find Blood Supply</h3>
+              <h3 className="font-semibold text-foreground mb-4">Find blood supply</h3>
               <div className="mb-3">
                 <label className="text-[13px] font-semibold text-muted-foreground block mb-1.5">
                   Blood type needed
@@ -735,8 +727,8 @@ export function RequestsScreen({
             })()}
 
             <div className="space-y-2">
-              <div className="text-[12px] font-bold uppercase tracking-wider text-muted-foreground px-1">
-                Nearest Facilities — {searchType} Available
+              <div className="text-[14px] font-semibold text-foreground px-1">
+                Nearest facilities — {searchType} available
               </div>
               {banksLoading && (
                 <div className="bg-card border border-border rounded-xl p-6 text-center text-[13px] text-muted-foreground">
@@ -999,7 +991,7 @@ export function RequestsScreen({
             {isBloodBankRequester && (
               <div className="bg-card border border-border rounded-xl p-5">
                 <h3 className="font-semibold text-foreground mb-1">
-                  Incoming Requests — {
+                  Incoming requests — {
                     facilities.find((f) => f.id === actingFacilityId)?.name
                     ?? getCurrentUser()?.facility_name
                     ?? "…"
@@ -1223,8 +1215,8 @@ export function RequestsScreen({
               <table className="w-full text-[14px]">
                 <thead>
                   <tr className="border-b border-border bg-secondary">
-                    {["Request ID", "Supplying Facility", "Blood Type", "Qty", "Reason", "Submitted", "Status", ""].map((h) => (
-                      <th key={h} className="text-left py-3 px-4 text-[12px] font-bold uppercase tracking-wide text-muted-foreground whitespace-nowrap">
+                    {["Request ID", "Supplying facility", "Blood type", "Qty", "Reason", "Submitted", "Status", ""].map((h) => (
+                      <th key={h} className="text-left py-3 px-4 text-[13px] font-semibold text-gray-600 whitespace-nowrap">
                         {h}
                       </th>
                     ))}
