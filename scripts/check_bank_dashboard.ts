@@ -55,6 +55,49 @@ eq(outlookFor("O-", forecast({ pending_types: ["O-"] })).kind, "calculating", "a
 eq(outlookFor("O-", forecast({ forecast_source: "none", days_of_history: 9, restock_recommendations: [] })), { kind: "collecting", have: 9, need: 60 }, "collecting data");
 eq(outlookFor("O-", null).kind, "unavailable", "no forecast");
 
+// ── At risk: the projection holds, the interval's low end does not
+const risky = forecast({ downside_risks: [{ blood_type: "B+", risk_date: "2026-11-09", days_until_risk: 10, lower_units: 31 }] });
+const ar = outlookFor("B+", risky, 40);
+eq(ar.kind, "at_risk", "a downside risk with no recommendation is at risk");
+if (ar.kind !== "at_risk") throw new Error("unreachable");
+eq([ar.byDate, ar.lowerUnits, ar.minimum], ["2026-11-09", 31, 40], "the risk's numbers");
+if (!ar.sentence.startsWith("Projected to hold, but could fall below 40 by 9 Nov.") || !/no order is suggested/.test(ar.sentence)) throw new Error(`the detail: ${ar.sentence}`);
+const noMin = outlookFor("B+", risky);
+if (noMin.kind !== "at_risk" || !noMin.sentence.includes("below its minimum by")) throw new Error("without a minimum it reads 'its minimum', no number invented");
+eq(outlookFor("O-", risky, 40).kind, "order", "a type with a recommendation stays an order, whatever else");
+eq(outlookFor("B+", forecast({ downside_risks: [...(risky.downside_risks ?? []), { blood_type: "O-", risk_date: "2026-11-09", days_until_risk: 10, lower_units: 1 }] }), 40).kind, "at_risk", "another type's risk does not leak");
+eq(outlookFor("A-", risky, 40).kind, "on_track", "a type with neither stays on track");
+eq(outlookFor("B+", forecast({ downside_risks: [], forecast_source: "synthetic_model_stand_in" }), 40).kind, "on_track", "the stand-in has no interval: on track");
+{ const noKey = forecast({ forecast_source: "synthetic_model_stand_in" }); delete noKey.downside_risks; eq(outlookFor("B+", noKey, 40).kind, "on_track", "the key absent (stand-in, older API) reads on track, not an error"); }
+eq(outlookFor("B+", forecast({ pending_types: ["B+"], downside_risks: risky.downside_risks }), 40).kind, "calculating", "a pending type is calculating, not at risk");
+// ── the 30-day gate: too few days, and the interval says nothing about supply
+const thinF = forecast({ insufficient_history: [{ blood_type: "B+", observed_days: 6, min_days_required: 30 }] });
+eq(outlookFor("B+", thinF, 40), { kind: "thin_history", have: 6, need: 30 }, "a type gated for thin history says so, with the days");
+eq(outlookFor("A-", thinF, 40).kind, "on_track", "another type is unaffected");
+eq(outlookFor("O-", forecast({ insufficient_history: [{ blood_type: "O-", observed_days: 6, min_days_required: 30 }] }), 40).kind, "order", "the gate never touches a recommendation");
+// ...but a recommendation on a short history says so, with the day count, in the row and in its hover text
+const limitedF = forecast({ restock_recommendations: [{ blood_type: "O-", breach_date: "2026-11-04", days_until_breach: 4, recommended_units: 90, limited_history: { observed_days: 6, min_days_required: 30 } }] });
+const lo = outlookFor("O-", limitedF, 40);
+if (lo.kind !== "order") throw new Error("unreachable");
+eq(lo.limited, { have: 6, need: 30 }, "a recommendation from a short history carries its day count");
+if (!lo.sentence.endsWith("Based on limited history: 6 of 30 recorded days.")) throw new Error("the order hover text: " + lo.sentence);
+const fullO = outlookFor("O-", f, 40);
+if (fullO.kind !== "order") throw new Error("unreachable");
+eq(fullO.limited, null, "a recommendation with 30 days or more has no note");
+if (fullO.sentence.includes("limited history")) throw new Error("a full-history recommendation claims limited history");
+// below 30 days the outlook is a limited-history recommendation or "Not enough history": never on track, never at risk
+const shortF = forecast({
+  restock_recommendations: [{ blood_type: "O-", breach_date: "2026-11-04", days_until_breach: 4, recommended_units: 9, limited_history: { observed_days: 6, min_days_required: 30 } }],
+  insufficient_history: ["A+", "B+", "A-"].map((blood_type) => ({ blood_type, observed_days: 6, min_days_required: 30 })),
+  downside_risks: [{ blood_type: "B+", risk_date: "2026-11-09", days_until_risk: 10, lower_units: 1 }],
+});
+for (const t of ["A+", "B+", "O-", "A-"]) {
+  const k = outlookFor(t, shortF, 40).kind;
+  if (k === "on_track" || k === "at_risk") throw new Error(t + " below 30 days read " + k);
+}
+eq(outlookFor("B+", forecast({ insufficient_history: [{ blood_type: "B+", observed_days: 6, min_days_required: 30 }], pending_types: ["B+"] }), 40).kind, "calculating", "pending still wins");
+for (const w of ["better", "optimized", "improved", "best", "safe"]) if (new RegExp(w, "i").test(ar.sentence)) throw new Error(`the at-risk detail claims ${w}`);
+
 // ── the basis in the row
 eq(basisFor(f, "A+")?.text, "SARIMAX, grid-searched", "SARIMAX with its order's source");
 eq(basisFor(f, "B+")?.text, "SARIMAX, AI-recommended", "AI-recommended is named, never as better");

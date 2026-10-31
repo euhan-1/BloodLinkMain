@@ -17,9 +17,10 @@ import { isRealForecastSource, type ForecastView } from "../lib/forecastTypes";
 import { STATUS_STYLES, STOCK_LABELS, isNotStocked, stockStatus } from "../lib/statusTokens";
 import { buildTrendChart, shortDate, tickLabel, type TrendPoint } from "../lib/trendChart";
 import { manilaToday } from "../lib/transfers";
+import { formatDayMonth } from "../lib/dateFormat";
 import { requestUnitsText, type RequestRow } from "../lib/requestTypes";
 import {
-  basisFor, basisSummary, canGiveText, expiryLine, orderLabel, orderPrefill, outlookFor, sortedRows, statusWord, supplySentence,
+  basisFor, basisSummary, canGiveText, expiryLine, limitedHistoryNote, orderLabel, orderPrefill, outlookFor, sortedRows, statusWord, supplySentence,
   waitingRequests, type Outlook,
 } from "../lib/bankDashboard";
 
@@ -147,7 +148,7 @@ function StockAndOutlook(p: BankDashboardProps) {
             <TypeRow
               key={r.blood_type}
               row={r}
-              outlook={p.forecastLoading && p.forecast === null ? null : outlookFor(r.blood_type, p.forecast)}
+              outlook={p.forecastLoading && p.forecast === null ? null : outlookFor(r.blood_type, p.forecast, r.minimum_units)}
               basis={basisFor(p.forecast, r.blood_type)}
               today={today}
               onOrder={p.onOrder}
@@ -262,9 +263,31 @@ function OutlookCell({
             {orderLabel(outlook, today)}
           </button>
           {outlook.projectedLow !== null && <div className="text-foreground tabular-nums">Projected low {outlook.projectedLow}</div>}
+          {outlook.limited && (
+            <div className="text-foreground" title={limitedHistoryNote(outlook.limited.have, outlook.limited.need)}>
+              Limited history <span className="tabular-nums">({outlook.limited.have} of {outlook.limited.need} days)</span>
+            </div>
+          )}
         </>
       )}
       {outlook.kind === "on_track" && <span className="font-semibold text-status-safe-text">On track</span>}
+      {outlook.kind === "at_risk" && (
+        <>
+          <span title={outlook.sentence} className={`font-semibold ${STATUS_STYLES.watch.text}`}>At risk</span>
+          <div className="text-foreground">
+            Could fall below {outlook.minimum ?? "its minimum"} by {formatDayMonth(outlook.byDate)}
+          </div>
+          <div className="text-foreground tabular-nums">Low end {outlook.lowerUnits}</div>
+        </>
+      )}
+      {outlook.kind === "thin_history" && (
+        <span
+          title="Too few recorded days to say whether this type is on track or at risk: the range around the forecast is wider than the stock itself."
+          className="text-foreground"
+        >
+          <span className="font-semibold">Not enough history</span> <span className="tabular-nums">({outlook.have} of {outlook.need} days)</span>
+        </span>
+      )}
       {outlook.kind === "calculating" && <span className="font-semibold text-foreground">Calculating</span>}
       {outlook.kind === "collecting" && (
         <span className="text-foreground">

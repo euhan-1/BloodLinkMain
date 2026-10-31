@@ -20,7 +20,22 @@ export type RestockRecommendation = {
   // The projection's lowest point in the next 30 days: an estimate, shown beside current stock and never blended with it.
   // Absent from an older API.
   projected_low_units?: number;
+  // Present when the type has fewer recorded days than SARIMAX needs: the recommendation stands, marked as resting on that.
+  limited_history?: LimitedHistory;
 };
+
+// A type whose projection holds at or above its minimum but whose 95% interval's lower bound drops below it (see
+// _compute_downside_risk in main.py). Display only: it is never a recommendation and never an alert.
+export type DownsideRisk = {
+  blood_type: string;
+  risk_date: string; // the earliest checkpoint whose lower bound is below the minimum
+  days_until_risk: number;
+  lower_units: number;
+};
+
+// Too few recorded days for the forecast to say anything about this type (see _limited_history in main.py).
+export type LimitedHistory = { observed_days: number; min_days_required: number };
+export type InsufficientHistory = LimitedHistory & { blood_type: string };
 
 export type ForecastView = {
   view: "forecast";
@@ -39,6 +54,12 @@ export type ForecastView = {
   sarimax_min_days_required?: number;
   interval_confidence: number | null;
   restock_recommendations: RestockRecommendation[];
+  // Absent from an older API and from the synthetic stand-in and "none" answers, which have no interval: absent reads as none.
+  downside_risks?: DownsideRisk[];
+  // Types with no recommendation and too few recorded days: never "on track", never "at risk". Absent from an older API.
+  insufficient_history?: InsufficientHistory[];
+  // {blood_type: points}: the same checkpoints and interval as `series`, per type instead of summed (lower/upper null: no interval).
+  type_bounds?: Record<string, SeriesPoint[]>;
   // "pending" = some blood types are still being calculated and none of the ready ones needs action yet, so "on_track"
   // would be a claim the server can't make. null only on the "none" source.
   restock_status: "on_track" | "action_needed" | "pending" | null;

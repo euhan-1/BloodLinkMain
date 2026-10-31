@@ -59,29 +59,49 @@ export function supplySentence(p: {
 // ─── The table ──────────────────────────────────────────────────────────────
 
 export type Outlook =
-  | { kind: "order"; units: number; byDate: string; projectedLow: number | null; sentence: string }
+  | { kind: "order"; units: number; byDate: string; projectedLow: number | null; sentence: string; limited: { have: number; need: number } | null }
   | { kind: "on_track" }
+  | { kind: "at_risk"; byDate: string; lowerUnits: number; minimum: number | null; sentence: string }
+  | { kind: "thin_history"; have: number; need: number }
   | { kind: "calculating" }
   | { kind: "collecting"; have: number; need: number }
   | { kind: "unavailable" };
 
+// What "At risk" means, in plain words. The date is the checkpoint the interval first reaches below the minimum, not a prediction of the day.
+export const atRiskSentence = (byDate: string, minimum: number | null): string =>
+  `Projected to hold, but could fall below ${minimum === null ? "its minimum" : minimum} by ${formatDayMonth(byDate)}. This is the low end of the 95% range; no order is suggested.`;
+
 // One blood type's outlook, from /forecast. The projection is an estimate; it is only ever a column of its own, never folded
 // into a current stock figure.
-export function outlookFor(bloodType: string, f: ForecastView | null): Outlook {
+export function outlookFor(bloodType: string, f: ForecastView | null, minimum: number | null = null): Outlook {
   if (f === null) return { kind: "unavailable" };
   if (f.forecast_source === "none") return { kind: "collecting", have: f.days_of_history, need: f.min_days_required };
   if ((f.pending_types ?? []).includes(bloodType)) return { kind: "calculating" };
   const rec = f.restock_recommendations.find((r) => r.blood_type === bloodType);
-  if (!rec) return { kind: "on_track" };
+  if (!rec) {
+    // Below the SARIMAX floor a type is never asserted safe or at risk: there is no basis for either. Otherwise the server
+    // only sends a risk for a type whose projection holds (a recommendation always wins over it); a forecast with no
+    // interval or no list (an older API) reads as on track.
+    const thin = (f.insufficient_history ?? []).find((r) => r.blood_type === bloodType);
+    if (thin) return { kind: "thin_history", have: thin.observed_days, need: thin.min_days_required };
+    const risk = (f.downside_risks ?? []).find((r) => r.blood_type === bloodType);
+    if (!risk) return { kind: "on_track" };
+    return { kind: "at_risk", byDate: risk.risk_date, lowerUnits: risk.lower_units, minimum, sentence: atRiskSentence(risk.risk_date, minimum) };
+  }
   const when = rec.days_until_breach <= 0 ? "today" : formatDayMonth(rec.breach_date);
+  const lh = rec.limited_history;
   return {
     kind: "order",
+    limited: lh ? { have: lh.observed_days, need: lh.min_days_required } : null,
     units: rec.recommended_units,
     byDate: rec.breach_date,
     projectedLow: rec.projected_low_units ?? null,
-    sentence: `Projected below its minimum ${rec.days_until_breach <= 0 ? "today" : `around ${when}`}; ordering ${rec.recommended_units} ${plural(rec.recommended_units, "unit", "units")} brings it back to its maximum.`,
+    sentence: `Projected below its minimum ${rec.days_until_breach <= 0 ? "today" : `around ${when}`}; ordering ${rec.recommended_units} ${plural(rec.recommended_units, "unit", "units")} brings it back to its maximum.${lh ? ` ${limitedHistoryNote(lh.observed_days, lh.min_days_required)}` : ""}`,
   };
 }
+
+// A recommendation is not withheld on a short history, but it says it rests on one.
+export const limitedHistoryNote = (have: number, need: number): string => `Based on limited history: ${have} of ${need} recorded days.`;
 
 // "Order 90 by 4 Nov", or "Order 90 now" when the projection is already below the minimum today.
 export function orderLabel(o: Extract<Outlook, { kind: "order" }>, today: string): string {
