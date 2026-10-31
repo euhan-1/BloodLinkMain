@@ -11,7 +11,7 @@ math.
 
 Run from the server/ directory:
 
-    .venv\\Scripts\\python.exe -m unittest tests.test_dengue_index_derivation -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_dengue_index_derivation.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 
 import unittest
@@ -79,7 +79,3 @@ class DengueIndexDerivationTests(unittest.TestCase):
         _, _, weeks_2021 = stats[2021]
         self.assertLess(peak_2020, peak_2018 / 1.3)
         self.assertLessEqual(weeks_2021, 5)
-
-
-if __name__ == "__main__":
-    unittest.main()

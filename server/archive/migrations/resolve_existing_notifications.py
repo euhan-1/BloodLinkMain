@@ -1,4 +1,9 @@
-"""One-off: resolve the notifications left over from before the notification rebuild.
+"""ARCHIVED, ALREADY RUN against production on 2026-10-31 (392 rows resolved, 14 events left unread; the undo record is the JSON it saved in
+server/tmp/). Kept as the record of how. It imports `main` and `database` and writes through the live sweep, so it only works if copied
+next to `database.py`; its tests were removed with it, and the sweep it relied on no longer resolves the retired
+`transfer_confirmation_needed` type, so do not run it again without reading it against the current code.
+
+One-off: resolve the notifications left over from before the notification rebuild.
 
 The automatic sweep (main._resolve_stale_notifications) was held back by NOTIFICATIONS_AUTORESOLVE_SINCE (a date, now None) so the
 unread rows written under the old rules were left as they were until someone decided. This was that decision, run once (it has

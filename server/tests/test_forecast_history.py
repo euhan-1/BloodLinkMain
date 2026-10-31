@@ -172,7 +172,3 @@ class HistoryInForecastTests(unittest.TestCase):
         r = app.get_forecast(facility_id=fid)
         self.assertEqual((r["forecast_source"], r["series"]), ("none", []))
         self.assertEqual(r["history"], [{"date": TODAY.isoformat(), "units": 0, "observed": True}])
-
-
-if __name__ == "__main__":
-    unittest.main()

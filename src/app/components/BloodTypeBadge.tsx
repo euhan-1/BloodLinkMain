@@ -1,4 +1,4 @@
-import { STATUS_STYLES, EXPIRY_STYLES, type StatusLevel, type ExpiryStatus } from "../lib/statusTokens";
+import { STATUS_STYLES, type StatusLevel } from "../lib/statusTokens";
 
 export function BloodDropLogo({ size = 32, className = "" }: { size?: number; className?: string }) {
   return (
@@ -53,29 +53,6 @@ export function BloodTypeBadge({ type, size = "md", selected = false, className 
       } ${className}`}
     >
       {type}
-    </span>
-  );
-}
-
-// Inventory's DIN cell — wide-tracked mono text. Used only where a DIN is
-// shown at label weight (Inventory rows).
-export function DinLabel({ din }: { din: string }) {
-  return (
-    <span className="inline-flex items-center font-mono text-[13px] tracking-wider uppercase text-foreground">
-      {din}
-    </span>
-  );
-}
-
-// The "stamped" expiry callout — a bordered box colored by the same
-// EXPIRY_STYLES status language used everywhere else, deliberately more
-// visually weighted than the plain collection-date text next to it (mirrors
-// how a real bag's printed expiry is the prominent, boxed date).
-export function DateStamp({ date, status }: { date: string; status: ExpiryStatus }) {
-  const style = EXPIRY_STYLES[status];
-  return (
-    <span className={`inline-block font-mono text-[13px] font-semibold tracking-tight px-1.5 py-0.5 rounded border ${style.badge}`}>
-      {date}
     </span>
   );
 }

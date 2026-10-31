@@ -474,19 +474,12 @@ def _resolve_notifications(conn, facility_id: int, notif_type: str, link: str) -
     ).rowcount
 
 
-# Notifications written before this instant are left alone by the automatic sweep below; None (the value now) sweeps every row.
-# It was 2026-11-01 00:00 Manila while the rows written under the old rules waited for a decision on them; the one-off cleanup
-# (server/resolve_existing_notifications.py) has since run, so there is nothing left for a date limit to protect.
-NOTIFICATIONS_AUTORESOLVE_SINCE: Optional[datetime] = None
-
-
-def _resolve_stale_notifications(conn, facility_id: Optional[int], since: Optional[datetime], today: Optional[date] = None) -> int:
+def _resolve_stale_notifications(conn, facility_id: Optional[int], today: Optional[date] = None) -> int:
     """Resolves (marks read) the unread notifications whose truth has already gone: the request no longer exists, an
     incoming_request whose request is no longer pending, a receipt prompt whose receipt has been confirmed, and an
     expiring_unit_alert whose units have expired. The request rules are the ones the transfer functions apply at the moment of
     the change, derived here from the request's state, so a missed event or a concurrent change cannot leave a finished to-do
-    behind. `facility_id` None = every facility; `since` limits it to rows created at or after that instant (None = all rows);
-    `today` is the Manila business date (default: now).
+    behind. `facility_id` None = every facility; `today` is the Manila business date (default: now).
 
     An offer of near-expiry units (expiring_unit_alert) carries no unit reference except its own text, which says when the units
     expire ("expire in 2 days", "expires today") counted from the day it was written. So its expiry date is that day plus those
@@ -500,7 +493,6 @@ def _resolve_stale_notifications(conn, facility_id: Optional[int], since: Option
             UPDATE notifications n SET read_at = now()
             WHERE n.read_at IS NULL
               AND (CAST(:facility_id AS bigint) IS NULL OR n.facility_id = :facility_id)
-              AND (CAST(:since AS timestamptz) IS NULL OR n.created_at >= :since)
               AND (
                 -- an offer of expiring units, once the date it names has passed
                 (
@@ -521,11 +513,6 @@ def _resolve_stale_notifications(conn, facility_id: Optional[int], since: Option
                             (n.type = 'incoming_request' AND r.status <> 'pending')
                             OR (n.type = 'receipt_needed'
                                 AND (r.requester_confirmed_at IS NOT NULL OR r.status IN ('completed', 'failed')))
-                            -- the old shared type: the supplier's prompt is done once it has released, the requester's once it has received
-                            OR (n.type = 'transfer_confirmation_needed' AND (
-                                  (n.facility_id = r.supplying_facility_id AND r.supplier_confirmed_at IS NOT NULL)
-                                  OR (n.facility_id = r.requesting_facility_id
-                                      AND (r.requester_confirmed_at IS NOT NULL OR r.status IN ('completed', 'failed')))))
                           )
                     )
                   )
@@ -533,7 +520,7 @@ def _resolve_stale_notifications(conn, facility_id: Optional[int], since: Option
               )
             """
         ),
-        {"facility_id": facility_id, "since": since, "today": today},
+        {"facility_id": facility_id, "today": today},
     ).rowcount
 
 
@@ -875,7 +862,6 @@ UPLOAD_UNDO_HANDLERS = {
 }
 
 
-_SHORTAGE_MSG_TAIL = "forecast now predicts a shortage within"  # the OLD wording: still matched so a row written before the change resolves too
 _SHORTAGE_MSG_HEAD = "projected below its minimum"  # the Dashboard's wording: "O+: projected below its minimum around 4 Nov; ordering 90 units ..."
 
 
@@ -965,20 +951,16 @@ def _check_forecast_shortage_notifications(
         # Notifications have no archive/delete column; "read_at" is how they are
         # resolved everywhere else, so the now-obsolete shortage notice is marked
         # read (it stays in history, just stops counting as unread). The blood
-        # type is only recoverable from the message text: the Dashboard-wording prefix, or the old one.
+        # type is only recoverable from the message text: the prefix _shortage_message writes.
         conn.execute(
             text(
                 """
                 UPDATE notifications SET read_at = now()
                 WHERE facility_id = :facility_id AND type = 'forecast_shortage' AND read_at IS NULL
-                  AND (message LIKE :prefix OR message LIKE :old_prefix)
+                  AND message LIKE :prefix
                 """
             ),
-            {
-                "facility_id": facility_id,
-                "prefix": f"{blood_type}: {_SHORTAGE_MSG_HEAD}%",
-                "old_prefix": f"{blood_type} {_SHORTAGE_MSG_TAIL}%",
-            },
+            {"facility_id": facility_id, "prefix": f"{blood_type}: {_SHORTAGE_MSG_HEAD}%"},
         )
 
 
@@ -2321,7 +2303,7 @@ def list_notifications(limit: int = NOTIFICATIONS_PAGE_SIZE, before_id: Optional
     are marked read first, so the list never offers a finished to-do as new."""
     limit = max(1, min(limit, NOTIFICATIONS_MAX_PAGE_SIZE))
     with engine.begin() as conn:
-        _resolve_stale_notifications(conn, facility_id, NOTIFICATIONS_AUTORESOLVE_SINCE)
+        _resolve_stale_notifications(conn, facility_id)
         rows = conn.execute(
             text(
                 """
@@ -2341,7 +2323,7 @@ def notifications_unread_count(facility_id: int = Depends(get_acting_facility_id
     """The bell's badge: how many notifications this facility has unread, all of them, not only the newest page.
     `latest_id` is the newest row's id (read or not), so the bell can tell a new arrival from a count that merely changed."""
     with engine.begin() as conn:
-        _resolve_stale_notifications(conn, facility_id, NOTIFICATIONS_AUTORESOLVE_SINCE)
+        _resolve_stale_notifications(conn, facility_id)
         row = conn.execute(
             text(
                 "SELECT count(*) FILTER (WHERE read_at IS NULL) AS unread, COALESCE(max(id), 0) AS latest_id "
@@ -2695,6 +2677,18 @@ def archive_expired_inventory(facility_id: int = Depends(get_acting_facility_id)
     return {"archived_count": archived.get(facility_id, 0)}
 
 
+# THE count of usable units per (facility, blood type): expires_date >= today, whether archived or not (an archived unit that has not
+# expired is still stock). Joined as a derived table by /inventory/summary, the hospital's threshold view and the snapshot writer,
+# so the three can never disagree about what a day's stock is. Parameters: :today and :facility_id (NULL = every facility).
+USABLE_COUNTS_SQL = """
+    SELECT facility_id, blood_type, count(*) AS n
+    FROM blood_units
+    WHERE expires_date >= :today
+      AND (CAST(:facility_id AS bigint) IS NULL OR facility_id = :facility_id)
+    GROUP BY facility_id, blood_type
+"""
+
+
 @app.get("/inventory/summary")
 def get_inventory_summary(facility_id: int = Depends(get_acting_facility_id)):
     """Per-type USABLE unit counts (the logged-in user's own facility)
@@ -2724,15 +2718,10 @@ def get_inventory_summary(facility_id: int = Depends(get_acting_facility_id)):
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                """
-                SELECT t.blood_type, t.minimum_units, t.maximum_units, COALESCE(c.unit_count, 0) AS units
+                f"""
+                SELECT t.blood_type, t.minimum_units, t.maximum_units, COALESCE(c.n, 0) AS units
                 FROM blood_type_thresholds t
-                LEFT JOIN (
-                    SELECT blood_type, count(*) AS unit_count
-                    FROM blood_units
-                    WHERE facility_id = :facility_id AND expires_date >= :today
-                    GROUP BY blood_type
-                ) c ON c.blood_type = t.blood_type
+                LEFT JOIN ({USABLE_COUNTS_SQL}) c ON c.facility_id = t.facility_id AND c.blood_type = t.blood_type
                 WHERE t.facility_id = :facility_id
                 ORDER BY t.blood_type
                 """
@@ -2899,7 +2888,7 @@ async def upload_inventory(
 
     Duplicate handling deliberately differs from Donors (Step 7A), which
     upserts by (facility_id, phone) — here `din` is globally UNIQUE across all
-    facilities (schema.sql), not scoped per facility, because a DIN identifies
+    facilities (blood_units_din_key), not scoped per facility, because a DIN identifies
     one physical blood bag. Re-uploading a DIN that already belongs to *this*
     facility is treated as a data-entry correction and updates the row in
     place. A DIN that already belongs to a *different* facility is rejected
@@ -2989,15 +2978,10 @@ def _build_hospital_threshold_view(conn, facility_id: int, is_dengue_season: boo
     """
     rows = conn.execute(
         text(
-            """
-            SELECT t.blood_type, t.minimum_units, COALESCE(c.unit_count, 0) AS units
+            f"""
+            SELECT t.blood_type, t.minimum_units, COALESCE(c.n, 0) AS units
             FROM blood_type_thresholds t
-            LEFT JOIN (
-                SELECT blood_type, count(*) AS unit_count
-                FROM blood_units
-                WHERE facility_id = :facility_id AND expires_date >= :today
-                GROUP BY blood_type
-            ) c ON c.blood_type = t.blood_type
+            LEFT JOIN ({USABLE_COUNTS_SQL}) c ON c.facility_id = t.facility_id AND c.blood_type = t.blood_type
             WHERE t.facility_id = :facility_id
             ORDER BY t.blood_type
             """
@@ -3257,18 +3241,12 @@ def _write_inventory_snapshots(conn, today: date, facility_id: Optional[int] = N
     (xmax = 0 is how Postgres distinguishes the two inside ON CONFLICT ... RETURNING)."""
     rows = conn.execute(
         text(
-            """
+            f"""
             INSERT INTO inventory_snapshots (snapshot_date, blood_type, units, facility_id)
             SELECT :today, bt.blood_type, COALESCE(c.n, 0), f.id
             FROM facilities f
             CROSS JOIN unnest(CAST(:types AS text[])) AS bt(blood_type)
-            LEFT JOIN (
-                SELECT facility_id, blood_type, count(*) AS n
-                FROM blood_units
-                WHERE expires_date >= :today
-                  AND (CAST(:facility_id AS bigint) IS NULL OR facility_id = :facility_id)
-                GROUP BY facility_id, blood_type
-            ) c ON c.facility_id = f.id AND c.blood_type = bt.blood_type
+            LEFT JOIN ({USABLE_COUNTS_SQL}) c ON c.facility_id = f.id AND c.blood_type = bt.blood_type
             WHERE f.is_active AND (CAST(:facility_id AS bigint) IS NULL OR f.id = :facility_id)
             ORDER BY f.id, bt.blood_type
             ON CONFLICT (snapshot_date, blood_type, facility_id)
@@ -4309,6 +4287,12 @@ def get_nearby_facilities(
     return results
 
 
+# A unit a facility can still OFFER another: on its shelf (not archived) and not already promised to a transfer. The one predicate behind
+# the Dashboard's expiring groups, the grouped notify endpoint and the per-unit notify endpoint, so none of them can offer blood that
+# is committed elsewhere.
+OFFERABLE_UNITS_SQL = "archived_at IS NULL AND reserved_for_request_id IS NULL"
+
+
 @app.get("/inventory/expiring")
 def get_expiring_inventory(facility_id: int = Depends(get_acting_facility_id)):
     """The facility's units that expire within NOTIFY_EXPIRY_NEAR_DAYS (today included), grouped by blood type, component and
@@ -4321,10 +4305,10 @@ def get_expiring_inventory(facility_id: int = Depends(get_acting_facility_id)):
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                """
-                SELECT id, din, blood_type, component, expires_date, reserved_for_request_id
+                f"""
+                SELECT id, din, blood_type, component, expires_date
                 FROM blood_units
-                WHERE facility_id = :facility_id AND archived_at IS NULL
+                WHERE facility_id = :facility_id AND {OFFERABLE_UNITS_SQL}
                   AND expires_date >= :today AND expires_date <= :last_day
                 ORDER BY expires_date ASC
                 """
@@ -4333,9 +4317,8 @@ def get_expiring_inventory(facility_id: int = Depends(get_acting_facility_id)):
         ).mappings().all()
     groups: dict[tuple, int] = {}
     for r in rows:
-        if r["reserved_for_request_id"] is None:
-            key = (r["expires_date"], r["blood_type"], r["component"])
-            groups[key] = groups.get(key, 0) + 1
+        key = (r["expires_date"], r["blood_type"], r["component"])
+        groups[key] = groups.get(key, 0) + 1
     listed = [
         {"blood_type": bt, "component": comp, "expires_date": d, "days_left": (d - today).days, "units": n}
         for (d, bt, comp), n in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2]))
@@ -4364,9 +4347,9 @@ def notify_nearby_hospitals_of_expiring_group(body: NotifyExpiringGroupBody, act
     with engine.begin() as conn:
         units = conn.execute(
             text(
-                """
+                f"""
                 SELECT count(*) FROM blood_units
-                WHERE facility_id = :facility_id AND archived_at IS NULL AND reserved_for_request_id IS NULL
+                WHERE facility_id = :facility_id AND {OFFERABLE_UNITS_SQL}
                   AND blood_type = :blood_type AND component = :component AND expires_date = :expires_date
                 """
             ),
@@ -4421,20 +4404,29 @@ def notify_nearby_hospitals_of_expiring_unit(din: str, acting_facility_id: int =
     with engine.begin() as conn:
         unit = conn.execute(
             text(
-                """
+                f"""
                 SELECT din, blood_type, component, expires_date
-                FROM blood_units WHERE din = :din AND facility_id = :facility_id
+                FROM blood_units WHERE din = :din AND facility_id = :facility_id AND {OFFERABLE_UNITS_SQL}
                 """
             ),
             {"din": din, "facility_id": acting_facility_id},
         ).mappings().first()
         if unit is None:
-            raise HTTPException(status_code=404, detail="unit not found at your facility")
+            # Say why: a unit that is not here, one already archived, and one promised to a transfer are different answers.
+            state = conn.execute(
+                text("SELECT archived_at IS NOT NULL AS archived FROM blood_units WHERE din = :din AND facility_id = :facility_id"),
+                {"din": din, "facility_id": acting_facility_id},
+            ).mappings().first()
+            if state is None:
+                raise HTTPException(status_code=404, detail="unit not found at your facility")
+            if state["archived"]:
+                raise HTTPException(status_code=400, detail="this unit has been archived, so it can't be offered")
+            raise HTTPException(status_code=400, detail="this unit is reserved for a request, so it can't be offered")
 
         days_left = (unit["expires_date"] - business_today()).days
         if days_left < 0:
             raise HTTPException(status_code=400, detail="this unit has already expired")
-        if days_left > 7:
+        if days_left > NOTIFY_EXPIRY_NEAR_DAYS:
             raise HTTPException(status_code=400, detail="this unit isn't near-expiry yet")
 
         origin = conn.execute(
@@ -4914,8 +4906,6 @@ def confirm_release(
             f"{supplier['name']} released your {_request_phrase(req)}. Confirm receipt when it arrives.",
             f"requests:{request_id}",
         )
-        # a release prompt written under the old shared type is settled by the release it asked for
-        _resolve_notifications(conn, req["supplying_facility_id"], "transfer_confirmation_needed", f"requests:{request_id}")
 
     return {"id": request_id, "reserved_unit_ids": [u["id"] for u in selected]}
 
@@ -5035,9 +5025,8 @@ def confirm_receipt(
         ).all())
         requester_name, supplier_name = names[req["requesting_facility_id"]], names[req["supplying_facility_id"]]
         link = f"requests:{request_id}"
-        # The prompt to confirm receipt has been answered (the old shared type too, for a row written before the split).
-        for prompt in ("receipt_needed", "transfer_confirmation_needed"):
-            _resolve_notifications(conn, req["requesting_facility_id"], prompt, link)
+        # The prompt to confirm receipt has been answered.
+        _resolve_notifications(conn, req["requesting_facility_id"], "receipt_needed", link)
         if not expired:
             _create_notification(
                 conn, req["supplying_facility_id"], "transfer_completed",

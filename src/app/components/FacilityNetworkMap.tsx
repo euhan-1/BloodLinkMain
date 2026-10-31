@@ -48,22 +48,7 @@ export type Facility = {
   compatible_alternatives: CompatibleAlternative[];
 };
 
-// Classic look: the selected candidate reads as the primary pin (larger, in the role accent); every other ranked
-// candidate stays visible but visually secondary (small, muted). The accent is the CSS variable, not a hex, so a
-// hospital's selected pin is navy and a blood bank's is oxblood.
-function facilityMarkerIcon(selected: boolean): L.DivIcon {
-  const size = selected ? 24 : 13;
-  const color = selected ? "var(--role-accent)" : "#9CA3AF";
-  const border = selected ? 3 : 2;
-  return L.divIcon({
-    className: "",
-    html: `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};border:${border}px solid white;box-shadow:0 1px 5px rgba(17,24,39,0.35);"></div>`,
-    iconSize: [size, size],
-    iconAnchor: [size / 2, size / 2],
-  });
-}
-
-// Ranked look: every pin carries its rank, so a pin and its row in the list are the same thing. Teal = has what you
+// Every pin carries its rank, so a pin and its row in the list are the same thing. Teal = has what you
 // need, grey = does not. The selected one is larger and ringed in the role accent.
 function rankedMarkerIcon(rank: number, available: boolean, selected: boolean): L.DivIcon {
   const size = selected ? 38 : 30;
@@ -92,23 +77,21 @@ const originIcon = L.divIcon({
 // remounts with a fresh bounds fit, rather than trying to imperatively
 // re-fit an existing map instance.
 //
-// `variant="ranked"` (the hospital screen) adds numbered, availability-coloured pins, the facility's own location
-// (`origin`) and background-click-to-clear. The default is the original look, used by the blood-bank screen.
+// Numbered, availability-coloured pins, the facility's own location (`origin`) and background-click-to-clear. One look for
+// both roles: Source supply (blood bank) and Find blood supply (hospital) are the same screen.
 export function FacilityNetworkMap({
-  banks, selectedBankId, onSelectBank, variant = "classic", origin = null, onClearSelection,
+  banks, selectedBankId, onSelectBank, origin = null, onClearSelection,
 }: {
   banks: Facility[];
   selectedBankId: number | null;
   onSelectBank: (id: number) => void;
-  variant?: "classic" | "ranked";
   origin?: [number, number] | null;
   onClearSelection?: () => void;
 }) {
-  const ranked = variant === "ranked";
   // Everything that should be in view: every candidate, plus this facility itself.
   const positions = [
     ...banks.map((b): [number, number] => [b.latitude, b.longitude]),
-    ...(ranked && origin ? [origin] : []),
+    ...(origin ? [origin] : []),
   ];
   const bounds: [[number, number], [number, number]] =
     positions.length > 0
@@ -125,17 +108,17 @@ export function FacilityNetworkMap({
   return (
     <MapContainer
       bounds={bounds}
-      boundsOptions={{ padding: [ranked ? 44 : 36, ranked ? 44 : 36] }}
+      boundsOptions={{ padding: [44, 44] }}
       style={{ height: "100%", width: "100%" }}
       scrollWheelZoom={false}
     >
       <MapReadySizer />
-      {ranked && onClearSelection && <BackgroundClick onClear={onClearSelection} />}
+      {onClearSelection && <BackgroundClick onClear={onClearSelection} />}
       <TileLayer
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
-      {ranked && origin && (
+      {origin && (
         <Marker position={origin} icon={originIcon} interactive={false} keyboard={false} zIndexOffset={2000}>
           <LeafletTooltip permanent direction="bottom" offset={[0, 9]} className="origin-label">You</LeafletTooltip>
         </Marker>
@@ -144,23 +127,15 @@ export function FacilityNetworkMap({
         <Marker
           key={bank.id}
           position={[bank.latitude, bank.longitude]}
-          icon={ranked ? rankedMarkerIcon(i + 1, bank.available, bank.id === selectedBankId) : facilityMarkerIcon(bank.id === selectedBankId)}
+          icon={rankedMarkerIcon(i + 1, bank.available, bank.id === selectedBankId)}
           zIndexOffset={bank.id === selectedBankId ? 1000 : 0}
-          title={ranked ? `${i + 1}. ${bank.name}` : undefined}
+          title={`${i + 1}. ${bank.name}`}
           eventHandlers={{ click: () => onSelectBank(bank.id) }}
         >
-          <LeafletTooltip direction="top" offset={[0, ranked ? -14 : -6]}>
-            {ranked ? (
-              <>
-                <span className="font-semibold">{bank.name}</span>
-                <br />
-                {bank.distance_km} km, {bank.available ? "available" : "unavailable"}
-              </>
-            ) : (
-              <>
-                <span className="font-semibold">{bank.name}</span> — {bank.distance_km} km
-              </>
-            )}
+          <LeafletTooltip direction="top" offset={[0, -14]}>
+            <span className="font-semibold">{bank.name}</span>
+            <br />
+            {bank.distance_km} km, {bank.available ? "available" : "unavailable"}
           </LeafletTooltip>
         </Marker>
       ))}

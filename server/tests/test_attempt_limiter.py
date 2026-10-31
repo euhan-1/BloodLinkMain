@@ -36,7 +36,3 @@ class AttemptLimiterTests(unittest.TestCase):
         self.assertEqual(self.lim.retry_after("b"), 0)
         self.lim.clear("a")
         self.assertEqual(self.lim.retry_after("a"), 0)
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -8,7 +8,7 @@ time bound is deliberately loose. Also checks the behaviour the batching must no
 lose: per-row errors with line numbers, upload_history_id tagging, undo, and
 update-not-duplicate on re-upload.
 
-Run from server/: .venv\\Scripts\\python.exe -m unittest tests.test_bulk_upload -v
+Run from server/: .venv\\Scripts\\python.exe -m pytest tests/test_bulk_upload.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 import asyncio
 import io
@@ -145,7 +145,3 @@ class BulkUploadTests(unittest.TestCase):
         self.assertEqual(body["rows_processed"], 1)
         self.assertEqual(q("SELECT count(*) FROM donors WHERE facility_id=:f", f=self.fid)[0][0], 1000)
         self.assertEqual(q("SELECT name FROM donors WHERE facility_id=:f AND phone=:p", f=self.fid, p=f"09{self.tag[:2]}{0:07d}"), [("Renamed",)])
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -114,7 +114,3 @@ class AlternativesAreForHospitalsTests(unittest.TestCase):
         found = app.get_nearby_facilities(blood_type="A+", component="Packed RBC", quantity=1, acting_facility_id=self.other_bank)
         row = next(r for r in found if r["id"] == self.bank)
         self.assertEqual((row["available"], row["compatible_alternatives"]), (False, []))
-
-
-if __name__ == "__main__":
-    unittest.main()

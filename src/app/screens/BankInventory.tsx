@@ -5,10 +5,10 @@ import { Skeleton } from "../components/Skeleton";
 import { StockBar } from "../components/StockBar";
 import { formatCalendarDate } from "../lib/dateFormat";
 import { type InventorySummaryRow, type InventoryUnit } from "../lib/inventoryTypes";
-import { BLOOD_TYPE_ORDER, STATUS_STYLES, STOCK_LABELS, getExpiryStatus } from "../lib/statusTokens";
+import { BLOOD_TYPE_ORDER, EXPIRY_NEAR_DAYS, STATUS_STYLES, STOCK_LABELS, getExpiryStatus } from "../lib/statusTokens";
 import {
-  EXPIRING_WINDOW_DAYS, NO_UNIT_FILTERS, PAGE_SIZE, SEARCH_LIMIT, STATE_LABELS, WINDOW_OPTIONS, backlog, filterUnits, hasUnitFilters, pageOf,
-  searchUnits, sortUnits, typeSummaries, unitNote, unitState, type TypeSummary, type UnitFilters, type UnitState, type WindowFilter,
+  NO_UNIT_FILTERS, SEARCH_LIMIT, STATE_LABELS, WINDOW_OPTIONS, backlog, filterUnits, hasUnitFilters, pageOf,
+  searchUnits, sortUnits, typeSummaries, unitNote, type TypeSummary, type UnitFilters, type UnitState, type WindowFilter,
 } from "../lib/bankInventory";
 
 // What a blood bank came to Inventory for: where every unit it holds is, and which ones need it to act. It holds hundreds of
@@ -169,7 +169,7 @@ function TypeTable(p: BankInventoryProps) {
         <div role="columnheader">Stock against minimum</div>
         <div role="columnheader" className="text-right">Units</div>
         <div role="columnheader">Status</div>
-        <div role="columnheader" className="text-right" title={`Units that expire within ${EXPIRING_WINDOW_DAYS} days, not counting any reserved for a request`}>Expiring</div>
+        <div role="columnheader" className="text-right" title={`Units that expire within ${EXPIRY_NEAR_DAYS} days, not counting any reserved for a request`}>Expiring</div>
         <div role="columnheader" className="text-right">Expired</div>
         <div role="columnheader"><span className="sr-only">Thresholds</span></div>
       </div>

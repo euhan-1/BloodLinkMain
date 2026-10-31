@@ -5,7 +5,7 @@ went wrong: just after 00:00 Manila and just before 08:00 Manila. At both, the U
 is still the PREVIOUS day, so a UTC (or UTC-server) implementation gets every assertion
 below wrong. Real DB, disposable facilities; the SARIMAX fit is stubbed.
 
-Run from server/: .venv\\Scripts\\python.exe -m unittest tests.test_business_day_boundary -v
+Run from server/: .venv\\Scripts\\python.exe -m pytest tests/test_business_day_boundary.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 import unittest
 import uuid
@@ -129,7 +129,3 @@ class BusinessDayBoundaryTests(unittest.TestCase):
             with freeze(JUST_BEFORE_8AM):
                 app.get_forecast(facility_id=self.fid)
                 self.assertEqual(real_fits(), 2, "07:59:55 Manila: still fresh; it must NOT wait for UTC midnight to refit")
-
-
-if __name__ == "__main__":
-    unittest.main()

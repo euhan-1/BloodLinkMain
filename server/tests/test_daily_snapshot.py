@@ -210,7 +210,3 @@ class DailySnapshotTests(unittest.TestCase):
         view = app.get_forecast(facility_id=self.hospital)
         self.assertNotIn("forecast_source", view)
         self.assertEqual(q("SELECT count(*) FROM facility_forecast_cache WHERE facility_id=:f", f=self.hospital)[0][0], 0)
-
-
-if __name__ == "__main__":
-    unittest.main()

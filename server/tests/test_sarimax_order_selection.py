@@ -4,7 +4,7 @@ read reporting the stored label (regression test for a bug fixed alongside this)
 and an end-to-end run of _run_order_selection_for_facility against the real DB with
 a shrunk grid (real fits, but 16 instead of 36 per type, to keep this fast).
 
-Run from server/: .venv\\Scripts\\python.exe -m unittest tests.test_sarimax_order_selection -v
+Run from server/: .venv\\Scripts\\python.exe -m pytest tests/test_sarimax_order_selection.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 import unittest
 import uuid
@@ -298,7 +298,3 @@ class UploadTriggersBackgroundSelectionTests(unittest.TestCase):
             file=UploadFile(file=io.BytesIO(b"snapshot_date,blood_type,units\n"), filename="h.csv"),
             facility_id=self.fid, uploaded_by=None, background_tasks=bg))
         self.assertEqual(len(bg.tasks), 0)
-
-
-if __name__ == "__main__":
-    unittest.main()

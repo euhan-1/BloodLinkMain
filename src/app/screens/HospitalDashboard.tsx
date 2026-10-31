@@ -3,6 +3,7 @@ import { CheckCircle } from "lucide-react";
 import { BloodTypeBadge } from "../components/BloodTypeBadge";
 import { ExpiryWarningRow } from "../components/ExpiryWarningRow";
 import { Skeleton } from "../components/Skeleton";
+import { StockBar } from "../components/StockBar";
 import { BLOOD_TYPE_ORDER, EXPIRY_NEAR_DAYS, STATUS_STYLES, STOCK_LABELS, isNotStocked, stockStatus, type StatusLevel } from "../lib/statusTokens";
 import { type InventorySummaryRow, type InventoryUnit } from "../lib/inventoryTypes";
 import {
@@ -35,11 +36,6 @@ export type ThresholdView = {
 };
 
 const VISIBLE_ITEM_LIMIT = 3;
-// How "Stock against minimum" scales its rows. true: every row spans 0 to that type's own maximum, so the band sits
-// in the same place on every line and "inside or short of the band" reads identically for AB- (3 of 10) and O+ (52
-// of 40). false: one 0..largest axis shared by all rows, so lengths compare across types. The numbers on the
-// right give absolute volume either way.
-const PER_ROW_SCALE = true;
 const RAISED = "shadow-[var(--shadow-raised)]";
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
@@ -304,13 +300,11 @@ function YourRequests({ requests, failed, onViewRequests }: { requests: RequestR
 
 // One bar per type for current stock, sitting against a track that runs from that type's minimum to its
 // maximum. A bar that ends before the track starts is below minimum; the bar and the track answer the only
-// question this chart is for. Every row shares one scale so lengths compare across types.
+// question this chart is for. Each row is drawn to its own maximum (StockBar, the same bar the blood bank's Dashboard and
+// Inventory draw), so the band sits in the same place on every line and "inside or short of the band" reads identically
+// for AB- (3 of 10) and O+ (52 of 40); the numbers on the right give absolute volume.
 function StockAgainstMinimum({ summary, loading, error }: { summary: InventorySummaryRow[]; loading: boolean; error: string | null }) {
   const rows = [...summary].sort((a, b) => BLOOD_TYPE_ORDER.indexOf(a.blood_type) - BLOOD_TYPE_ORDER.indexOf(b.blood_type));
-  const sharedMax = Math.max(1, ...rows.map((r) => Math.max(r.units, r.minimum_units, r.maximum_units)));
-  // A row's full width is this many units. Per row, that is the type's own maximum (or its stock, if it is over it).
-  const scaleOf = (r: InventorySummaryRow) => (PER_ROW_SCALE ? Math.max(r.maximum_units, r.units, 1) : sharedMax);
-  const pct = (n: number, scale: number) => `${Math.min(100, Math.max(0, (n / scale) * 100))}%`;
 
   return (
     <section aria-labelledby="stock-heading">
@@ -319,7 +313,7 @@ function StockAgainstMinimum({ summary, loading, error }: { summary: InventorySu
       </h2>
       <p className="text-[14px] text-foreground mt-1 max-w-[62ch]">
         Each bar is the stock you hold now. The outlined track runs from the minimum to the maximum you set for that type.
-        {PER_ROW_SCALE && " Every row is drawn to its own maximum, so a bar reads the same way for every type; the numbers give the volume."}
+        {" Every row is drawn to its own maximum, so a bar reads the same way for every type; the numbers give the volume."}
         {" "}A bar is critical when it is under 60% of the minimum.
       </p>
       <div className="flex flex-wrap gap-x-5 gap-y-1.5 mt-3 mb-5 text-[13px] text-foreground">
@@ -341,30 +335,10 @@ function StockAgainstMinimum({ summary, loading, error }: { summary: InventorySu
             {rows.map((r) => {
               const level = levelOf(r);
               const notStocked = isNotStocked(r.units, r.minimum_units);
-              const scale = scaleOf(r);
-              const hasTrack = r.maximum_units > r.minimum_units;
               return (
                 <li key={r.blood_type} className="grid grid-cols-[38px_1fr_6.5rem] items-center gap-3 sm:gap-4">
                   <BloodTypeBadge type={r.blood_type} size="sm" />
-                  <div className="relative h-5" aria-hidden="true">
-                    {/* The baseline runs from zero to where the track starts, so a short bar shows the gap it leaves. */}
-                    <div className="absolute left-0 top-1/2 h-px bg-gray-300" style={{ width: hasTrack ? pct(r.minimum_units, scale) : "100%" }} />
-                    {/* An outline, not a fill: a filled track puts grey above and below the bar's end, and teal on grey
-                        looks darker than teal on paper. The bar is drawn after it, so the outline's left edge goes
-                        behind the bar and only two small stubs mark where the minimum is. */}
-                    {hasTrack && (
-                      <div
-                        className="absolute inset-y-0 rounded-sm border border-gray-500"
-                        style={{ left: pct(r.minimum_units, scale), width: pct(r.maximum_units - r.minimum_units, scale) }}
-                      />
-                    )}
-                    {r.units > 0 && (
-                      <div
-                        className={`absolute top-1/2 -translate-y-1/2 h-2.5 rounded-sm ${STATUS_STYLES[level].dot}`}
-                        style={{ left: 0, width: pct(r.units, scale) }}
-                      />
-                    )}
-                  </div>
+                  <StockBar units={r.units} minimum={r.minimum_units} maximum={r.maximum_units} />
                   <div className="text-right leading-tight">
                     <div className={`text-[15px] font-bold tabular-nums ${level === "safe" ? "text-foreground" : STATUS_STYLES[level].text}`}>
                       {notStocked ? "Not stocked" : r.units}
@@ -378,14 +352,6 @@ function StockAgainstMinimum({ summary, loading, error }: { summary: InventorySu
               );
             })}
           </ul>
-          {/* A shared axis means something; per-row scales have no single axis to label. */}
-          {!PER_ROW_SCALE && (
-            <div className="grid grid-cols-[38px_1fr_6.5rem] gap-3 sm:gap-4 mt-2 text-[12px] text-foreground tabular-nums" aria-hidden="true">
-              <span />
-              <div className="flex justify-between"><span>0</span><span>{sharedMax} units</span></div>
-              <span />
-            </div>
-          )}
         </>
       )}
     </section>
@@ -418,7 +384,7 @@ function ExpiringSoon({ rows, loading, error }: { rows: InventoryUnit[]; loading
         {!loading && !error && rows.length === 0 && (
           <p className="text-[15px] text-foreground">No units expire within {EXPIRY_NEAR_DAYS} days.</p>
         )}
-        {!loading && !error && visible.map((row) => <ExpiryWarningRow key={row.din} row={row} variant="flat" />)}
+        {!loading && !error && visible.map((row) => <ExpiryWarningRow key={row.din} row={row} />)}
       </div>
     </section>
   );

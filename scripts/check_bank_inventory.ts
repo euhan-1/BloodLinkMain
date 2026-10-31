@@ -5,6 +5,7 @@ import {
   unitNote, unitState, NO_UNIT_FILTERS,
 } from "../src/app/lib/bankInventory.ts";
 import { formatCalendarDate } from "../src/app/lib/dateFormat.ts";
+import { EXPIRY_NEAR_DAYS } from "../src/app/lib/statusTokens.ts";
 import type { InventorySummaryRow, InventoryUnit } from "../src/app/lib/inventoryTypes.ts";
 
 const eq = (a: unknown, b: unknown, m: string) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m}: ${JSON.stringify(a)} !== ${JSON.stringify(b)}`); };
@@ -20,6 +21,8 @@ const floor = Number(server.match(/^RELEASE_EXPIRY_FLOOR_DAYS\s*=\s*(\d+)/m)?.[1
 const dict = server.match(/^MIN_DAYS_TO_EXPIRY_AT_RELEASE\s*=\s*\{([^}]*)\}/m)?.[1] ?? "";
 const margins = Object.fromEntries([...dict.matchAll(/"([^"]+)"\s*:\s*(\d+)/g)].map((m) => [m[1], Number(m[2])]));
 eq(RELEASE_FLOOR_DAYS, floor, "the floor is the server's");
+// ...and so does the expiring window: one frontend constant (EXPIRY_NEAR_DAYS), the server's NOTIFY_EXPIRY_NEAR_DAYS
+eq(EXPIRY_NEAR_DAYS, Number(server.match(/^NOTIFY_EXPIRY_NEAR_DAYS\s*=\s*(\d+)/m)?.[1]), "the expiring window is the server's");
 eq(RELEASE_MARGIN_DAYS, margins, "the per-component margins are the server's");
 eq([releaseCutoffDays("Packed RBC"), releaseCutoffDays("Platelets"), releaseCutoffDays("Something new")], [3, 1, 1], "cutoff: the margin, never under the floor");
 

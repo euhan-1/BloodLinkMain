@@ -268,7 +268,3 @@ class NoIntervalPathsTests(SharedBase):
         self.assertFalse(set(recs) & gated)
         for rec in recs.values():
             self.assertEqual(rec["limited_history"], {"observed_days": 1, "min_days_required": 30})
-
-
-if __name__ == "__main__":
-    unittest.main()

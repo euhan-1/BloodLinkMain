@@ -4,7 +4,7 @@ verification and password reset — see schema_otp_codes.sql).
 
 Run from the server/ directory:
 
-    .venv\\Scripts\\python.exe -m unittest tests.test_otp -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_otp.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 
 import unittest
@@ -137,7 +137,3 @@ class OtpDbTests(unittest.TestCase):
                     text("DELETE FROM facility_registration_requests WHERE id = :rid"),
                     {"rid": registration_id},
                 )
-
-
-if __name__ == "__main__":
-    unittest.main()

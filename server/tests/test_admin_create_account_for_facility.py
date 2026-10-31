@@ -19,7 +19,7 @@ _create_staff_account path (also used by POST /admin/facilities) works.
 
 Run from the server/ directory:
 
-    .venv\\Scripts\\python.exe -m unittest tests.test_admin_create_account_for_facility -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_admin_create_account_for_facility.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 
 import unittest
@@ -141,7 +141,3 @@ class CreateAccountForExistingFacilityTests(unittest.TestCase):
 def _cleanup_with_own_connection(facility_id: int) -> None:
     with engine.begin() as conn:
         _cleanup_facility(conn, facility_id)
-
-
-if __name__ == "__main__":
-    unittest.main()

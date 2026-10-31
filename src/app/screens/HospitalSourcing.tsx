@@ -94,7 +94,6 @@ export function HospitalSourcingView(p: HospitalSourcingProps) {
             ) : (
               <FacilityNetworkMap
                 key={`${p.searchType}-${p.component}-${p.origin ? "origin" : "no-origin"}`}
-                variant="ranked"
                 banks={p.banks}
                 origin={p.origin}
                 selectedBankId={p.selectedBank}

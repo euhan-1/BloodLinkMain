@@ -15,7 +15,6 @@ What they do not prove: how the screen presents any of it, or anything about pro
 Needs the scratch database from conftest.py (TEST_DATABASE_URL).
 """
 import json
-import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -351,7 +350,3 @@ class ValidationAndRouteTests(TransferBase):
         order = [r.path for r in app.app.routes if hasattr(r, "path")]
         self.assertIn("/transfers", order)
         self.assertLess(order.index("/requests/incoming"), order.index("/requests/{request_id}"))
-
-
-if __name__ == "__main__":
-    unittest.main()

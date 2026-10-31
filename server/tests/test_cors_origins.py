@@ -22,7 +22,3 @@ class CorsOriginsTests(unittest.TestCase):
             _parse_cors_origins("http://localhost:5173,https://app.example.com"),
             ["http://localhost:5173", "https://app.example.com"],
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

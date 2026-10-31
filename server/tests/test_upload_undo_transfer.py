@@ -68,7 +68,3 @@ class UndoAfterTransferTests(unittest.TestCase):
                          [("Fridge B",)])
         self.assertEqual(q("SELECT count(*) FROM blood_units WHERE din = :d", d=f"{tag}-3")[0][0], 0)
         self.assertEqual(result["counts"], {"created_removed": 1, "modified_left_unchanged": 1, "skipped_transferred": 2})
-
-
-if __name__ == "__main__":
-    unittest.main()

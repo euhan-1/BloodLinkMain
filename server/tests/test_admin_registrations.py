@@ -10,7 +10,7 @@ functions, same convention as this suite's other admin-endpoint tests.
 
 Run from the server/ directory:
 
-    .venv\\Scripts\\python.exe -m unittest tests.test_admin_registrations -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_admin_registrations.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 
 import unittest
@@ -192,7 +192,3 @@ class AdminRegistrationsTests(unittest.TestCase):
         with engine.connect() as conn:
             count = conn.execute(text("SELECT COUNT(*) FROM users WHERE email = :email"), {"email": self.email}).scalar()
         self.assertEqual(count, 0)
-
-
-if __name__ == "__main__":
-    unittest.main()

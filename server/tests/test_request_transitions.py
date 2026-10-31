@@ -264,7 +264,3 @@ class HistoricalRowsWithNullsTests(TransitionBase):
         rid = self.new_request()
         self.accept(rid)
         self.assertEqual({r: self.stamps(r) for r in made.values()}, before)
-
-
-if __name__ == "__main__":
-    unittest.main()

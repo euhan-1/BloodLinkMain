@@ -183,7 +183,3 @@ class PairedSummaryTests(unittest.TestCase):
         tree = {"feature": "cv", "threshold": 1.0, "left": {"leaf": 0},
                 "right": {"feature": "n_obs", "threshold": 2.0, "left": {"feature": "cv", "threshold": 3.0, "left": {"leaf": 1}, "right": {"leaf": 2}}, "right": {"leaf": 3}}}
         self.assertEqual(_split_features(tree), ["cv", "n_obs"])
-
-
-if __name__ == "__main__":
-    unittest.main()

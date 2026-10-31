@@ -77,21 +77,6 @@ export const STATUS_STYLES: Record<StatusLevel, { badge: string; dot: string; pa
   },
 };
 
-export const EXPIRED_STYLE = {
-  badge: "bg-gray-100 text-foreground border-gray-300",
-  dot: "bg-gray-400",
-  panel: "bg-gray-50 border border-gray-200",
-  solid: "bg-gray-500 text-white",
-  text: "text-foreground",
-};
-
-export const EXPIRY_STYLES: Record<ExpiryStatus, { badge: string; dot: string; rowTint: string; panel: string; solid: string; text: string; label: (daysLeft: number) => string }> = {
-  expired: { ...EXPIRED_STYLE, rowTint: "bg-gray-50", label: () => "Expired" },
-  critical: { ...STATUS_STYLES.critical, rowTint: "bg-status-critical-tint/50", label: (d) => `${d}d — Critical` },
-  "near-expiry": { ...STATUS_STYLES.watch, rowTint: "bg-status-watch-tint/40", label: (d) => `${d}d — Near Expiry` },
-  ok: { ...STATUS_STYLES.safe, rowTint: "", label: () => "OK" },
-};
-
 // units vs. minimum → status level, the one rule used everywhere stock is
 // judged against a minimum (dashboard grid, chart bars, threshold dots).
 // "safe" starts exactly at the minimum, so "Adequate" always means at or above
@@ -116,11 +101,3 @@ export const STOCK_LABELS: Record<StatusLevel, string> = {
 export function isNotStocked(units: number, min: number): boolean {
   return min === 0 && units === 0;
 }
-
-// Raw hex twins of the --status-* tokens, for the few spots (SVG/Recharts
-// `fill`) that can't take a Tailwind class and need an actual color value.
-export const STATUS_HEX: Record<StatusLevel, string> = {
-  safe: "#0F766E",
-  watch: "#B8860B",
-  critical: "#BD4024",
-};

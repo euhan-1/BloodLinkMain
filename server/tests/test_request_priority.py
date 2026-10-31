@@ -290,7 +290,3 @@ class ReasonValidationTests(unittest.TestCase):
                 self.assertEqual(status, 200, payload)
                 self.assertEqual(payload["emergency_type"], good)
         self.assertEqual(sorted(r[0] for r in self.rows()), sorted(app.EMERGENCY_TYPES))
-
-
-if __name__ == "__main__":
-    unittest.main()

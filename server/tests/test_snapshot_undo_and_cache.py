@@ -6,7 +6,7 @@ today's stock; undo restoring a snapshot the upload overwrote; undo of overlappi
 uploads in either order; the "none" forecast path clearing alert state; and a
 cleared alert resolving its bell notification.
 
-Run from server/: .venv\\Scripts\\python.exe -m unittest tests.test_snapshot_undo_and_cache -v
+Run from server/: .venv\\Scripts\\python.exe -m pytest tests/test_snapshot_undo_and_cache.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 import unittest
 import uuid
@@ -38,6 +38,13 @@ def snaps(fid, btype="O+"):
 
 class SnapshotUndoAndCacheTests(unittest.TestCase):
     def setUp(self):
+        # These tests fit real SARIMAX models on a 40-day series ending today, and the dengue-season regressor is a calendar
+        # (June-October). When that window straddled a month boundary (1 Nov, for 40 days) one test's fit stopped converging:
+        # it failed on an unmodified checkout, purely because of the date. What they prove is caching and undo, not the
+        # regressor, so it is pinned to the value the whole window had when they were written.
+        pin = mock.patch.object(app, "dengue_season_index", return_value=1.0)
+        pin.start()
+        self.addCleanup(pin.stop)
         tag = uuid.uuid4().hex[:6]
         with engine.begin() as c:
             self.fid = c.execute(text("INSERT INTO facilities (name, facility_type, is_active, profile_completed) "
@@ -161,11 +168,11 @@ class SnapshotUndoAndCacheTests(unittest.TestCase):
     def _seed_alert(self, btype):
         with engine.begin() as c:
             c.execute(text("INSERT INTO forecast_alert_state (facility_id, blood_type, alerting) VALUES (:f,:b,true)"), {"f": self.fid, "b": btype})
-            app._create_notification(c, self.fid, "forecast_shortage", f"{btype} {app._SHORTAGE_MSG_TAIL} 9 days", "dashboard")
+            app._create_notification(c, self.fid, "forecast_shortage", app._shortage_message(btype, {"days_until_threshold": 9}, None, TODAY), "dashboard")
 
     def _unread(self, btype):
         return q("SELECT count(*) FROM notifications WHERE facility_id=:f AND type='forecast_shortage' AND message LIKE :p AND read_at IS NULL",
-                 f=self.fid, p=f"{btype} %")[0][0]
+                 f=self.fid, p=f"{btype}: %")[0][0]
 
     def test_none_path_clears_alert_state_and_resolves_notifications(self):
         self._seed_alert("O+")
@@ -182,8 +189,4 @@ class SnapshotUndoAndCacheTests(unittest.TestCase):
         with engine.begin() as c:  # AB+ is still alerting, A+ no longer is
             app._check_forecast_shortage_notifications(c, self.fid, [{"type": "AB+", "days_until_threshold": 9}])
         self.assertEqual((self._alerting("A+"), self._alerting("AB+")), (False, True))
-        self.assertEqual((self._unread("A+"), self._unread("AB+")), (0, 1))  # "A+ " prefix must not catch "AB+"
-
-
-if __name__ == "__main__":
-    unittest.main()
+        self.assertEqual((self._unread("A+"), self._unread("AB+")), (0, 1))  # "A+: " prefix must not catch "AB+"

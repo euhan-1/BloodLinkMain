@@ -27,7 +27,6 @@ const CompleteProfileScreen = lazy(() => import("./screens/CompleteProfile").the
 import { LoginScreen } from "./screens/Login";
 import {
   AlertTriangle, MapPin,
-  Phone,
   Activity, Package,
 } from "lucide-react";
 

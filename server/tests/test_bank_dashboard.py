@@ -8,6 +8,7 @@ Notifying nearby hospitals is one notification per hospital per group.
 Needs the scratch database from conftest.py (TEST_DATABASE_URL).
 """
 import unittest
+from unittest import mock
 import uuid
 from datetime import timedelta
 
@@ -234,6 +235,72 @@ class NotifyGroupTests(BankDashboardBase):
             app.notify_nearby_hospitals_of_expiring_group(self.body(), acting_facility_id=self.bank)
         self.assertEqual(ctx.exception.status_code, 404)
 
+    # ---- the per-unit offer and the grouped one offer the same units --------------------------------------------------------
+    def reserve(self, din):
+        rid = accepted_request(self.bank, self.hospital, 1)
+        with engine.begin() as c:
+            c.execute(text("UPDATE blood_units SET reserved_for_request_id = :r WHERE din = :d"), {"r": rid, "d": din})
+
+    def unit_offer(self, din):
+        return app.notify_nearby_hospitals_of_expiring_unit(din, acting_facility_id=self.bank)
+
+    def test_a_unit_reserved_for_a_request_cannot_be_offered_one_at_a_time_either(self):
+        add(self.bank, self.din("R"), 3)
+        self.reserve(self.din("R"))
+        with self.assertRaises(app.HTTPException) as ctx:
+            self.unit_offer(self.din("R"))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("reserved for a request", ctx.exception.detail)
+        self.assertEqual(self.mine(), [], "nothing was sent to anyone")
+
+    def test_an_archived_unit_cannot_be_offered_one_at_a_time_either(self):
+        add(self.bank, self.din("A"), 3)
+        with engine.begin() as c:
+            c.execute(text("UPDATE blood_units SET archived_at = now() WHERE din = :d"), {"d": self.din("A")})
+        with self.assertRaises(app.HTTPException) as ctx:
+            self.unit_offer(self.din("A"))
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("archived", ctx.exception.detail)
+        self.assertEqual(self.mine(), [])
+
+    def test_a_unit_that_is_not_here_is_still_not_found(self):
+        with self.assertRaises(app.HTTPException) as ctx:
+            self.unit_offer(self.din("NOPE"))
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_the_group_and_the_single_unit_offer_the_same_units(self):
+        add(self.bank, self.din("FREE"), 3)
+        add(self.bank, self.din("HELD"), 3)
+        self.reserve(self.din("HELD"))
+        self.assertEqual(self.groups_total(), 1, "the Dashboard lists the free unit only")
+        group = app.notify_nearby_hospitals_of_expiring_group(self.body(), acting_facility_id=self.bank)
+        self.assertEqual(group["units"], 1, "and the group offer counts the same one")
+        self.assertEqual(self.unit_offer(self.din("FREE"))["notified_count"], group["notified_count"])
+        with self.assertRaises(app.HTTPException):
+            self.unit_offer(self.din("HELD"))
+
+    def groups_total(self):
+        return app.get_expiring_inventory(facility_id=self.bank)["total_units"]
+
+    def test_the_near_expiry_window_is_the_one_constant_for_both_offers(self):
+        # Moving the constant must move both endpoints (a literal 7 in either would not follow it).
+        with mock.patch.object(app, "NOTIFY_EXPIRY_NEAR_DAYS", 10):
+            add(self.bank, self.din("EDGE"), 10)
+            add(self.bank, self.din("BEYOND"), 11)
+            self.unit_offer(self.din("EDGE"))
+            with self.assertRaises(app.HTTPException) as ctx:
+                self.unit_offer(self.din("BEYOND"))
+            self.assertIn("near-expiry", ctx.exception.detail)
+            app.notify_nearby_hospitals_of_expiring_group(self.body(expires_date=TODAY + timedelta(days=10)), acting_facility_id=self.bank)
+            with self.assertRaises(app.HTTPException):
+                app.notify_nearby_hospitals_of_expiring_group(self.body(expires_date=TODAY + timedelta(days=11)), acting_facility_id=self.bank)
+            self.assertEqual(app.get_expiring_inventory(facility_id=self.bank)["window_days"], 10)
+
+    def test_all_three_read_the_one_predicate(self):
+        import inspect
+        for fn in (app.get_expiring_inventory, app.notify_nearby_hospitals_of_expiring_group, app.notify_nearby_hospitals_of_expiring_unit):
+            self.assertIn("OFFERABLE_UNITS_SQL", inspect.getsource(fn), fn.__name__)
+
     def test_a_facility_without_a_location_cannot_notify(self):
         add(self.bank, self.din(1), 3)
         with engine.begin() as c:
@@ -252,7 +319,3 @@ class ProjectedLowTests(unittest.TestCase):
     def test_the_figure_is_an_estimate_beside_current_stock_so_it_is_a_whole_number(self):
         points = {c: 79.6 for c in app.FORECAST_CHECKPOINTS}
         self.assertEqual(app._compute_restock_recommendation("O+", points, 80, 160, TODAY)["projected_low_units"], 80)
-
-
-if __name__ == "__main__":
-    unittest.main()

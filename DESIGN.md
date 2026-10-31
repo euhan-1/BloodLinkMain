@@ -77,14 +77,14 @@ components:
 
 **Creative North Star: "The Blood Bag Label"**
 
-BloodLink's visual system takes its cues from the physical object at the center of the product: the printed label on a real blood bag. A donor identification number sets in wide-tracked mono type. An expiry date reads as a stamped, boxed callout rather than plain running text. Blood-type badges (O-, A+, AB-) are treated as the product's signature element — one shared, unmistakable shape used identically from a table row to a search-picker button, exactly the way a real bag's type label never changes shape depending on where you're standing.
+BloodLink's visual system takes its cues from the physical object at the center of the product: the printed label on a real blood bag. A donor identification number sets in mono type, as it does on the bag. Blood-type badges (O-, A+, AB-) are treated as the product's signature element — one shared, unmistakable shape used identically from a table row to a search-picker button, exactly the way a real bag's type label never changes shape depending on where you're standing.
 
 That material honesty extends outward into warmth rather than sterility. The palette is a deliberate rejection of cold clinical white-and-blue hospital-software convention: warm stone neutrals instead of cool gray, an oxblood (not alert-red) brand identity for Blood Bank accounts and a deep, muted navy for Hospital accounts, and a status language whose safe/watch/critical states use teal, gold, and red-orange specifically so the system never leans on a red-green distinction. Typography carries the same conviction — body text sits at a 700 weight floor, the boldest static weight IBM Plex Sans ships, so nothing in the interface reads as tentative. Cards get genuine, layered depth (a tight contact shadow, a mid-distance layer, a wide ambient glow) so surfaces feel like they're actually resting on the page, not drawn on with a flat line.
 
 Motion is restrained and one-shot: something happens, the interface responds once, and settles. Nothing loops or decorates — in a tool whose job is coordinating an actual blood shortage, motion is feedback, never atmosphere for its own sake.
 
 **Key Characteristics:**
-- Physical-object material honesty: mono DIN codes, stamped expiry dates, one unchanging blood-type badge shape everywhere
+- Physical-object material honesty: mono DIN codes, one unchanging blood-type badge shape everywhere
 - Warm, not clinical: stone-gray neutrals and an oxblood/navy brand pair instead of cool gray-and-blue
 - Bold by floor, not by exception: body text is set at 700 weight system-wide
 - Genuinely layered elevation: cards carry real, structural depth, not a flat outline
@@ -107,7 +107,7 @@ Warm, saturated, and decisive — nothing in the palette is a pale wash standing
 - **Info Blue** (#1D4ED8): "Here's a related option," never a status. Used for blood-type compatibility suggestions and reason-for-request tags — deliberately kept out of the safe/watch/critical system so blue is never mistaken for "OK."
 
 ### Tertiary
-- **Synthetic Violet** (#7C3AED): "This is a stand-in, not real data." Reserved entirely for the synthetic-forecast-model badge and its matching forecast-line color on the Dashboard. Violet specifically because it reads as neither a status color nor Info's blue.
+- **Synthetic Violet** (#7C3AED): "This is a stand-in, not real data." Reserved entirely for the synthetic reference model: the "Synthetic, not real data" note and its forecast line in Forecast details, and the one-line notice under the Dashboard's outlook table. The per-row tag that names where an outlook comes from ("Not from your records yet", "From its own history", "Simple trend line") is a plain neutral pill, not violet. Violet specifically because it reads as neither a status color nor Info's blue.
 
 ### Neutral
 - **Warm Paper** (#FAF9F7): Page background.
@@ -119,8 +119,8 @@ Warm, saturated, and decisive — nothing in the palette is a pale wash standing
 ### Status & Semantic
 Reused identically everywhere status appears — expiry, stock thresholds, availability, forecast alerts, facility/account status — and, critically, identical on every account type. Role identity (Oxblood/Navy) never leaks into status color, so a Hospital and a Blood Bank account looking at the same shortage always see the same red.
 - **Safe** (#0F766E, teal): Adequate stock, confirmed, live/active states.
-- **Watch** (#B8860B, gold): Marginal stock, pending confirmation, dev-mode indicator.
-- **Critical** (#BD4024, red-orange): Below minimum, errors, deactivated state. Its hue sits ~12° from Oxblood's own ~344° specifically so a solid brand button next to a critical badge never blurs into one red blob.
+- **Watch** (#B8860B, gold): "Below minimum" stock (under the minimum, not yet critical), pending confirmation, dev-mode indicator.
+- **Critical** (#BD4024, red-orange): "Critical" stock (under 60% of the minimum), errors, deactivated state. Its hue sits ~12° from Oxblood's own ~344° specifically so a solid brand button next to a critical badge never blurs into one red blob.
 
 ### Named Rules
 **The Four-Step Rule.** Every accent and status color (Primary, Safe, Watch, Critical, Info, Synthetic) ships as a family of four: a base tone for solid fills and icons, a *-hover* or *-text* tone for buttons/text-on-tint, a pale *-tint* for panel backgrounds, and a *-border* blended 66% of the way from the tint toward the base tone — the ratio that reliably clears ~3.2:1+ contrast without hand-tuning each one. Never introduce a fifth ad-hoc shade of an existing color family; derive it by the same blend instead.
@@ -143,7 +143,7 @@ Reused identically everywhere status appears — expiry, stock thresholds, avail
 - **Headline** (700, 1.5rem / text-2xl, 1.5): Section headers, modal titles.
 - **Title** (700, 1.125rem–1.1875rem, 1.5): Card titles, table section headers.
 - **Body** (700, 0.875rem–0.9375rem, 1.5): Running interface copy — the effective floor for nearly all text in the app, including labels and secondary/"muted" copy.
-- **Label** (600, 0.8125rem, 0.03em tracking): DIN codes, dates, request IDs — uppercase where the physical convention calls for it (see DinLabel).
+- **Label** (600, 0.8125rem, 0.03em tracking): DIN codes, dates, request IDs.
 - **Login Headline** (IBM Plex Serif 700, clamp(2.5rem, 3.6vw, 3.75rem), 1.05, -0.01em): The one line of copy on the login screen's maroon panel. Set large and tight; no word in it is accented by colour or weight.
 
 ### Named Rules
@@ -190,7 +190,7 @@ Two radius families with a clear division of labor: a tight `sm`/`md`/`lg` step 
 ### Badges (signature component)
 The product's one non-negotiable shared shape: a blood-type badge (O-, A+, AB-, …) that looks identical whether it's inline in a table cell or the label on a search-picker button — four sizes (`sm`→`xl`) of the same design, never a redesigned variant per context. Unselected: white surface, Oxblood/Navy text, a 25%-opacity brand-colored border, subtle shadow. Selected: solid brand fill, white text, no border. `rounded-md`, `font-display font-bold`, tight tracking.
 
-Status badges (Adequate / Marginal / Low, etc.) follow the Four-Step color rule: tint background, border, and text all drawn from the same status family, `rounded-full` for pill-shaped inline badges.
+Status badges (Adequate / Below minimum / Critical, the three stock states) follow the Four-Step color rule: tint background, border, and text all drawn from the same status family, `rounded-full` for pill-shaped inline badges.
 
 ### Cards / Containers
 - **Corner Style:** 20px radius (`rounded-xl`), the system's one distinctly larger radius.
@@ -208,8 +208,8 @@ Status badges (Adequate / Marginal / Low, etc.) follow the Four-Step color rule:
 ### Navigation
 Sticky top bar, Surface White background, single bottom border (no shadow — the nav sits flush, cards below it carry the depth instead). Active item: Oxblood/Navy-tinted background pill with brand-colored text and a slight scale-up; inactive: muted text that brightens on hover with a soft background wash. Labels hide below the `md` breakpoint, leaving icon-only nav so the header shrinks rather than overflows on a narrow or split window. Below `sm` the wordmark is hidden (the drop alone is the logo) and the bar's gaps and padding tighten, so the three nav icons, the bell and the account button fit at 320px without touching.
 
-### DIN / Date Stamp (signature component)
-Two small, deliberately literal components that carry the "printed on a real label" metaphor: `DinLabel` sets a blood-unit ID in uppercase, wide-tracked mono. `DateStamp` boxes an expiry date in a bordered, status-colored callout — visually heavier than the plain collection-date text beside it, mirroring how a real bag's printed expiry is the one date meant to catch your eye.
+### DIN and dates
+A blood-unit ID (DIN) is plain mono text (JetBrains Mono, per the Mono-Means-Physical Rule); a date is plain text in the app's one date format ("30 Oct 2026"). There is no separate "label" or "stamp" component: an earlier design had a wide-tracked uppercase `DinLabel` and a boxed, status-colored `DateStamp` for expiry dates, but no screen used them once the bank screens were rebuilt as tables, and both were removed. An expiring unit is shown by the plain days-left text and the status colour of the row, not a stamp.
 
 ## Do's and Don'ts
 

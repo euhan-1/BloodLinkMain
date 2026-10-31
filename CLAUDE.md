@@ -84,8 +84,9 @@ requests, SARIMAX demand forecasting, donor broadcast.
   skipped AB- and O+ (the hold-out warm refit reports not_converged), and was undone from a dump. There is no audit
   table: dump the facility's rows first.
 - **Scripts that write to production refuse to run by default.** `seed_facility_inventory.py`,
-  `generate_synthetic_forecast_data.py` and `fit_and_cache_synthetic_forecast.py` need
-  `--i-know-this-writes-to-production` (`server/script_guard.py`). Other scripts, `select_orders.py` among them,
+  `generate_synthetic_forecast_data.py`, `fit_and_cache_synthetic_forecast.py` and the archived
+  `archive/migrations/resolve_existing_notifications.py` need `--i-know-this-writes-to-production`
+  (`server/script_guard.py`). Other scripts, `select_orders.py` and the `migrate_*.py` migrations among them,
   have no such guard.
 - **Uploads are batched** — `INSERT … SELECT … FROM unnest(...)`, never
   row-by-row. Three CSV parsers require exact column names, filter extras, and
@@ -102,6 +103,12 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `/facilities/nearby` counts it, and any "can give" figure must use it, so no screen promises more than release delivers.
   Compatible alternatives are offered to hospitals only: a blood bank is restocking, and covering A- with O- is a patient-side
   substitution. A bank's tab is "Source supply" and its request is always restock.
+- **One definition each** of what the stock screens count and what a bank can offer. `USABLE_COUNTS_SQL` is the count of usable units
+  (`expires_date >= today`, archived or not) that `/inventory/summary`, the hospital's threshold view and the snapshot writer all join,
+  so they cannot disagree. `OFFERABLE_UNITS_SQL` (not archived, not reserved for a request) is what `/inventory/expiring`, the grouped
+  notify endpoint and the per-unit notify endpoint all select from, so a bank cannot offer blood already committed to a transfer. The
+  7-day near-expiry window is `NOTIFY_EXPIRY_NEAR_DAYS` on the server and one frontend constant, `EXPIRY_NEAR_DAYS`
+  (`check_bank_inventory.ts` fails if they differ).
 - **The blood bank Dashboard** (`BankDashboard.tsx`, logic in `lib/bankDashboard.ts`): one sentence in the worst state's colour,
   one per-type table (stock against minimum, units, status, **can give**, outlook), "Waiting for you", expiring units grouped by
   type, component and day (`GET /inventory/expiring`, one `POST /inventory/notify-nearby-hospitals` per group), and everything
@@ -119,8 +126,9 @@ requests, SARIMAX demand forecasting, donor broadcast.
   every checkpoint, but the lower bound of the 95% interval is below it at one (`_compute_downside_risk`; `/forecast` returns
   `downside_risks`, and per-type `type_bounds` with lower/upper). Display only: it never makes a recommendation, never changes
   `recommended_units`, never feeds an alert; those stay on the central projection. It starts at checkpoint 1 (today's stock is
-  known), dates the first checkpoint whose lower bound breaches (not interpolated), and needs a bound: a type with no interval, and
-  the synthetic stand-in (no `downside_risks` key at all), read On track. **Below `SARIMAX_MIN_DAYS_REQUIRED` (30) recorded days of the type's own history (today counted) a type never reads On track or At
+  known), dates the first checkpoint whose lower bound breaches (not interpolated), and needs a bound: a type with no interval
+  can never be At risk. The synthetic stand-in has no interval and no `downside_risks` key at all, and is gated to "Not enough
+  history" (below) rather than read On track. **Below `SARIMAX_MIN_DAYS_REQUIRED` (30) recorded days of the type's own history (today counted) a type never reads On track or At
   risk**: `/forecast` lists it in `insufficient_history` and the column says "Not enough history (6 of 30 days)", the stand-in
   included. Asserting safety without a basis is worse than asserting risk without one. Recommendations are **not** withheld, but
   each one from a type below 30 days carries `limited_history` (with the day count) and the row says "Limited history (6 of 30
@@ -139,15 +147,12 @@ requests, SARIMAX demand forecasting, donor broadcast.
   day: `tests/test_notifications.py` builds it through both notify endpoints so the two cannot drift) and `blast_complete`. A row
   linked to a request that no longer exists resolves too. The old shared `transfer_confirmation_needed` is split (the supplier's
   "confirm release" notice at accept is dropped, the receipt prompt is `receipt_needed`) and `unit_expiry` is retired: nothing
-  writes either, rows written before remain, and the sweep resolves the old prompts by request state. Resolution happens at the
-  event (`_resolve_notifications`) and again from the request's state on every `GET /notifications` and `/notifications/unread-count`
-  (`_resolve_stale_notifications`), for every row: `NOTIFICATIONS_AUTORESOLVE_SINCE` is `None`. It was a date (2026-11-01 Manila) that kept
-  the sweep off the rows written under the old rules until they had been dealt with, which was a production write of its own:
-  `server/resolve_existing_notifications.py` (behind the production guard, `--dry-run` available) saved every unread id to
-  `server/tmp/`, resolved the retired `unit_expiry` rows and everything the sweep's rules resolve, left events whose request
-  still exists unread, and recorded the exact undo SQL. It has run (392 rows resolved, 14 events left unread); it stays as the
-  record of how, and the constant as a way to protect older rows if that is ever wanted again. Not built yet: a release reminder
-  for the supplier (`docs/BACKLOG.md`). `forecast_shortage` is written only for a type with at least `SARIMAX_MIN_DAYS_REQUIRED` recorded days
+  writes either and nothing resolves them (the old rows are all read; the code that resolved them was removed). Resolution happens at
+  the event (`_resolve_notifications`) and again from the request's state on every `GET /notifications` and `/notifications/unread-count`
+  (`_resolve_stale_notifications`, every row, no date limit). The one-off that cleaned up the rows written under the old rules,
+  `archive/migrations/resolve_existing_notifications.py`, has run (392 rows resolved, 14 events left unread; the undo record is the
+  JSON it saved in the git-ignored `server/tmp/`) and is archived as the record of how. `blood_units.last_notified_expiry_status` is
+  unused (the data dictionary says so); its old values remain. Not built yet: a release reminder for the supplier (`docs/BACKLOG.md`). `forecast_shortage` is written only for a type with at least `SARIMAX_MIN_DAYS_REQUIRED` recorded days
   and never from the synthetic stand-in, in the Dashboard's sentence ("O+: projected below its minimum around 4 Nov; ordering 90
   units brings it back to its maximum."). Every request notification names its quantity and component, dates are written out
   ("28 Oct 2026"), and the text says "request", "kilometers" and "near-expiry". The bell (`NotificationBell`, logic in
@@ -200,7 +205,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (558 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (560 tests plus
   160 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
@@ -208,6 +213,10 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `DATABASE_URL`, and rebuilds the public schema from `server/tests/schema.sql`
   (a `pg_dump --schema-only` of production; regenerate after a migration).
   Never run the suite against production.
+  **Test files carry no `if __name__ == "__main__"` block, and a new one must not get one.** Each used to end in
+  `unittest.main()`, so `python tests/test_x.py` ran the tests without conftest, against `.env`'s production `DATABASE_URL`,
+  creating and deleting rows there. The docstrings only described that; removing the blocks closed it. Tests run through pytest
+  alone, which loads conftest (the local-host refusal and the schema rebuild).
   Frontend checks: `node scripts/check_stock_bands.ts` (stock band rules) and
   `node scripts/check_forecast_source_tags.ts` (per-type forecast source tags) and
   `node scripts/check_trend_chart.ts` (trend chart history/forecast data) and

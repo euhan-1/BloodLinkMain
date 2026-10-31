@@ -14,7 +14,7 @@ doesn't do that.
 
 Run from the server/ directory:
 
-    .venv\\Scripts\\python.exe -m unittest tests.test_prediction_interval -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_prediction_interval.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 
 import math
@@ -128,7 +128,3 @@ class PredictionIntervalHalfWidthTests(unittest.TestCase):
         self.assertIsNotNone(half_width_near)
         self.assertIsNotNone(half_width_far)
         self.assertGreater(half_width_far, half_width_near)
-
-
-if __name__ == "__main__":
-    unittest.main()

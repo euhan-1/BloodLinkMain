@@ -27,7 +27,7 @@ uses whatever we pass as facility_id.
 
 Run from the server/ directory:
 
-    .venv\\Scripts\\python.exe -m unittest tests.test_expired_inventory -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_expired_inventory.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 
 import unittest
@@ -231,7 +231,3 @@ class ArchiveExpiredBacklogTests(unittest.TestCase):
         main.archive_expired_inventory(facility_id=self.facility_id)
         second = main.archive_expired_inventory(facility_id=self.facility_id)
         self.assertEqual(second["archived_count"], 0)
-
-
-if __name__ == "__main__":
-    unittest.main()

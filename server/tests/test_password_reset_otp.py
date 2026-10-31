@@ -11,7 +11,7 @@ other endpoint tests.
 
 Run from the server/ directory:
 
-    .venv\\Scripts\\python.exe -m unittest tests.test_password_reset_otp -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_password_reset_otp.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 
 import unittest
@@ -142,7 +142,3 @@ class PasswordResetOtpTests(unittest.TestCase):
                 ResetPasswordOtpBody(email="nobody-here@example.com", code="123456", new_password="BrandNewPass123")
             )
         self.assertEqual(ctx.exception.status_code, 400)
-
-
-if __name__ == "__main__":
-    unittest.main()

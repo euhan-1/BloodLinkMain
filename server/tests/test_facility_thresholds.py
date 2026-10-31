@@ -13,7 +13,7 @@ in tearDown.
 
 Run from the server/ directory:
 
-    .venv\\Scripts\\python.exe -m unittest tests.test_facility_thresholds -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_facility_thresholds.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 
 import unittest
@@ -205,7 +205,3 @@ class NearbyFacilitiesUsesEachCandidatesOwnThresholdTests(unittest.TestCase):
         self.assertEqual(lenient["usable_units"], 50 - 10)  # 40, above its own reserve
         self.assertFalse(strict["available"])
         self.assertTrue(lenient["available"])
-
-
-if __name__ == "__main__":
-    unittest.main()

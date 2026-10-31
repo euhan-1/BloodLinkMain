@@ -7,6 +7,11 @@ the history of the schema is readable. **Do not re-run them.**
 The current schema is `server/tests/schema.sql` (a `pg_dump --schema-only` of
 production) and the `server/schema_*.sql` files that stayed in `server/`.
 
+Three later one-offs are here too, with their SQL where they have one (the migration reads `schema_transfer_integrity.sql` from
+the folder it sits in): `migrate_transfer_integrity.py` + `schema_transfer_integrity.sql` (request component, the `request_units`
+ledger and the transition stamps) and `resolve_existing_notifications.py` (the one-off that resolved the notifications written
+before the notification rebuild). All three have run.
+
 ## Why they no longer run from here
 
 They were moved here unmodified from `server/`, and two things in them assume

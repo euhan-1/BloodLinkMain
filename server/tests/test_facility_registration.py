@@ -15,7 +15,7 @@ test_admin_create_account_for_facility.py.
 
 Run from the server/ directory:
 
-    .venv\\Scripts\\python.exe -m unittest tests.test_facility_registration -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_facility_registration.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 
 import unittest
@@ -232,7 +232,3 @@ class RegisterFacilityEndpointTests(unittest.TestCase):
                 text("SELECT status FROM facility_registration_requests WHERE email = :email"), {"email": self.email}
             ).mappings().first()
         self.assertIsNotNone(row)
-
-
-if __name__ == "__main__":
-    unittest.main()

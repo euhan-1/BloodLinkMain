@@ -200,7 +200,3 @@ class NightlyArchiveTests(unittest.TestCase):
         self.assertEqual(self.archived_dins(self.bank), set())
         self.run_job()  # a retry finishes the job
         self.assertEqual(self.archived_dins(self.bank), {self.din("B1")})
-
-
-if __name__ == "__main__":
-    unittest.main()

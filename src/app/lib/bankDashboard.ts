@@ -6,7 +6,7 @@ import type { ForecastView } from "./forecastTypes.ts";
 import { forecastSourceTag } from "./forecastSource.ts";
 import { formatDayMonth } from "./dateFormat.ts";
 import type { InventorySummaryRow } from "./inventoryTypes.ts";
-import { BLOOD_TYPE_ORDER, STATUS_STYLES, isNotStocked, stockStatus, type StatusLevel } from "./statusTokens.ts";
+import { BLOOD_TYPE_ORDER, isNotStocked, stockStatus, type StatusLevel } from "./statusTokens.ts";
 import type { ExpiringGroup } from "./api.ts";
 import type { RequestRow } from "./requestTypes.ts";
 
@@ -202,8 +202,6 @@ export function sortedRows(summary: InventorySummaryRow[], f: ForecastView | nul
 
 export const statusWord = (row: InventorySummaryRow, labels: Record<StatusLevel, string>): string =>
   isNotStocked(row.units, row.minimum_units) ? "Not stocked" : labels[stockStatus(row.units, row.minimum_units)];
-
-export const statusTextClass = (row: InventorySummaryRow): string => STATUS_STYLES[stockStatus(row.units, row.minimum_units)].text;
 
 // ─── Waiting for you, and expiring units ────────────────────────────────────
 

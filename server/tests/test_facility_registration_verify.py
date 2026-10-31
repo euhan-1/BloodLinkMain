@@ -7,7 +7,7 @@ other endpoint tests.
 
 Run from the server/ directory:
 
-    .venv\\Scripts\\python.exe -m unittest tests.test_facility_registration_verify -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_facility_registration_verify.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 
 import unittest
@@ -103,7 +103,3 @@ class VerifyFacilityRegistrationEmailTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             main.verify_facility_registration_email(main.VerifyRegistrationEmailBody(email=self.email, code=code))
         self.assertEqual(ctx.exception.status_code, 400)
-
-
-if __name__ == "__main__":
-    unittest.main()

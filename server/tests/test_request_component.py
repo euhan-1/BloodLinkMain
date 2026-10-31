@@ -344,7 +344,3 @@ class FrontendContractTests(unittest.TestCase):
         self.assertEqual(re.findall(r'"([^"]+)"', listed.group(1)), list(app.COMPONENTS))
         red = re.search(r"export const RED_CELL_COMPONENTS[^=]*=\s*\[([^\]]*)\]", src)
         self.assertEqual(set(re.findall(r'"([^"]+)"', red.group(1))), app.RED_CELL_COMPONENTS)
-
-
-if __name__ == "__main__":
-    unittest.main()

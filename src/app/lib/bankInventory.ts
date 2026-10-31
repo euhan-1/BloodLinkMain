@@ -3,7 +3,7 @@
 // Kept apart from the view so scripts/check_bank_inventory.ts can assert it.
 
 import type { InventorySummaryRow, InventoryUnit } from "./inventoryTypes.ts";
-import { BLOOD_TYPE_ORDER, isNotStocked, stockStatus, type StatusLevel } from "./statusTokens.ts";
+import { BLOOD_TYPE_ORDER, EXPIRY_NEAR_DAYS, isNotStocked, stockStatus, type StatusLevel } from "./statusTokens.ts";
 
 // ─── Why a unit is not offered ──────────────────────────────────────────────
 
@@ -121,8 +121,6 @@ export function searchUnits(units: InventoryUnit[], query: string, limit = SEARC
 
 // ─── The type table ─────────────────────────────────────────────────────────
 
-export const EXPIRING_WINDOW_DAYS = 7;
-
 export type TypeSummary = {
   type: string;
   units: number; // usable units on hand (the server's count, which stock status is measured on)
@@ -130,7 +128,7 @@ export type TypeSummary = {
   maximum: number | null;
   level: StatusLevel | null; // null: no thresholds set
   notStocked: boolean;
-  expiring: number; // live units that expire within EXPIRING_WINDOW_DAYS, not counting units reserved for a request (they are leaving)
+  expiring: number; // live units that expire within EXPIRY_NEAR_DAYS (statusTokens), not counting units reserved for a request (they are leaving)
   expired: number; // units past their expiry still on the list
   held: number; // everything on the list for this type
 };
@@ -148,7 +146,7 @@ export function typeSummaries(units: InventoryUnit[], summary: Record<string, In
       maximum: s ? s.maximum_units : null,
       level: s ? stockStatus(s.units, s.minimum_units) : null,
       notStocked: s ? isNotStocked(s.units, s.minimum_units) : false,
-      expiring: live.filter((u) => u.daysLeft <= EXPIRING_WINDOW_DAYS && u.reservedForRequestId === null).length,
+      expiring: live.filter((u) => u.daysLeft <= EXPIRY_NEAR_DAYS && u.reservedForRequestId === null).length,
       expired: mine.length - live.length,
       held: mine.length,
     };

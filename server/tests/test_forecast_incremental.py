@@ -3,7 +3,7 @@ finishes, serialises fitting per facility with an advisory lock, and reports wha
 still pending. Real DB, disposable facility; the SARIMAX fit itself is stubbed (its
 numerics are covered elsewhere), so this runs in seconds.
 
-Run from server/: .venv\\Scripts\\python.exe -m unittest tests.test_forecast_incremental -v
+Run from server/: .venv\\Scripts\\python.exe -m pytest tests/test_forecast_incremental.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 import unittest
 import uuid
@@ -125,7 +125,7 @@ class IncrementalForecastTests(unittest.TestCase):
         with engine.begin() as c:
             for t in TYPES:
                 c.execute(text("INSERT INTO forecast_alert_state (facility_id, blood_type, alerting) VALUES (:f,:b,true)"), {"f": self.fid, "b": t})
-                app._create_notification(c, self.fid, "forecast_shortage", f"{t} {app._SHORTAGE_MSG_TAIL} 9 days", "dashboard")
+                app._create_notification(c, self.fid, "forecast_shortage", app._shortage_message(t, {"days_until_threshold": 9}, None, TODAY), "dashboard")
         with mock.patch.object(app, "MAX_SARIMAX_FITS_PER_REQUEST", 0):
             r = app.get_forecast(facility_id=self.fid)
         self.assertEqual(len(r["pending_types"]), 5)
@@ -223,7 +223,3 @@ class AlertObservedDaysTests(unittest.TestCase):
         self.assertEqual(len(reasons), 1)
         self.assertIn("own 36 observed days of history for O+", reasons[0])
         self.assertNotIn("41", reasons[0])  # the modeled series is 41 days long
-
-
-if __name__ == "__main__":
-    unittest.main()

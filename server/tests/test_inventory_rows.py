@@ -70,7 +70,3 @@ class InventoryRowTests(unittest.TestCase):
             c.execute(text("UPDATE blood_units SET reserved_for_request_id = :r WHERE din = :d"), {"r": rid, "d": self.din("HELD")})
         self.assertEqual(app.archive_expired_inventory(facility_id=self.bank), {"archived_count": 2})
         self.assertEqual(set(self.rows()), {self.din("HELD"), self.din("LIVE")})
-
-
-if __name__ == "__main__":
-    unittest.main()

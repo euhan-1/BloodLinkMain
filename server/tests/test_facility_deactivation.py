@@ -11,7 +11,7 @@ convention as test_admin_create_account_for_facility.py.
 
 Run from the server/ directory:
 
-    .venv\\Scripts\\python.exe -m unittest tests.test_facility_deactivation -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_facility_deactivation.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 
 import unittest
@@ -149,7 +149,3 @@ class FacilityDeactivationTests(unittest.TestCase):
 
         result = main.create_request(CreateRequestBody(supplying_facility_id=active_bank_id), requesting_facility_id=requester_id)
         self.assertEqual(result["supplying_facility_id"], active_bank_id)
-
-
-if __name__ == "__main__":
-    unittest.main()

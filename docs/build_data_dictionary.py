@@ -125,7 +125,7 @@ D = {
         "created_at": "When the row was added to the system.",
         "facility_id": "The facility this unit belongs to.",
         "reserved_for_request_id": "The transfer request this unit is held for; NULL when the unit is free.",
-        "last_notified_expiry_status": "The last expiry warning level ('near-expiry' or 'critical') already notified, so the same warning is not sent twice; NULL when none sent.",
+        "last_notified_expiry_status": "NO LONGER USED. The expiry warning level ('near-expiry' or 'critical') last notified for the unit, written while expiring units produced a once-per-tier notification. Nothing reads or writes it now (expiring units are shown on the dashboard instead of notified); the values that remain are history and carry no meaning.",
         "upload_history_id": "The CSV upload that created this unit, so the upload can be undone; NULL for units not added by upload.",
         "archived_at": "When the unit was archived out of active inventory; NULL while active.",
     },

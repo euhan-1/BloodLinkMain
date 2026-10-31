@@ -179,20 +179,11 @@ class SweepTests(FlowBase):
         self.assertTrue(self.read(nid))
 
     def test_the_sweep_covers_every_row_whatever_its_age(self):
-        # NOTIFICATIONS_AUTORESOLVE_SINCE is None: there is no date limit, so a row from before the notification rebuild resolves like any other
-        self.assertIsNone(app.NOTIFICATIONS_AUTORESOLVE_SINCE)
+        # there is no date limit: a row from before the notification rebuild resolves like any other
         ancient = self.row(self.bank, "incoming_request", "requests:2000000000", created_at=datetime(2026, 8, 21, 9, 0, tzinfo=timezone.utc))
         recent = self.row(self.bank, "incoming_request", "requests:2000000001", created_at=WRITTEN)
         app.notifications_unread_count(facility_id=self.bank)
         self.assertEqual((self.read(ancient), self.read(recent)), (True, True))
-
-    def test_a_date_limit_still_protects_older_rows_when_one_is_given(self):
-        # the parameter outlives the constant: a caller can still ask the sweep to leave rows older than an instant alone
-        old = self.row(self.bank, "incoming_request", "requests:2000000000", created_at=WRITTEN - timedelta(days=1))
-        new = self.row(self.bank, "incoming_request", "requests:2000000001", created_at=WRITTEN + timedelta(minutes=1))
-        with engine.begin() as c:
-            self.assertEqual(app._resolve_stale_notifications(c, self.bank, WRITTEN), 1)
-        self.assertEqual((self.read(old), self.read(new)), (False, True))
 
     def test_the_sweep_derives_each_rule_from_the_requests_state(self):
         pending = self.new_request()
@@ -221,20 +212,6 @@ class SweepTests(FlowBase):
         self.assertTrue(unread(self.hospital, "receipt_needed", released), "released, not received: still needs the requester")
         self.assertFalse(unread(self.hospital, "receipt_needed", done))
         self.assertTrue(unread(self.hospital, "request_accepted", done), "an event, not a prompt: it waits to be read")
-
-    def test_the_old_shared_type_resolves_per_party(self):
-        rid = self.new_request()
-        self.accept(rid)
-        new = WRITTEN
-        sup = self.row(self.bank, "transfer_confirmation_needed", f"requests:{rid}", created_at=new)
-        req = self.row(self.hospital, "transfer_confirmation_needed", f"requests:{rid}", created_at=new)
-        self.list_for(self.bank)
-        self.list_for(self.hospital)
-        self.assertEqual((self.read(sup), self.read(req)), (False, False), "accepted only: both still open")
-        self.release(rid)  # the release settles the supplier's old prompt on its own
-        self.assertEqual((self.read(sup), self.read(req)), (True, False))
-        app.confirm_receipt(rid, facility_id=self.hospital, user_id=self.hospital_user)
-        self.assertEqual((self.read(sup), self.read(req)), (True, True))
 
     def test_other_links_and_types_are_never_touched(self):
         new = WRITTEN
@@ -354,13 +331,6 @@ class ForecastShortageTests(unittest.TestCase):
         self.forecast()
         self.assertEqual([read for _, read in self.shortages()], [True])
 
-    def test_a_row_in_the_old_wording_still_resolves(self):
-        with engine.begin() as c:
-            c.execute(text("INSERT INTO forecast_alert_state (facility_id, blood_type, alerting) VALUES (:f, 'O+', true)"), {"f": self.fid})
-            app._create_notification(c, self.fid, "forecast_shortage", f"O+ {app._SHORTAGE_MSG_TAIL} 9 days", "dashboard")
-            app._check_forecast_shortage_notifications(c, self.fid, [])
-        self.assertEqual([read for _, read in self.shortages()], [True])
-
     def test_without_a_recommendation_it_still_says_when(self):
         with engine.begin() as c:
             app._check_forecast_shortage_notifications(c, self.fid, [{"type": "AB+", "days_until_threshold": 9}], today=date(2026, 11, 1))
@@ -412,7 +382,7 @@ class OfferResolutionTests(unittest.TestCase):
 
     def sweep(self, today):
         with engine.begin() as c:
-            return app._resolve_stale_notifications(c, self.hospital, None, today=today)
+            return app._resolve_stale_notifications(c, self.hospital, today=today)
 
     def test_a_group_offer_lives_through_its_last_usable_day_and_resolves_the_day_after(self):
         add(self.bank, f"{self.tag}-1", 2)
@@ -478,7 +448,3 @@ class OfferResolutionTests(unittest.TestCase):
                             {"h": self.hospital}).scalar()
         self.sweep(date(2030, 1, 1))
         self.assertFalse(self.resolved(nid))
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -58,6 +58,14 @@ The frontend checks:
 npm run typecheck
 node scripts/check_stock_bands.ts
 node scripts/check_forecast_source_tags.ts
+node scripts/check_trend_chart.ts
+node scripts/check_incoming_groups.ts
+node scripts/check_components.ts
+node scripts/check_request_timeline.ts
+node scripts/check_transfers.ts
+node scripts/check_bank_dashboard.ts
+node scripts/check_bank_inventory.ts
+node scripts/check_notifications.ts
 ```
 
 Each script prints `ok` when it passes.

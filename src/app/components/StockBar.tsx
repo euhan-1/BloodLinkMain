@@ -2,7 +2,7 @@ import { STATUS_STYLES, stockStatus } from "../lib/statusTokens";
 
 // One bar for the stock held, against an outlined track from the minimum to the maximum. Each row is drawn to its own maximum,
 // so a bar reads the same way for every type; the Units column gives the volume. Shared by the blood bank's Dashboard and
-// Inventory, so the two draw a type's stock identically.
+// Inventory and the hospital's Dashboard, so they all draw a type's stock identically.
 export function StockBar({ units, minimum, maximum }: { units: number; minimum: number; maximum: number }) {
   const level = stockStatus(units, minimum);
   const scale = Math.max(maximum, units, 1);

@@ -15,7 +15,7 @@ under test.
 
 Run from the server/ directory:
 
-    .venv\\Scripts\\python.exe -m unittest tests.test_restock_recommendation -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_restock_recommendation.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 
 import unittest
@@ -120,7 +120,3 @@ class RestockStatusTests(unittest.TestCase):
             _restock_status([{"blood_type": "O-", "breach_date": "2026-10-01", "days_until_breach": 8, "recommended_units": 10}]),
             "action_needed",
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

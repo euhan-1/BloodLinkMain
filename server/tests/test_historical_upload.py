@@ -5,7 +5,7 @@ since it inherently needs a real DB row to check facility_type against).
 
 Run from the server/ directory:
 
-    .venv\\Scripts\\python.exe -m unittest tests.test_historical_upload -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_historical_upload.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 
 import datetime
@@ -121,7 +121,3 @@ class ParseHistoricalSnapshotCsvTests(unittest.TestCase):
         self.assertEqual(len(errors), 2)
         self.assertEqual(errors[0]["row"], 3)
         self.assertEqual(errors[1]["row"], 5)
-
-
-if __name__ == "__main__":
-    unittest.main()

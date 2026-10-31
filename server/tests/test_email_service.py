@@ -5,7 +5,7 @@ nothing here actually sends mail.
 
 Run from the server/ directory:
 
-    .venv\\Scripts\\python.exe -m unittest tests.test_email_service -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_email_service.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 
 import contextlib
@@ -243,7 +243,3 @@ class HtmlToPlainTextTests(unittest.TestCase):
     def test_br_becomes_newline(self):
         result = email_service._html_to_plain_text("Line one<br>Line two")
         self.assertIn("Line one\nLine two", result)
-
-
-if __name__ == "__main__":
-    unittest.main()

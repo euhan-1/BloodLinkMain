@@ -260,7 +260,3 @@ class LedgerConstraintTests(LedgerBase):
                  "expires_date, origin_location, days_remaining_at_release) "
                  "SELECT request_id, blood_unit_id, din, blood_type, component, volume_ml, collected_date, expires_date, "
                  "origin_location, days_remaining_at_release FROM request_units WHERE request_id = :r")
-
-
-if __name__ == "__main__":
-    unittest.main()

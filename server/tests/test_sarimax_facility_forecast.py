@@ -13,7 +13,7 @@ diverge from the real thing.
 
 Run from the server/ directory:
 
-    .venv\\Scripts\\python.exe -m unittest tests.test_sarimax_facility_forecast -v
+    .venv\\Scripts\\python.exe -m pytest tests/test_sarimax_facility_forecast.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 
 import csv
@@ -339,7 +339,3 @@ class SarimaxConvergenceRecoveryTests(unittest.TestCase):
             )
         self.assertIsNotNone(result)
         mocked_print.assert_not_called()
-
-
-if __name__ == "__main__":
-    unittest.main()

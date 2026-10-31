@@ -250,7 +250,3 @@ class RequestDetailReadTests(TransitionBase):
         self.assertIn(("/requests/incoming", ("GET",)), paths)
         order = [r.path for r in app.app.routes if hasattr(r, "path")]
         self.assertLess(order.index("/requests/incoming"), order.index("/requests/{request_id}"))
-
-
-if __name__ == "__main__":
-    unittest.main()

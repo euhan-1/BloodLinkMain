@@ -108,7 +108,7 @@ The blood inventory: one row per physical unit (bag/component) identified by its
 | created_at | timestamp with time zone | — |  | When the row was added to the system. | 2026-07-10 06:10:00.631893+00:00 |
 | facility_id | bigint | 64-bit | FK | The facility this unit belongs to (FK to facilities.id). | 4 |
 | reserved_for_request_id | bigint | 64-bit | FK | The transfer request this unit is held for; NULL when the unit is free (FK to requests.id). Nullable. | NULL (no row has a value) |
-| last_notified_expiry_status | text | — |  | The last expiry warning level ('near-expiry' or 'critical') already notified, so the same warning is not sent twice; NULL when none sent. Nullable. | critical |
+| last_notified_expiry_status | text | — |  | NO LONGER USED. The expiry warning level ('near-expiry' or 'critical') last notified for the unit, written while expiring units produced a once-per-tier notification. Nothing reads or writes it now (expiring units are shown on the dashboard instead of notified); the values that remain are history and carry no meaning. Nullable. | critical |
 | upload_history_id | bigint | 64-bit | FK | The CSV upload that created this unit, so the upload can be undone; NULL for units not added by upload (FK to upload_history.id). Nullable. | NULL (no row has a value) |
 | archived_at | timestamp with time zone | — |  | When the unit was archived out of active inventory; NULL while active. Nullable. | NULL (no row has a value) |
 
