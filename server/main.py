@@ -2012,6 +2012,52 @@ def _restock_status(recommendations: list[dict]) -> str:
     return "action_needed" if recommendations else "on_track"
 
 
+def _limited_history(observed_days: int) -> Optional[dict]:
+    """Below SARIMAX_MIN_DAYS_REQUIRED recorded days a type's forecast, and its interval above all, says little. The
+    outlook then never asserts "on track" or "at risk" for it (it is listed in `insufficient_history`), and a restock
+    recommendation, which stays, carries this so the screen can say it rests on limited history. None at 30 days or more."""
+    if observed_days >= SARIMAX_MIN_DAYS_REQUIRED:
+        return None
+    return {"observed_days": observed_days, "min_days_required": SARIMAX_MIN_DAYS_REQUIRED}
+
+
+def _compute_downside_risk(
+    blood_type: str,
+    point_by_checkpoint: dict[int, float],
+    lower_by_checkpoint: dict[int, Optional[float]],
+    minimum: Optional[int],
+    today: date,
+) -> Optional[dict]:
+    """The state between "on track" and a restock recommendation: the central projection holds at or above
+    `minimum` at every checkpoint, but the lower bound of the prediction interval drops below it at one. Returns the
+    earliest such checkpoint, or None.
+
+    Display only. It produces no recommendation, changes no recommended_units and feeds no alert: those stay on the
+    central projection (_compute_restock_recommendation). It only tells a reader the model sees downside it is not
+    acting on. Never a claim about a type the central projection already breaches (that one has a recommendation, and
+    "projected to hold" would be false), and never a claim without a bound: a checkpoint whose lower bound is None
+    (a type too sparse for an interval, the synthetic stand-in) cannot make a type at risk.
+
+    Checkpoint 0 is skipped: today's stock is known, so an interval around it is not a risk of anything. The date is
+    the checkpoint itself, not interpolated between checkpoints: the bound is a per-checkpoint statement.
+    """
+    if minimum is None or any(point_by_checkpoint[c] < minimum for c in FORECAST_CHECKPOINTS):
+        return None
+    risk_checkpoint = next(
+        (c for c in FORECAST_CHECKPOINTS
+         if c > 0 and lower_by_checkpoint[c] is not None and lower_by_checkpoint[c] < minimum),
+        None,
+    )
+    if risk_checkpoint is None:
+        return None
+    return {
+        "blood_type": blood_type,
+        "risk_date": (today + timedelta(days=risk_checkpoint)).isoformat(),
+        "days_until_risk": risk_checkpoint,
+        "lower_units": round(lower_by_checkpoint[risk_checkpoint]),
+    }
+
+
 # SYNTHETIC — must match MODEL_LABEL in fit_and_cache_synthetic_forecast.py.
 # Validated on generated data only; see SYNTHETIC_SARIMAX_VALIDATION.md for the
 # full identification -> estimation -> diagnostic-checking -> cross-validation
@@ -2023,7 +2069,7 @@ SYNTHETIC_MODEL_LABEL = "SARIMAX(0,1,4)x(1,0,1,7)+dengue"
 
 def _build_synthetic_stand_in_forecast(
     conn, today: date, current_units_by_type: dict[str, int], thresholds: dict[str, int],
-    maximum_thresholds: dict[str, int], is_dengue_season: bool,
+    maximum_thresholds: dict[str, int], is_dengue_season: bool, days_of_history: int,
 ) -> Optional[dict]:
     """Stand-in for a real per-facility trend while real history is below
     MIN_DAYS_REQUIRED: reads the pre-fit synthetic SARIMAX forecast (see
@@ -2056,6 +2102,7 @@ def _build_synthetic_stand_in_forecast(
 
     alerts = []
     restock_recommendations = []
+    insufficient_history = []
     total_by_checkpoint = {c: 0 for c in FORECAST_CHECKPOINTS}
 
     for blood_type, current_units in current_units_by_type.items():
@@ -2072,8 +2119,12 @@ def _build_synthetic_stand_in_forecast(
         recommendation = _compute_restock_recommendation(
             blood_type, scaled_by_checkpoint, thresholds.get(blood_type), maximum_thresholds.get(blood_type), today
         )
+        limited = _limited_history(days_of_history)  # always limited: the stand-in exists below MIN_DAYS_REQUIRED
         if recommendation is not None:
+            recommendation["limited_history"] = limited
             restock_recommendations.append(recommendation)
+        else:
+            insufficient_history.append({"blood_type": blood_type, **limited})
 
         minimum = thresholds.get(blood_type)
         if minimum is None or current_units < minimum:
@@ -2121,6 +2172,7 @@ def _build_synthetic_stand_in_forecast(
         "alerts": alerts,
         "restock_recommendations": restock_recommendations,
         "restock_status": _restock_status(restock_recommendations),
+        "insufficient_history": insufficient_history,
     }
 
 
@@ -3195,7 +3247,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
                 row["blood_type"]: row["units"] for row in history_rows if row["snapshot_date"] == today
             }
             stand_in = _build_synthetic_stand_in_forecast(
-                conn, today, current_units_by_type, thresholds, maximum_thresholds, is_dengue_season
+                conn, today, current_units_by_type, thresholds, maximum_thresholds, is_dengue_season, days_of_history
             )
 
         if days_of_history < MIN_DAYS_REQUIRED:
@@ -3214,6 +3266,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
                     "alerts": stand_in["alerts"],
                     "restock_recommendations": stand_in["restock_recommendations"],
                     "restock_status": stand_in["restock_status"],
+                    "insufficient_history": stand_in["insufficient_history"],
                 }
             # No forecast at all means no type can be alerting; without this, a
             # facility that fell back to "none" kept its old alerting=TRUE forever.
@@ -3246,6 +3299,9 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
     sarimax_fallback_types: list[str] = []
     alerts = []
     restock_recommendations = []
+    downside_risks = []
+    insufficient_history = []
+    type_bounds: dict[str, list[dict]] = {}
     total_by_checkpoint = {c: 0 for c in FORECAST_CHECKPOINTS}
     # Lower/upper are summed across types the same way the point estimate is —
     # each type's own prediction interval, added up. That's a conservative
@@ -3323,8 +3379,31 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
             maximum_thresholds.get(blood_type),
             today,
         )
+        limited = _limited_history(len(points))
         if recommendation is not None:
+            # Recommendations are not gated, but one made on limited history says so, with the day count.
+            if limited is not None:
+                recommendation["limited_history"] = limited
             restock_recommendations.append(recommendation)
+        elif limited is not None:
+            # Never "on track" or "at risk" on this little history: asserting safety without a basis is worse than
+            # asserting risk without one.
+            insufficient_history.append({"blood_type": blood_type, **limited})
+        else:
+            downside_risk = _compute_downside_risk(
+                blood_type,
+                {c: checkpoint_values[c][0] for c in FORECAST_CHECKPOINTS},
+                {c: checkpoint_values[c][1] for c in FORECAST_CHECKPOINTS},
+                minimum,
+                today,
+            )
+            if downside_risk is not None:
+                downside_risks.append(downside_risk)
+        type_bounds[blood_type] = [
+            {**_series_point_fields(c, today), "units": checkpoint_values[c][0],
+             "lower": checkpoint_values[c][1], "upper": checkpoint_values[c][2]}
+            for c in FORECAST_CHECKPOINTS
+        ]
 
         # Only flags types currently at/above minimum but trending toward
         # it — types already below minimum are already surfaced by
@@ -3392,6 +3471,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
         )
 
     restock_recommendations.sort(key=lambda r: r["days_until_breach"])
+    downside_risks.sort(key=lambda r: r["days_until_risk"])
 
     forecast_source = "sarimax_facility_history" if use_sarimax else "linear_trend"
     response = {
@@ -3407,6 +3487,15 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
         "history": history,
         "alerts": alerts,
         "restock_recommendations": restock_recommendations,
+        # Display only, never a recommendation: types whose projection holds but whose interval's lower bound dips below
+        # the minimum. Absent from the synthetic stand-in and "none" answers, which have no interval.
+        "downside_risks": downside_risks,
+        # Types with no recommendation and fewer than SARIMAX_MIN_DAYS_REQUIRED recorded days: not assessable, so neither
+        # "on track" nor "at risk". A recommendation from such a type stays and carries `limited_history` instead.
+        "insufficient_history": insufficient_history,
+        # {blood_type: [{day, date, units, lower, upper}, ...]} for every type that has a forecast: the same checkpoints
+        # and interval as `series`, per type instead of summed. lower/upper are null where a type has no interval.
+        "type_bounds": type_bounds,
         # "pending" = nothing to act on yet AND some types not calculated: "on_track" would be a claim
         "restock_status": "pending" if pending_types and not restock_recommendations else _restock_status(restock_recommendations),
         "pending_types": pending_types,

@@ -109,6 +109,21 @@ requests, SARIMAX demand forecasting, donor broadcast.
   (SARIMAX or linear trend) in the row, and "Order 90 by 4 Nov" opens Source supply with type, quantity and Packed RBC
   prefilled. `/inventory/expiring` still runs the once-per-tier expiry notification that `GET /inventory` runs, since the
   Dashboard no longer loads every unit.
+- **"At risk"** is a third Dashboard outlook, between On track and an order: the central projection holds at or above the minimum at
+  every checkpoint, but the lower bound of the 95% interval is below it at one (`_compute_downside_risk`; `/forecast` returns
+  `downside_risks`, and per-type `type_bounds` with lower/upper). Display only: it never makes a recommendation, never changes
+  `recommended_units`, never feeds an alert; those stay on the central projection. It starts at checkpoint 1 (today's stock is
+  known), dates the first checkpoint whose lower bound breaches (not interpolated), and needs a bound: a type with no interval, and
+  the synthetic stand-in (no `downside_risks` key at all), read On track. **Below `SARIMAX_MIN_DAYS_REQUIRED` (30) recorded days of the type's own history (today counted) a type never reads On track or At
+  risk**: `/forecast` lists it in `insufficient_history` and the column says "Not enough history (6 of 30 days)", the stand-in
+  included. Asserting safety without a basis is worse than asserting risk without one. Recommendations are **not** withheld, but
+  each one from a type below 30 days carries `limited_history` (with the day count) and the row says "Limited history (6 of 30
+  days)"; so below 30 days the outlook is a limited-history recommendation or "Not enough history", never On track. At 30 days or
+  more neither marking appears. Measured 2026-10-31 (read-only, from the cache and stored snapshots): 0 of 8 types at Northside
+  (430 days) read At risk; on the four seeded banks with 6-8 snapshot days it would have fired on every type not already ordering
+  (22 of 22), because that interval is wider than the stock itself, which is why the gate exists. With `MIN_DAYS_REQUIRED = 3` the
+  system still recommends an order on three days of history, and the soundness guard can flip a type's method overnight: both are
+  recorded in the selector JSON's `limitations` (and in `train_sarimax_selector.py`, which generates it: edit both).
 - **The blood bank Inventory** (`BankInventory.tsx`, logic in `lib/bankInventory.ts`): the expired backlog is the headline (one
   button archives exactly the units the server will archive, never the expired ones still reserved for a request, after a
   confirmation), then a search across every type (DIN prefix or substring, case and spaces ignored), then a table of the eight
@@ -155,8 +170,8 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (487 tests plus
-  134 subtests; use `server/.venv`, system Python lacks pytest). Never run
+  local scratch Postgres: `python -m pytest server/tests -q` (504 tests plus
+  155 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
   refuses to run without it or against a non-local host, overrides
