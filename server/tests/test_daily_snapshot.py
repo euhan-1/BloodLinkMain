@@ -170,7 +170,7 @@ class DailySnapshotTests(unittest.TestCase):
         dates = {r[0] for r in q("SELECT DISTINCT snapshot_date FROM inventory_snapshots WHERE facility_id = ANY(:f)", f=self.fids)}
         self.assertEqual(dates, {other_day})
 
-    def test_does_no_forecast_work_and_archives_nothing(self):
+    def test_does_no_forecast_work(self):
         boom = mock.Mock(side_effect=AssertionError("the snapshot job must not fit or read forecasts"))
         with mock.patch.object(app, "_fit_sarimax_facility_forecast", boom), \
                 mock.patch.object(app, "_fit_and_cache_sarimax", boom), \
@@ -179,9 +179,11 @@ class DailySnapshotTests(unittest.TestCase):
             self.run_job()
         boom.assert_not_called()
         self.assertEqual(q("SELECT count(*) FROM facility_forecast_cache WHERE facility_id = ANY(:f)", f=self.fids)[0][0], 0)
+        # the job also archives expired units now (tests/test_nightly_archive.py covers that in full): the one expired unit
+        # is archived, and the unexpired unit that was already archived is untouched
         self.assertEqual(q("SELECT count(*) FROM blood_units WHERE facility_id=:f AND expires_date < :t AND archived_at IS NULL",
-                           f=self.bank, t=TODAY)[0][0], 1, "the expired unit stays exactly as it was: no archive step")
-        self.assertEqual(q("SELECT count(*) FROM blood_units WHERE facility_id=:f AND archived_at IS NOT NULL", f=self.bank)[0][0], 1)
+                           f=self.bank, t=TODAY)[0][0], 0)
+        self.assertEqual(q("SELECT count(*) FROM blood_units WHERE facility_id=:f AND archived_at IS NOT NULL", f=self.bank)[0][0], 2)
 
     # ---- the dashboard writer shares the helper ----------------------------
     def test_dashboard_overwrites_a_stale_job_count_with_a_real_zero(self):

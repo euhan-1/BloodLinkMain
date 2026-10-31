@@ -55,7 +55,7 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 
 ## The nightly snapshot job
 
-`POST /internal/daily-snapshot` records today's stock for **every active facility, hospitals included**, writing an explicit 0 for a blood type with none in stock. It fits no forecast and archives nothing: one transaction, one upsert, and it is safe to retry.
+`POST /internal/daily-snapshot` records today's stock for **every active facility, hospitals included**, writing an explicit 0 for a blood type with none in stock. It fits no forecast. After the snapshot commits it also **archives every active facility's expired units** (`archived_at` is set, nothing is deleted; a unit still reserved for a request is skipped; a unit expiring today stays until tomorrow's run). It is safe to retry: a second run the same day archives nothing. The response is the cron history's record of what it did: `snapshot_date`, `facilities`, `rows_inserted`, `rows_updated`, `archived_expired` (`total` and `by_facility`, every active facility listed, 0 meaning none found) and `expired_still_reserved` (expired units left because a request holds them). If the archive step fails the call returns 500 after the snapshot has already been saved, so a retry finishes it. **The first run after this change archives each facility's whole existing expired backlog at once.**
 
 - **Scheduler: [cron-job.org](https://cron-job.org).** Nothing else in the repository names it, and this job is what keeps the forecast series continuous, so record any change to it here. The job lives in the project's cron-job.org account (ask the project owner for access).
 - **Schedule:** daily at **23:30, time zone Asia/Manila (15:30 UTC)**.

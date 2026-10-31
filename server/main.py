@@ -2516,6 +2516,33 @@ def delete_inventory_unit(din: str, facility_id: int = Depends(get_acting_facili
     return {"deleted": True, "din": din}
 
 
+def _archive_expired_units(conn, today: date, facility_id: Optional[int] = None) -> dict[int, int]:
+    """THE definition of "archive the expired units", shared by the manual POST /inventory/archive-expired (one facility) and
+    the nightly POST /internal/daily-snapshot (every ACTIVE facility, when facility_id is None), so the two can never disagree.
+
+    Sets archived_at on units already past expires_date (strictly before `today`, so a unit expiring today is still
+    usable and stays) that are not already archived and not reserved for a request. Soft-delete only, never a DELETE.
+    One set-based UPDATE; idempotent, because an archived unit no longer matches. Returns {facility_id: units archived}
+    for the facilities that had any."""
+    rows = conn.execute(
+        text(
+            """
+            UPDATE blood_units b SET archived_at = now()
+            WHERE b.expires_date < :today AND b.archived_at IS NULL AND b.reserved_for_request_id IS NULL
+              AND (CAST(:facility_id AS bigint) IS NULL OR b.facility_id = :facility_id)
+              AND (CAST(:facility_id AS bigint) IS NOT NULL
+                   OR EXISTS (SELECT 1 FROM facilities f WHERE f.id = b.facility_id AND f.is_active))
+            RETURNING b.facility_id
+            """
+        ),
+        {"today": today, "facility_id": facility_id},
+    ).all()
+    archived: dict[int, int] = {}
+    for r in rows:
+        archived[r.facility_id] = archived.get(r.facility_id, 0) + 1
+    return archived
+
+
 @app.post("/inventory/archive-expired")
 def archive_expired_inventory(facility_id: int = Depends(get_acting_facility_id)):
     """Clears the expired-units backlog for the logged-in facility: bulk-sets
@@ -2533,20 +2560,14 @@ def archive_expired_inventory(facility_id: int = Depends(get_acting_facility_id)
     belongs to that request until confirm_receipt settles it (which records
     and archives it itself), and archiving it here would let it be moved to
     the requester as an archived, invisible unit.
+
+    The nightly job (POST /internal/daily-snapshot) now does the same for every active facility, through the same helper;
+    this stays for a facility that wants its backlog cleared now rather than tonight.
     """
     today = business_today()
     with engine.begin() as conn:
-        result = conn.execute(
-            text(
-                """
-                UPDATE blood_units SET archived_at = now()
-                WHERE facility_id = :facility_id AND expires_date < :today AND archived_at IS NULL
-                  AND reserved_for_request_id IS NULL
-                """
-            ),
-            {"facility_id": facility_id, "today": today},
-        )
-    return {"archived_count": result.rowcount}
+        archived = _archive_expired_units(conn, today, facility_id)
+    return {"archived_count": archived.get(facility_id, 0)}
 
 
 @app.get("/inventory/summary")
@@ -3143,9 +3164,13 @@ def daily_snapshot(x_cron_secret: Optional[str] = Header(default=None)):
     Hospitals are snapshotted but never forecast from.
 
     Fails closed: 503 if CRON_SECRET is unset or blank, 401 unless X-Cron-Secret
-    matches it. Fits no forecast and archives nothing — one transaction, one upsert,
-    milliseconds. business_today() is read once and used for every write. Idempotent,
-    so a retry (e.g. after a cold-start timeout) is safe."""
+    matches it. Fits no forecast. Two short transactions, in this order: the snapshot upsert
+    (committed first: it is the part that cannot be redone later), then the archive of every
+    active facility's expired units (_archive_expired_units: archived_at, never a DELETE, units
+    still reserved for a request skipped, exactly as the manual action). If the archive fails
+    the snapshot is already safe and the call returns 500, so the cron history shows it.
+    business_today() is read once and used for every write. Idempotent, so a retry (e.g. after
+    a cold-start timeout) is safe: a second run archives nothing."""
     expected = os.environ.get("CRON_SECRET", "").strip()
     if not expected:
         raise HTTPException(status_code=503, detail="daily snapshot job is not configured")
@@ -3156,11 +3181,34 @@ def daily_snapshot(x_cron_secret: Optional[str] = Header(default=None)):
     today = business_today()
     with engine.begin() as conn:
         written = _write_inventory_snapshots(conn, today)
+    with engine.begin() as conn:
+        archived = _archive_expired_units(conn, today)
+        # expired units that were NOT archived because a request still holds them: they leave when receipt settles them
+        still_reserved = conn.execute(
+            text(
+                """
+                SELECT b.facility_id, count(*) AS n FROM blood_units b JOIN facilities f ON f.id = b.facility_id
+                WHERE f.is_active AND b.expires_date < :today AND b.archived_at IS NULL AND b.reserved_for_request_id IS NOT NULL
+                GROUP BY b.facility_id
+                """
+            ),
+            {"today": today},
+        ).all()
+    facility_ids = sorted({fid for fid, _ in written})
     return {
         "snapshot_date": today.isoformat(),
-        "facilities": len({fid for fid, _ in written}),
+        "facilities": len(facility_ids),
         "rows_inserted": sum(1 for _, inserted in written if inserted),
         "rows_updated": sum(1 for _, inserted in written if not inserted),
+        # every active facility is listed, a 0 meaning "looked, found none"; keys are facility ids
+        "archived_expired": {
+            "total": sum(archived.values()),
+            "by_facility": {str(fid): archived.get(fid, 0) for fid in facility_ids},
+        },
+        "expired_still_reserved": {
+            "total": sum(r.n for r in still_reserved),
+            "by_facility": {str(r.facility_id): r.n for r in still_reserved},
+        },
     }
 
 

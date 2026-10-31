@@ -62,7 +62,10 @@ requests, SARIMAX demand forecasting, donor broadcast.
 - **Snapshots, and the permanent October 1-25 hole.** `inventory_snapshots` is written when a blood bank loads
   its forecast, on historical uploads, and nightly by `POST /internal/daily-snapshot` (23:30 Manila, every active
   facility including hospitals, an explicit 0 for an empty type, guarded by `CRON_SECRET`; scheduled on cron-job.org (see
-  DEPLOYMENT.md); first successful run 2026-10-27 23:30:18 Manila; it fits nothing). October 1-25, 2026 has no rows
+  DEPLOYMENT.md); first successful run 2026-10-27 23:30:18 Manila; it fits nothing; since the archive change it also archives
+  every active facility's expired units, `expires_date < today` and not reserved for a request, through `_archive_expired_units`,
+  the helper behind the manual Clear expired action, in a second transaction after the snapshot has committed, and reports counts
+  per facility: `archived_expired` and `expired_still_reserved`. It changes no stock figure). October 1-25, 2026 has no rows
   for any facility and cannot be recovered: the job did not exist before 2026-10-27 and upload 605's undo on
   2026-09-30 removed what Northside had. `_resample_daily_series` carries the last value
   forward over an unobserved day. NaN instead was measured and rejected (O+ fails worse under it, and non-finite
@@ -174,7 +177,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (504 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (518 tests plus
   155 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
