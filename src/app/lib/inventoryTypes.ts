@@ -9,6 +9,8 @@ export type InventoryUnit = {
   collected: string;
   expires: string;
   daysLeft: number;
+  // The request this unit is held for, if any: a reserved unit is not available to anyone else.
+  reservedForRequestId: number | null;
 };
 
 export type InventoryApiRow = {
@@ -19,6 +21,7 @@ export type InventoryApiRow = {
   volume_ml: number;
   collected_date: string;
   expires_date: string;
+  reserved_for_request_id?: number | null; // absent from an older API
 };
 
 export function toInventoryUnit(row: InventoryApiRow): InventoryUnit {
@@ -40,6 +43,7 @@ export function toInventoryUnit(row: InventoryApiRow): InventoryUnit {
     collected: row.collected_date,
     expires: row.expires_date,
     daysLeft,
+    reservedForRequestId: row.reserved_for_request_id ?? null,
   };
 }
 

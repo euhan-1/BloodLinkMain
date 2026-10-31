@@ -2415,7 +2415,7 @@ def get_inventory(facility_id: int = Depends(get_acting_facility_id)):
             text(
                 """
                 SELECT id, din, blood_type, component, location, volume_ml,
-                       collected_date, expires_date, last_notified_expiry_status
+                       collected_date, expires_date, last_notified_expiry_status, reserved_for_request_id
                 FROM blood_units
                 WHERE facility_id = :facility_id AND archived_at IS NULL
                 ORDER BY expires_date ASC
@@ -2432,6 +2432,8 @@ def get_inventory(facility_id: int = Depends(get_acting_facility_id)):
             "din": r["din"], "blood_type": r["blood_type"], "component": r["component"],
             "location": r["location"], "volume_ml": r["volume_ml"],
             "collected_date": r["collected_date"], "expires_date": r["expires_date"],
+            # The request this unit is held for, so the Inventory can say why a unit is not available when it is expected to be.
+            "reserved_for_request_id": r["reserved_for_request_id"],
         }
         for r in rows
     ]

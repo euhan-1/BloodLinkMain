@@ -10,6 +10,7 @@ import {
 import { BloodTypeBadge, StatusDot } from "../components/BloodTypeBadge";
 import { ReasonTag } from "../components/ReasonTag";
 import { Skeleton } from "../components/Skeleton";
+import { StockBar } from "../components/StockBar";
 import { UploadHistoryPanel } from "../components/UploadHistoryPanel";
 import { type InventorySummaryRow } from "../lib/inventoryTypes";
 import { isRealForecastSource, type ForecastView } from "../lib/forecastTypes";
@@ -212,7 +213,7 @@ function TypeRow({
       className={`flex flex-wrap items-center gap-x-4 gap-y-1.5 py-3 lg:py-2 lg:min-h-[3.25rem] lg:grid ${COLUMNS} lg:gap-x-4 border-b border-gray-200 last:border-b-0`}
     >
       <div role="cell" className="order-1 lg:order-none"><BloodTypeBadge type={row.blood_type} size="md" /></div>
-      <div role="cell" className="order-2 lg:order-none flex-1 min-w-[6rem]"><StockBar row={row} /></div>
+      <div role="cell" className="order-2 lg:order-none flex-1 min-w-[6rem]"><StockBar units={row.units} minimum={row.minimum_units} maximum={row.maximum_units} /></div>
       <div role="cell" className={`order-3 lg:order-none text-right text-[16px] font-bold tabular-nums ${level === "safe" ? "text-foreground" : STATUS_STYLES[level].text}`}>
         {row.units}
         <span className="sr-only"> {plural(row.units, "unit", "units")}, minimum {row.minimum_units}</span>
@@ -236,26 +237,6 @@ function TypeRow({
       <div role="cell" className="order-7 flex-1 min-w-[9rem] lg:flex-none lg:min-w-0 lg:order-none lg:pl-4 lg:border-l lg:border-gray-200">
         <OutlookCell blood_type={row.blood_type} outlook={outlook} basis={basis} today={today} onOrder={onOrder} forecast={forecast} />
       </div>
-    </div>
-  );
-}
-
-// One bar for the stock held, against an outlined track from the minimum to the maximum. Each row is drawn to its own maximum,
-// so a bar reads the same way for every type; the Units column gives the volume.
-function StockBar({ row }: { row: InventorySummaryRow }) {
-  const level = stockStatus(row.units, row.minimum_units);
-  const scale = Math.max(row.maximum_units, row.units, 1);
-  const pct = (n: number) => `${Math.min(100, Math.max(0, (n / scale) * 100))}%`;
-  const hasTrack = row.maximum_units > row.minimum_units;
-  return (
-    <div className="relative h-5" aria-hidden="true">
-      <div className="absolute left-0 top-1/2 h-px bg-gray-300" style={{ width: hasTrack ? pct(row.minimum_units) : "100%" }} />
-      {hasTrack && (
-        <div className="absolute inset-y-0 rounded-sm border border-gray-500" style={{ left: pct(row.minimum_units), width: pct(row.maximum_units - row.minimum_units) }} />
-      )}
-      {row.units > 0 && (
-        <div className={`absolute top-1/2 -translate-y-1/2 h-2.5 rounded-sm ${STATUS_STYLES[level].dot}`} style={{ left: 0, width: pct(row.units) }} />
-      )}
     </div>
   );
 }

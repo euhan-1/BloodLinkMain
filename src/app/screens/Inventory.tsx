@@ -1,11 +1,10 @@
 import { useState, useRef, useEffect } from "react";
-import { Plus, Upload, ChevronDown, SlidersHorizontal, Trash2, Search, Archive } from "lucide-react";
+import { Plus, Upload, Archive } from "lucide-react";
 import { apiGet, apiUploadFile, updateThreshold, deleteInventoryUnit, createInventoryUnit, archiveExpiredInventory } from "../lib/api";
 import { getCurrentUser } from "../lib/session";
 import { StockByTypeTable } from "./HospitalInventory";
-import { BLOOD_TYPE_ORDER, getExpiryStatus, EXPIRY_STYLES } from "../lib/statusTokens";
-import { BloodTypeBadge, DinLabel, DateStamp } from "../components/BloodTypeBadge";
-import { Skeleton } from "../components/Skeleton";
+import { BankInventoryView } from "./BankInventory";
+import { BLOOD_TYPE_ORDER, getExpiryStatus } from "../lib/statusTokens";
 import { Modal } from "../components/Modal";
 import { UploadHistoryPanel } from "../components/UploadHistoryPanel";
 import { type InventoryUnit, type InventoryApiRow, type InventorySummaryRow, toInventoryUnit } from "../lib/inventoryTypes";
@@ -18,8 +17,6 @@ export function InventoryScreen() {
   const [rows, setRows] = useState<InventoryUnit[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filterType, setFilterType] = useState("All");
-  const [searchQuery, setSearchQuery] = useState("");
   // Every blood-type shelf starts collapsed — with real stock levels this
   // screen is a lot of rows; better to land on a scannable summary and let
   // staff open only the type(s) they actually came to look at.
@@ -56,6 +53,7 @@ export function InventoryScreen() {
   // working list.
   const [archivingExpired, setArchivingExpired] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [lastCleared, setLastCleared] = useState<number | null>(null);
 
   const emptyUnitForm = {
     din: "",
@@ -234,7 +232,8 @@ export function InventoryScreen() {
     setArchivingExpired(true);
     setArchiveError(null);
     try {
-      await archiveExpiredInventory();
+      const { archived_count } = await archiveExpiredInventory();
+      setLastCleared(archived_count);
       loadInventory();
     } catch (err) {
       setArchiveError(err instanceof Error ? err.message : "Failed to clear expired backlog");
@@ -242,36 +241,6 @@ export function InventoryScreen() {
       setArchivingExpired(false);
     }
   }
-
-  // A type the facility holds none of still exists. /inventory/summary lists every type, while the units list only
-  // contains types that have units, so a type with none used to vanish from both the pills and the shelves below.
-  const knownTypes = Array.from(new Set([...rows.map((r) => r.type), ...Object.keys(thresholds)]));
-  const types = ["All", ...knownTypes];
-
-  const byType = filterType === "All"
-    ? rows
-    : rows.filter((r) => r.type === filterType);
-
-  const query = searchQuery.trim().toLowerCase();
-  const filtered = query === ""
-    ? byType
-    : byType.filter((r) =>
-        r.din.toLowerCase().includes(query) ||
-        r.location.toLowerCase().includes(query) ||
-        r.component.toLowerCase().includes(query)
-      );
-
-  // One "shelf" per blood type present in the filtered data, canonical order,
-  // rows within a shelf sorted soonest-to-expire first — mirrors the FEFO
-  // (first-expired-first-out) logic the backend already uses for real
-  // transfers, so the on-screen order matches how units would actually be
-  // pulled.
-  const groups = BLOOD_TYPE_ORDER
-    .map((type) => ({
-      type,
-      units: filtered.filter((r) => r.type === type).sort((a, b) => a.daysLeft - b.daysLeft),
-    }))
-    .filter((g) => g.units.length > 0 || (query === "" && (filterType === "All" || filterType === g.type) && knownTypes.includes(g.type)));
 
   function toggleGroup(type: string) {
     setCollapsedTypes((prev) => {
@@ -291,7 +260,7 @@ export function InventoryScreen() {
               className="flex items-center gap-1.5 h-8 px-3 bg-card border border-status-critical-border text-status-critical-text rounded-lg text-[13px] font-semibold hover:bg-status-critical-tint transition-colors disabled:opacity-60"
             >
               <Archive size={14} />
-              {archivingExpired ? "Clearing…" : `Clear Expired Backlog (${expiredUnits.length})`}
+              {archivingExpired ? "Clearing…" : `Clear expired backlog (${expiredUnits.length})`}
             </button>
   );
   const importButtons = (
@@ -315,7 +284,7 @@ export function InventoryScreen() {
             onClick={openAddUnit}
             className="flex items-center gap-1.5 h-8 px-3 bg-primary text-white rounded-lg text-[13px] font-semibold hover:bg-primary-hover transition-colors"
           >
-            <Plus size={14} /> Add Unit
+            <Plus size={14} /> Add unit
           </button>
     </>
   );
@@ -325,14 +294,14 @@ export function InventoryScreen() {
   const usableUnits = rows.filter((r) => r.daysLeft >= 0).length;
 
   return (
-    <div className={hospital ? "max-w-screen-2xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-8" : "max-w-screen-2xl mx-auto px-6 py-6 space-y-5"}>
-      {hospital && (
-        <div className="max-w-5xl flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+    <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-8">
+      {(
+        <div className={`${hospital ? "max-w-5xl " : ""}flex flex-wrap items-end justify-between gap-x-6 gap-y-3`}>
           <div>
             <h2 className="font-display font-bold text-2xl tracking-tight text-foreground">Blood inventory</h2>
             <p className="text-[15px] text-foreground mt-1">
               <span className="mr-4">{usableUnits} {usableUnits === 1 ? "unit" : "units"} on hand</span>
-              {expiredUnits.length > 0 && (
+              {hospital && expiredUnits.length > 0 && (
                 <span className="text-status-critical-text font-semibold">
                   {expiredUnits.length} expired {expiredUnits.length === 1 ? "unit needs" : "units need"} clearing
                 </span>
@@ -340,63 +309,13 @@ export function InventoryScreen() {
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            {clearExpiredButton}
+            {hospital && clearExpiredButton}
             {importButtons}
           </div>
         </div>
       )}
 
-      {!hospital && (<>
-      {/* Toolbar */}
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <h2 className="font-display text-lg font-bold text-foreground">Blood Inventory</h2>
-          <p className="text-[14px] text-muted-foreground">
-            {rows.length} units on record
-            {expiredUnits.length > 0 && (
-              <>
-                {" · "}
-                <span className="text-status-critical-text font-semibold">
-                  {expiredUnits.length} expired — needs clearing
-                </span>
-              </>
-            )}
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {clearExpiredButton}
-          <div className="flex flex-wrap gap-1 bg-secondary rounded-lg p-1">
-            {types.map((t) => (
-              <button
-                key={t}
-                onClick={() => setFilterType(t)}
-                className={`px-3 py-1 text-[13px] font-semibold rounded border transition-all duration-200 ease-out ${
-                  filterType === t
-                    ? "bg-card text-foreground shadow-sm border-border scale-105"
-                    : "border-transparent text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-          {importButtons}
-        </div>
-      </div>
-
-      <div className="relative">
-        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="Search by DIN, location, or component…"
-          className="w-full h-9 pl-9 pr-3 text-[14px] border border-border rounded-lg bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
-        />
-      </div>
-      </>)}
-
-      {archiveError && (
+      {hospital && archiveError && (
         <div className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-lg px-3 py-2">
           {archiveError}
         </div>
@@ -435,170 +354,26 @@ export function InventoryScreen() {
         </div>
       )}
 
-      {!hospital && (<>
-      {/* Shelves — one collapsible group per blood type */}
-      {loading && (
-        <div className="space-y-5" aria-label="Loading inventory">
-          {[0, 1, 2].map((i) => (
-            <div key={i} className="bg-card border border-border rounded-xl overflow-hidden">
-              <div className="flex items-center gap-3 px-4 py-3 bg-secondary">
-                <Skeleton className="w-14 h-14 rounded-lg shrink-0" />
-                <Skeleton className="h-4 w-24" />
-              </div>
-              <div className="px-4 py-3 space-y-3">
-                {[0, 1].map((j) => (
-                  <div key={j} className="flex items-center gap-4">
-                    <Skeleton className="h-4 flex-1" />
-                    <Skeleton className="h-4 w-20" />
-                    <Skeleton className="h-4 w-16" />
-                    <Skeleton className="h-4 w-24" />
-                    <Skeleton className="h-4 w-20" />
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
+      {!hospital && (
+        <BankInventoryView
+          units={rows}
+          loading={loading}
+          error={error}
+          summary={thresholds}
+          summaryLoading={summaryLoading}
+          summaryError={summaryError}
+          clearing={{ busy: archivingExpired, error: archiveError, lastCleared, onClear: handleArchiveExpired }}
+          onEditThresholds={openThresholdEditor}
+          onRemoveUnit={(din) => { setDeleteError(null); setDeleteConfirmDin(din); }}
+        />
       )}
-
-      {!loading && error && (
-        <div className="bg-status-critical-tint border border-status-critical-border rounded-xl p-6 text-center text-[14px] text-status-critical-text">
-          Failed to load inventory: {error}
-        </div>
-      )}
-
-      {!loading && !error && groups.length === 0 && (
-        <div className="bg-card border border-border rounded-xl p-12 text-center text-[14px] text-muted-foreground">
-          No units on record{filterType !== "All" ? ` for ${filterType}` : ""}{query !== "" ? ` matching "${searchQuery.trim()}"` : ""}.
-        </div>
-      )}
-
-      {!loading && !error && groups.map((group) => {
-        // While searching, a shelf with a match stays expanded regardless of
-        // its manually-collapsed state — the point of searching is to see
-        // the result immediately, not hunt for which shelf to reopen.
-        const isCollapsed = query === "" && collapsedTypes.has(group.type);
-        return (
-          <div key={group.type} className="bg-card border border-border rounded-xl overflow-hidden">
-            <div className="w-full flex items-center justify-between gap-3 px-4 py-3 bg-secondary hover:bg-muted transition-colors">
-              <button
-                onClick={() => toggleGroup(group.type)}
-                className="flex items-center gap-3 flex-1 min-w-0 text-left"
-              >
-                <BloodTypeBadge type={group.type} size="xl" />
-                <span className="text-[16px] font-semibold text-foreground">
-                  {group.units.length} unit{group.units.length === 1 ? "" : "s"}
-                </span>
-                {thresholds[group.type] && (
-                  <span className="text-[14px] font-semibold text-foreground hidden sm:inline">
-                    · Min {thresholds[group.type].minimum_units} · Max {thresholds[group.type].maximum_units}
-                  </span>
-                )}
-              </button>
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  onClick={() => openThresholdEditor(group.type)}
-                  title="Set minimum/maximum stock thresholds"
-                  className="flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[12px] font-semibold text-foreground bg-card border border-border hover:border-primary/40 transition-colors"
-                >
-                  <SlidersHorizontal size={13} /> Thresholds
-                </button>
-                <button onClick={() => toggleGroup(group.type)} className="p-1">
-                  <ChevronDown
-                    size={16}
-                    className={`text-muted-foreground transition-transform shrink-0 ${isCollapsed ? "" : "rotate-180"}`}
-                  />
-                </button>
-              </div>
-            </div>
-
-            {/* Height-animated via the CSS grid 0fr/1fr trick rather than
-                mounting/unmounting the table — lets the collapse/expand
-                transition smoothly instead of snapping instantly, without
-                measuring pixel heights in JS. */}
-            <div
-              className={`grid transition-[grid-template-rows] duration-200 ease-out ${
-                isCollapsed ? "grid-rows-[0fr]" : "grid-rows-[1fr]"
-              }`}
-            >
-              <div className="overflow-hidden">
-                {/* table-layout: fixed keeps column widths stable while the
-                    wrapper's height animates — a shelf can hold dozens of
-                    rows, and letting the browser keep recomputing
-                    auto-layout column widths every animation frame is what
-                    makes a big table look janky mid-transition. */}
-                {group.units.length === 0 ? (
-                  <p className="px-4 py-4 text-[14px] text-muted-foreground">No {group.type} units on file.</p>
-                ) : (
-                <table className="w-full text-[14px] table-fixed">
-                  <thead>
-                    <tr className="border-b border-border bg-secondary">
-                      {["DIN", "Component", "Location", "Volume (mL)", "Collection Date", "Expiration Date", "Status", ""].map((h) => (
-                        <th
-                          key={h}
-                          className={`text-left py-3 px-4 text-[12px] font-bold uppercase tracking-wide text-muted-foreground ${h === "" ? "w-12" : ""}`}
-                        >
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {group.units.map((row) => {
-                      const status = getExpiryStatus(row.daysLeft);
-                      const style = EXPIRY_STYLES[status];
-                      return (
-                        <tr
-                          key={row.din}
-                          className={`border-b border-border last:border-0 hover:bg-secondary transition-colors ${style.rowTint}`}
-                        >
-                          <td className="py-3 px-4">
-                            <DinLabel din={row.din} />
-                          </td>
-                          <td className="py-3 px-4 text-foreground">{row.component}</td>
-                          <td className="py-3 px-4">
-                            <span className="font-mono text-[13px] text-muted-foreground">{row.location}</span>
-                          </td>
-                          <td className="py-3 px-4 text-foreground tabular-nums">{row.volume}</td>
-                          <td className="py-3 px-4 text-muted-foreground font-mono text-[13px]">{row.collected}</td>
-                          <td className="py-3 px-4">
-                            <DateStamp date={row.expires} status={status} />
-                          </td>
-                          <td className="py-3 px-4">
-                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[12px] font-semibold border ${style.badge}`}>
-                              <span className={`w-1.5 h-1.5 rounded-full ${style.dot}`} />
-                              {style.label(row.daysLeft)}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-center">
-                            <button
-                              onClick={() => { setDeleteError(null); setDeleteConfirmDin(row.din); }}
-                              title="Remove this unit"
-                              className="p-1.5 rounded-lg text-status-critical-text hover:bg-status-critical-tint transition-colors"
-                            >
-                              <Trash2 size={15} />
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-                )}
-              </div>
-            </div>
-          </div>
-        );
-      })}
-
-      </>)}
 
       <div className={hospital ? "max-w-5xl" : undefined}>
-        <UploadHistoryPanel uploadType="inventory" refreshKey={uploadHistoryRefreshKey} onUndone={() => loadInventory()} variant={hospital ? "flat" : "card"} />
+        <UploadHistoryPanel uploadType="inventory" refreshKey={uploadHistoryRefreshKey} onUndone={() => loadInventory()} variant="flat" />
       </div>
 
       {editingType && (
-        <Modal title={`${editingType} — Stock Thresholds`} onClose={() => setEditingType(null)}>
+        <Modal title={`${editingType}: stock thresholds`} onClose={() => setEditingType(null)}>
           <div className="space-y-4">
             <p className="text-[13px] text-muted-foreground">
               Minimum triggers a shortage warning on the Dashboard; maximum is the target ceiling the chart scales against.
@@ -652,7 +427,7 @@ export function InventoryScreen() {
       )}
 
       {deleteConfirmDin && (
-        <Modal title="Remove Unit" onClose={() => setDeleteConfirmDin(null)}>
+        <Modal title="Remove unit" onClose={() => setDeleteConfirmDin(null)}>
           <div className="space-y-4">
             <p className="text-[14px] text-muted-foreground">
               Remove unit <span className="font-mono font-semibold text-foreground">{deleteConfirmDin}</span> from
@@ -670,14 +445,14 @@ export function InventoryScreen() {
                 onClick={() => setDeleteConfirmDin(null)}
                 className="flex-1 h-10 border border-border rounded-md text-sm font-semibold text-foreground hover:bg-secondary transition-colors"
               >
-                Keep Unit
+                Keep unit
               </button>
               <button
                 onClick={confirmDeleteUnit}
                 disabled={deleting}
                 className="flex-1 h-10 bg-status-critical-text text-white text-sm font-bold rounded-md hover:opacity-90 transition-colors disabled:opacity-60"
               >
-                {deleting ? "Removing…" : "Remove Unit"}
+                {deleting ? "Removing…" : "Remove unit"}
               </button>
             </div>
           </div>
@@ -685,7 +460,7 @@ export function InventoryScreen() {
       )}
 
       {showAddUnit && (
-        <Modal title="Add Unit" onClose={() => setShowAddUnit(false)}>
+        <Modal title="Add unit" onClose={() => setShowAddUnit(false)}>
           <div className="space-y-4">
             <div>
               <label className="text-[13px] font-semibold text-muted-foreground block mb-1.5">DIN</label>
@@ -788,7 +563,7 @@ export function InventoryScreen() {
                 disabled={addingUnit}
                 className="flex-1 h-10 bg-primary text-white text-sm font-bold rounded-md hover:bg-primary-hover transition-colors disabled:opacity-60"
               >
-                {addingUnit ? "Adding…" : "Add Unit"}
+                {addingUnit ? "Adding…" : "Add unit"}
               </button>
             </div>
           </div>
