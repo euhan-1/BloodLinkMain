@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { AlertTriangle, ArrowRight, CheckCircle, ChevronDown, Clock, MapPin, MessageSquare, Send } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle, Clock, MapPin, MessageSquare, Send } from "lucide-react";
 import { apiGet, apiPost, getMyFacilityProfile } from "../lib/api";
 import { getCurrentUser } from "../lib/session";
 import { getDevFacilityId, isDevModeEnabled } from "../lib/devMode";
@@ -31,34 +31,6 @@ type RequestTab = "sourcing" | "transfer" | "history";
 
 // ─── Requests (Emergency Sourcing + Transfer) ─────────────────────────────────
 
-// Outcome of confirm-receipt, shared by both cards. A reserved unit that expired
-// before receipt was not transferred; the DINs are listed rather than leaving a
-// short count unexplained.
-function ReceiptOutcome({ req, size }: { req: RequestRow; size: 12 | 13 }) {
-  const text = size === 12 ? "text-[12px]" : "text-[13px]";
-  const failed = req.failed_units;
-  if (req.status === "completed" && failed.length === 0) {
-    return (
-      <span className={`flex items-center gap-1 animate-success-pop ${text} font-semibold text-status-safe-text`}>
-        <CheckCircle size={size} /> Completed
-      </span>
-    );
-  }
-  const received = req.quantity - failed.length;
-  return (
-    <div className={text}>
-      <span className={`flex items-center gap-1 font-semibold ${req.status === "failed" ? "text-status-critical-text" : "text-status-watch-text"}`}>
-        <AlertTriangle size={size} />
-        {req.status === "failed" ? "Failed — no units received" : `Completed — ${received} of ${req.quantity} received`}
-      </span>
-      <div className="mt-1 text-muted-foreground">
-        Expired before receipt, not transferred:{" "}
-        {failed.map((u) => `${u.din} (expired ${u.expires_date})`).join(", ")}
-      </div>
-    </div>
-  );
-}
-
 type ActingFacility = { id: number; name: string; facility_type: string };
 
 type RequestAction = "accept" | "decline" | "cancel" | "confirm-release" | "confirm-receipt";
@@ -74,22 +46,6 @@ type RequestMessage = {
 
 const FINISHED_STATUSES = ["completed", "failed", "declined", "cancelled"];
 
-// A quiet link to a finished request's transfer record (/receipt/{id}, in a new tab). Muted text, underlined, no fill or
-// border, so it never competes with a card's real action (Confirm receipt). It stops the click reaching the card, which
-// opens the chat.
-function ReceiptLink({ requestId }: { requestId: number }) {
-  return (
-    <a
-      href={`/receipt/${requestId}`}
-      target="_blank"
-      rel="noopener"
-      onClick={(e) => e.stopPropagation()}
-      className="shrink-0 text-[12px] text-gray-600 underline underline-offset-2 hover:text-foreground"
-    >
-      Receipt
-    </a>
-  );
-}
 
 // `position` is given only for a request that is waiting for a decision: its place in the order the supplier should
 // work in. Every card shows the reason as the same tag.
@@ -163,29 +119,19 @@ function IncomingRequestCard({
           disabled={busy}
           className="w-full h-7 bg-primary text-white text-[12px] font-semibold rounded-lg hover:bg-primary-hover transition-colors disabled:opacity-60"
         >
-          {busy ? "Confirming…" : "Confirm Release"}
+          {busy ? "Confirming…" : "Confirm release"}
         </button>
       )}
 
       {req.status === "accepted" && req.supplier_confirmed_at && !req.requester_confirmed_at && (
         <span className="inline-block animate-success-pop text-[12px] font-semibold text-status-watch-text">Released — awaiting requester confirmation</span>
       )}
-
-      {FINISHED_STATUSES.includes(req.status) && (
-        <div className="flex items-end justify-between gap-3">
-          <div>
-            {(req.status === "completed" || req.status === "failed") && <ReceiptOutcome req={req} size={12} />}
-            {req.status === "declined" && <span className="text-[12px] font-semibold text-muted-foreground">Declined</span>}
-            {req.status === "cancelled" && <span className="text-[12px] font-semibold text-muted-foreground">Cancelled by requester</span>}
-          </div>
-          <ReceiptLink requestId={req.id} />
-        </div>
-      )}
     </div>
   );
 }
 
-// A blood bank's incoming requests in three sections: waiting for a decision, in progress, finished. The server lists
+// A blood bank's incoming requests in two sections: waiting for a decision, and in progress. Finished requests (completed,
+// failed, declined, cancelled) are not work in flight, so they are not here: they are in Transfer history. The server lists
 // pending requests in priority order but leaves every other row where its creation time puts it, so in one flat list
 // the order could not be seen. Split like this, "waiting" reads top to bottom as the order to work in: immediate use
 // first (trauma and scheduled surgery), then restock, oldest first in each, numbered 1, 2, 3.
@@ -199,7 +145,6 @@ function IncomingSections({
   onOpenChat: (id: number) => void;
 }) {
   const g = groupIncomingRequests(rows);
-  const [showFinished, setShowFinished] = useState(false);
   const card = (req: RequestRow, position?: number) => (
     <IncomingRequestCard
       key={req.id}
@@ -245,22 +190,6 @@ function IncomingSections({
         </section>
       )}
 
-      {g.finished.length > 0 && (
-        <section>
-          <h4 className="text-[14px] font-semibold text-foreground">
-            <button
-              type="button"
-              onClick={() => setShowFinished((v) => !v)}
-              aria-expanded={showFinished}
-              className="flex items-center gap-1.5 rounded-sm hover:underline hover:underline-offset-2"
-            >
-              <ChevronDown size={15} className={`transition-transform ${showFinished ? "" : "-rotate-90"}`} />
-              Finished ({g.finished.length})
-            </button>
-          </h4>
-          {showFinished && <div className="space-y-2 mt-2">{g.finished.map((req) => card(req))}</div>}
-        </section>
-      )}
     </div>
   );
 }
@@ -295,12 +224,7 @@ function AcceptedRequestCard({
         <ReasonTag reason={req.emergency_type} />
       </div>
 
-      {req.status === "completed" || req.status === "failed" ? (
-        <div className="flex items-end justify-between gap-3">
-          <ReceiptOutcome req={req} size={13} />
-          <ReceiptLink requestId={req.id} />
-        </div>
-      ) : !req.supplier_confirmed_at ? (
+      {!req.supplier_confirmed_at ? (
         <span className="text-[13px] text-muted-foreground">Waiting for supplier to confirm release</span>
       ) : canConfirmReceipt ? (
         <button
@@ -308,7 +232,7 @@ function AcceptedRequestCard({
           disabled={busy}
           className="w-full h-7 bg-primary text-white text-[13px] font-semibold rounded-lg hover:bg-primary-hover transition-colors disabled:opacity-60"
         >
-          {busy ? "Confirming…" : "Confirm Receipt"}
+          {busy ? "Confirming…" : "Confirm receipt"}
         </button>
       ) : (
         <span className="text-[13px] text-muted-foreground">Switch to the requesting facility above to confirm receipt</span>
@@ -390,6 +314,8 @@ export function RequestsScreen({
   const [chatLive, setChatLive] = useState<"connecting" | "live" | "lost">("connecting");
   // The two request lists as of the latest render, for the poll below to compare against without going stale.
   const listsRef = useRef<{ requests: RequestRow[]; incoming: RequestRow[] }>({ requests: [], incoming: [] });
+  // The open thread's poll, so an action taken from the thread (or a card) shows its event at once, not at the next poll.
+  const refreshThreadRef = useRef<(() => void) | null>(null);
   const [sendingMessage, setSendingMessage] = useState(false);
   const chatRef = useRef<HTMLDivElement>(null);
 
@@ -521,6 +447,7 @@ export function RequestsScreen({
       await apiPost(`/requests/${requestId}/${action}`, {});
       fetchRequests();
       fetchIncoming();
+      refreshThreadRef.current?.();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Action failed");
     } finally {
@@ -604,13 +531,17 @@ export function RequestsScreen({
       }
     }
     const onVisible = () => { if (document.visibilityState === "visible") poll(); };
+    refreshThreadRef.current = poll;
     setMessagesLoading(true);
     setDetail(null);
     setChatLive("connecting");
     poll();
     const interval = setInterval(poll, CHAT_MESSAGE_POLL_MS);
     document.addEventListener("visibilitychange", onVisible);
-    return () => { cancelled = true; clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
+    return () => {
+      cancelled = true; clearInterval(interval); document.removeEventListener("visibilitychange", onVisible);
+      if (refreshThreadRef.current === poll) refreshThreadRef.current = null;
+    };
   }, [selectedRequestId]);
 
   useEffect(() => {
@@ -689,7 +620,7 @@ export function RequestsScreen({
         ))}
       </div>
 
-      {tab === "history" && <TransferHistory isBloodBank={isBloodBankRequester} />}
+      {tab === "history" && <TransferHistory isBloodBank={isBloodBankRequester} onOpenThread={(id) => { setSelectedRequestId(id); setTab("transfer"); }} />}
 
       {tab === "sourcing" && !isBloodBankRequester && (
         <HospitalSourcingView
@@ -1103,7 +1034,7 @@ export function RequestsScreen({
             {/* Outgoing requests — requester-side confirmation */}
             <div className="bg-card border border-border rounded-xl p-5">
               <h3 className="font-semibold text-foreground mb-1">Your requests awaiting confirmation</h3>
-              <p className="text-[13px] text-muted-foreground mb-4">Requests you sent that have been accepted</p>
+              <p className="text-[13px] text-muted-foreground mb-4">Requests you sent that have been accepted and are not yet received. Finished ones are in Transfer history.</p>
 
               {requestsLoading && (
                 <div className="text-[13px] text-muted-foreground py-4 text-center">Loading…</div>
@@ -1112,11 +1043,13 @@ export function RequestsScreen({
                 <div className="text-[13px] text-status-critical-text py-4 text-center">Failed to load: {requestsError}</div>
               )}
               {!requestsLoading && !requestsError && (() => {
-                const accepted = requests.filter((r) => r.status === "accepted" || r.status === "completed" || r.status === "failed");
+                // Work in flight only: accepted and awaiting release, or released and awaiting receipt. Once receipt is
+                // confirmed the transfer is finished and moves to Transfer history.
+                const accepted = requests.filter((r) => r.status === "accepted");
                 if (accepted.length === 0) {
                   return (
                     <div className="text-[13px] text-muted-foreground py-4 text-center">
-                      Nothing accepted yet.
+                      Nothing accepted and in progress.
                     </div>
                   );
                 }
@@ -1218,6 +1151,32 @@ export function RequestsScreen({
                         items={mergeThread(messages, detail.timeline)}
                         request={detail.request}
                         actingFacilityId={actingFacilityId}
+                        renderAction={(event) => {
+                          // The accept event is where the supplier confirms release; the release event is where the requester
+                          // confirms receipt. Only while that step is the one waiting, and only for the facility that owns it.
+                          const r = detail.request;
+                          const waitingOnRelease = r.status === "accepted" && !r.supplier_confirmed_at;
+                          const waitingOnReceipt = r.status === "accepted" && !!r.supplier_confirmed_at && !r.requester_confirmed_at;
+                          const action: RequestAction | null =
+                            event.kind === "accepted" && waitingOnRelease && actingFacilityId === r.supplying_facility.id ? "confirm-release"
+                            : event.kind === "released" && waitingOnReceipt && actingFacilityId === r.requesting_facility.id ? "confirm-receipt"
+                            : null;
+                          if (action === null) return null;
+                          const busy = actionPendingId === r.id;
+                          return (
+                            <div className="mt-2">
+                              <button
+                                type="button"
+                                onClick={() => performRequestAction(r.id, action)}
+                                disabled={busy}
+                                className="h-8 px-3 bg-primary text-white text-[13px] font-semibold rounded-md hover:bg-primary-hover transition-colors disabled:opacity-60"
+                              >
+                                {busy ? "Confirming…" : action === "confirm-release" ? "Confirm release" : "Confirm receipt"}
+                              </button>
+                              {actionError && <p role="alert" className="mt-1.5 text-[13px] text-status-critical-text">{actionError}</p>}
+                            </div>
+                          );
+                        }}
                       />
                     )}
                     {detail !== null && messages.length === 0 && (

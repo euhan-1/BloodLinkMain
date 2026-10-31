@@ -110,7 +110,9 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `Depends` object into SQL, as for `uploaded_by`).
 - **A request's timeline is derived, not stored** (`_request_timeline`, served by `GET /requests/{id}`, which the chat
   re-fetches with its messages every 4 s while the browser tab is visible; the Live label is the last poll's result). Both sides' request lists poll every 25 s while the browser tab is visible (silent, and at once on becoming visible); the
-  chat shows a day separator above each run of bubbles once the thread spans more than one day. An
+  chat shows a day separator above each run of bubbles once the thread spans more than one day. Request and chats is for work in flight only (awaiting a decision, awaiting release, awaiting receipt): finished
+  transfers are in Transfer history, whose rows open their thread and receipt. Confirm release sits on the accept event and confirm
+  receipt on the release event (the cards keep them too); events stay full width, never aligned to a side. An
   event is listed whenever status and timestamps show it happened; a time or account never captured is None and reads
   "not recorded", never omitted. An event's account is the account's email (not an id), shown to both facilities. The
   receipt (`/receipt/{id}`, `screens/Receipt.tsx`, printable via `print:` classes) renders the same `timeline` and

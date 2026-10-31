@@ -17,7 +17,7 @@ import {
 // on screen. Below `lg` a row becomes lines of text, not a horizontal scroll.
 
 const HAIRLINE = "border-gray-200";
-const COLUMNS = "xl:grid-cols-[6.5rem_7.5rem_minmax(9rem,1.4fr)_4.5rem_6.5rem_3.5rem_4.5rem_9.5rem_11.5rem_4.5rem]";
+const COLUMNS = "xl:grid-cols-[6.5rem_7.5rem_minmax(9rem,1.4fr)_4.5rem_6.5rem_3.5rem_4.5rem_9.5rem_11.5rem_8rem]";
 const FIELD = "h-9 px-2.5 text-[14px] text-foreground border border-border rounded-md bg-card";
 const LABEL = "block text-[13px] font-semibold text-foreground mb-1";
 
@@ -30,7 +30,7 @@ const OUTCOME_TONE: Record<TransferRow["outcome"], string> = {
   cancelled: "text-gray-600",
 };
 
-export function TransferHistory({ isBloodBank }: { isBloodBank: boolean }) {
+export function TransferHistory({ isBloodBank, onOpenThread }: { isBloodBank: boolean; onOpenThread: (requestId: number) => void }) {
   const [filters, setFilters] = useState<TransferFilters>(NO_FILTERS);
   const [data, setData] = useState<TransfersResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -158,7 +158,7 @@ export function TransferHistory({ isBloodBank }: { isBloodBank: boolean }) {
                 <div role="columnheader">Outcome</div>
                 <div role="columnheader"><span className="sr-only">Receipt</span></div>
               </div>
-              {data.transfers.map((t) => <TransferLine key={t.request.id} t={t} />)}
+              {data.transfers.map((t) => <TransferLine key={t.request.id} t={t} onOpenThread={onOpenThread} />)}
             </div>
           )}
           {data.truncated && (
@@ -172,7 +172,7 @@ export function TransferHistory({ isBloodBank }: { isBloodBank: boolean }) {
 
 // One transfer. From `xl` the cells are grid columns in DOM order; below it the row wraps into lines, ordered by `order-N`:
 // who and the outcome, then when, which way, what, how many, why, and the receipt.
-function TransferLine({ t }: { t: TransferRow }) {
+function TransferLine({ t, onOpenThread }: { t: TransferRow; onOpenThread: (requestId: number) => void }) {
   const r = t.request;
   const s = t.summary;
   return (
@@ -197,7 +197,16 @@ function TransferLine({ t }: { t: TransferRow }) {
         {OUTCOME_LABELS[t.outcome]}
         {s.failed ? <span className="font-normal text-foreground">{`, ${s.failed} expired`}</span> : null}
       </div>
-      <div role="cell" className="order-10 ml-auto xl:ml-0 xl:order-none xl:text-right">
+      <div role="cell" className="order-10 ml-auto xl:ml-0 xl:order-none flex items-baseline justify-end gap-4">
+        {/* The thread for this one transfer, in Request and chats: a finished transfer is not listed there any more. */}
+        <button
+          type="button"
+          onClick={() => onOpenThread(r.id)}
+          aria-label={`Open the thread for request ${r.id}`}
+          className="text-[14px] font-semibold text-primary underline-offset-2 hover:underline"
+        >
+          Chat
+        </button>
         <a
           href={`/receipt/${r.id}`}
           target="_blank"
