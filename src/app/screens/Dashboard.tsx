@@ -224,7 +224,7 @@ function ForecastPendingCard({ title, error, onRetry, progress }: { title: strin
   );
 }
 
-export function DashboardScreen({ onRequestBloodType, onViewRequests }: { onRequestBloodType: (bloodType: string) => void; onViewRequests: () => void }) {
+export function DashboardScreen({ onRequestBloodType, onViewRequests }: { onRequestBloodType: (bloodType: string, quantity?: number) => void; onViewRequests: () => void }) {
   const [summary, setSummary] = useState<InventorySummaryRow[]>([]);
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [summaryError, setSummaryError] = useState<string | null>(null);

@@ -1,19 +1,17 @@
 import { useState, useRef, useEffect } from "react";
-import { AlertTriangle, ArrowRight, CheckCircle, Clock, MapPin, MessageSquare, Send } from "lucide-react";
+import { Clock, MessageSquare, Send } from "lucide-react";
 import { apiGet, apiPost, getMyFacilityProfile } from "../lib/api";
 import { getCurrentUser } from "../lib/session";
 import { getDevFacilityId, isDevModeEnabled } from "../lib/devMode";
 import { BloodTypeBadge } from "../components/BloodTypeBadge";
 import { Modal } from "../components/Modal";
-import { FacilityNetworkMap, type Facility } from "../components/FacilityNetworkMap";
+import { type Facility } from "../components/FacilityNetworkMap";
 import { HospitalSourcingView } from "./HospitalSourcing";
-import { ComponentPicker } from "../components/ComponentPicker";
 import { RequestThread } from "../components/RequestThread";
 import { listIsBehind, mergeThread, type RequestDetail } from "../lib/requestTimeline";
-import { usesRedCellCompatibility, type BloodComponent } from "../lib/bloodComponents";
+import { type BloodComponent } from "../lib/bloodComponents";
 import { useFlashOnChange } from "../lib/motion";
-import { ALL_BLOOD_TYPES, BLOOD_COMPATIBILITY } from "../lib/statusTokens";
-import { EMERGENCY_TYPE_LABELS, groupIncomingRequests, requestUnitsText, type EmergencyType, type RequestRow } from "../lib/requestTypes";
+import { groupIncomingRequests, requestUnitsText, type EmergencyType, type RequestRow } from "../lib/requestTypes";
 import { ReasonTag } from "../components/ReasonTag";
 import { TransferHistory } from "./TransferHistory";
 
@@ -242,10 +240,11 @@ function AcceptedRequestCard({
 }
 
 export function RequestsScreen({
-  initialSearchType, onConsumedSourcingPrefill,
+  initialSearchType, initialQuantity, onConsumedSourcingPrefill,
   initialHighlightRequestId, onConsumedHighlight,
 }: {
   initialSearchType?: string | null;
+  initialQuantity?: number | null;
   onConsumedSourcingPrefill?: () => void;
   initialHighlightRequestId?: number | null;
   onConsumedHighlight?: () => void;
@@ -289,11 +288,11 @@ export function RequestsScreen({
   // component, and the search below does not run until it is chosen.
   const [component, setComponent] = useState<BloodComponent | null>(null);
 
-  // This facility's own location, for the "You" marker on the hospital's map. Not wanted by the blood-bank map, and not
-  // under the dev facility override, where /facilities/me would describe the wrong facility.
+  // This facility's own location, for the "You" marker on the sourcing map (a blood bank's too: the search ranks by distance
+  // from it). Not under the dev facility override, where /facilities/me would describe the wrong facility.
   const [origin, setOrigin] = useState<[number, number] | null>(null);
   useEffect(() => {
-    if (isBloodBankRequester || (isDevModeEnabled() && getDevFacilityId() !== null)) return;
+    if (isDevModeEnabled() && getDevFacilityId() !== null) return;
     let cancelled = false;
     getMyFacilityProfile()
       .then((profile) => {
@@ -301,7 +300,7 @@ export function RequestsScreen({
       })
       .catch(() => {}); // the map simply has no "You" marker
     return () => { cancelled = true; };
-  }, [isBloodBankRequester]);
+  }, []);
   const [selectedBank, setSelectedBank] = useState<number | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [selectedRequestId, setSelectedRequestId] = useState<number | null>(initialHighlightRequestId ?? null);
@@ -330,10 +329,12 @@ export function RequestsScreen({
   useEffect(() => {
     if (initialSearchType) {
       setSearchType(initialSearchType);
+      if (initialQuantity && initialQuantity >= 1) setQuantityNeeded(initialQuantity); // "Order 90 by 4 Nov" arrives with its 90
+      setTab("sourcing");
       onConsumedSourcingPrefill?.();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialSearchType]);
+  }, [initialSearchType, initialQuantity]);
 
   useEffect(() => {
     if (initialHighlightRequestId) {
@@ -610,7 +611,7 @@ export function RequestsScreen({
                 : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
           >
-            {t === "sourcing" ? "Emergency sourcing" : t === "transfer" ? "Request and chats" : "Transfer history"}
+            {t === "sourcing" ? (isBloodBankRequester ? "Source supply" : "Emergency sourcing") : t === "transfer" ? "Request and chats" : "Transfer history"}
             {t === "transfer" && pendingOnly.length > 0 && (
               <span className="absolute -top-1 -right-1 w-4 h-4 bg-primary text-white text-[10px] font-bold rounded-full flex items-center justify-center">
                 {pendingOnly.length}
@@ -622,8 +623,9 @@ export function RequestsScreen({
 
       {tab === "history" && <TransferHistory isBloodBank={isBloodBankRequester} onOpenThread={(id) => { setSelectedRequestId(id); setTab("transfer"); }} />}
 
-      {tab === "sourcing" && !isBloodBankRequester && (
+      {tab === "sourcing" && (
         <HospitalSourcingView
+          role={isBloodBankRequester ? "bloodbank" : "hospital"}
           searchType={searchType}
           onSearchType={setSearchType}
           component={component}
@@ -644,339 +646,6 @@ export function RequestsScreen({
           onSend={sendRequest}
           onOpenRequests={() => setTab("transfer")}
         />
-      )}
-
-      {tab === "sourcing" && isBloodBankRequester && (
-        <div className="grid lg:grid-cols-5 gap-5">
-          {/* Left: search + results */}
-          <div className="lg:col-span-2 space-y-4">
-            <div className="bg-card border border-border rounded-xl p-5">
-              <h3 className="font-semibold text-foreground mb-4">Find blood supply</h3>
-              <div className="mb-3">
-                <ComponentPicker value={component} onChange={setComponent} />
-              </div>
-              <div className="mb-3">
-                <label className="text-[13px] font-semibold text-muted-foreground block mb-1.5">
-                  Blood type needed
-                </label>
-                <div className="grid grid-cols-4 gap-1.5">
-                  {ALL_BLOOD_TYPES.map((bt) => (
-                    <button
-                      key={bt}
-                      onClick={() => setSearchType(bt)}
-                      className={`py-2 text-[14px] font-display font-bold rounded-lg border transition-all duration-200 ease-out ${
-                        searchType === bt
-                          ? "bg-primary text-white border-primary scale-110"
-                          : "bg-primary-tint text-primary border-transparent hover:border-primary/40"
-                      }`}
-                    >
-                      {bt}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="mb-4">
-                <label className="text-[13px] font-semibold text-muted-foreground block mb-1.5">
-                  Units needed
-                </label>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setQuantityNeeded(Math.max(1, quantityNeeded - 1))}
-                    className="w-8 h-8 border border-border rounded-lg text-foreground font-bold hover:bg-secondary flex items-center justify-center"
-                  >
-                    −
-                  </button>
-                  <span className="text-lg font-bold text-foreground w-8 text-center">{quantityNeeded}</span>
-                  <button
-                    onClick={() => setQuantityNeeded(quantityNeeded + 1)}
-                    className="w-8 h-8 border border-border rounded-lg text-foreground font-bold hover:bg-secondary flex items-center justify-center"
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Blood type compatibility notice */}
-            {(() => {
-              const compatible = usesRedCellCompatibility(component) ? (BLOOD_COMPATIBILITY[searchType] ?? []).filter((t) => t !== searchType) : [];
-              // Only claim "no exact match" once the list has loaded and nothing in it is available.
-              const noExactMatch = !banksLoading && !banksError && !banks.some((b) => b.available);
-              return compatible.length > 0 ? (
-                <div className="bg-info-tint border border-info-border rounded-xl px-4 py-3 flex gap-3">
-                  <AlertTriangle size={15} className="text-info shrink-0 mt-0.5" />
-                  <div>
-                    <div className="text-[13px] font-semibold text-info-text mb-1">
-                      {noExactMatch ? "No exact match. Compatible alternatives:" : "Compatible alternatives if needed:"}
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {compatible.map((t) => (
-                        <button
-                          key={t}
-                          onClick={() => setSearchType(t)}
-                          className="px-2.5 py-0.5 text-[13px] font-bold rounded border bg-card border-info-border text-info hover:bg-info-tint transition-colors"
-                        >
-                          {t}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="text-[11px] text-info mt-1.5 leading-snug">
-                      Based on standard donor-recipient compatibility. Always verify with clinical staff.
-                    </div>
-                  </div>
-                </div>
-              ) : null;
-            })()}
-
-            <div className="space-y-2">
-              <div className="text-[14px] font-semibold text-foreground px-1">
-                Nearest facilities — {searchType}{component ? ` ${component}` : ""} available
-              </div>
-              {component === null && (
-                <div className="bg-card border border-border rounded-xl p-6 text-center text-[13px] text-muted-foreground">
-                  Choose a component to see which facilities can supply it.
-                </div>
-              )}
-              {banksLoading && (
-                <div className="bg-card border border-border rounded-xl p-6 text-center text-[13px] text-muted-foreground">
-                  Loading facilities…
-                </div>
-              )}
-              {!banksLoading && banksError && (
-                <div className="bg-status-critical-tint border border-status-critical-border rounded-xl p-4 text-center text-[13px] text-status-critical-text">
-                  Failed to load facilities: {banksError}
-                </div>
-              )}
-              {!banksLoading && !banksError && banks.map((bank, i) => (
-                <div
-                  key={bank.id}
-                  onClick={() => setSelectedBank(bank.id)}
-                  className={`w-full text-left bg-card border rounded-xl p-4 transition-all cursor-pointer ${
-                    selectedBank === bank.id
-                      ? "border-primary ring-2 ring-primary/20"
-                      : "border-border hover:border-primary/40"
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex gap-3">
-                      <div className="w-6 h-6 rounded-full bg-primary/10 text-primary font-bold text-[12px] flex items-center justify-center shrink-0 mt-0.5">
-                        {i + 1}
-                      </div>
-                      <div>
-                        <div className="font-semibold text-[14px] text-foreground leading-tight">
-                          {bank.name}
-                        </div>
-                        <div className="text-[12px] text-muted-foreground mt-0.5">{bank.address}</div>
-                        <div className="flex items-center gap-1 mt-1.5">
-                          <MapPin size={11} className="text-muted-foreground" />
-                          <span className="text-[13px] font-semibold text-foreground">{bank.distance_km} km</span>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="shrink-0">
-                      {bank.available ? (
-                        <span className="flex items-center gap-1 text-[12px] font-semibold bg-status-safe-tint text-status-safe-text px-2 py-0.5 rounded-full border border-status-safe-border">
-                          <CheckCircle size={11} /> Available
-                        </span>
-                      ) : (
-                        <span className="flex items-center gap-1 text-[12px] font-semibold bg-gray-100 text-foreground px-2 py-0.5 rounded-full border border-gray-200">
-                          Unavailable
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  {!bank.available && bank.compatible_alternatives.length > 0 && (
-                    <div className="mt-2 pt-2 border-t border-border">
-                      <div className="text-[12px] text-info-text font-medium mb-1">
-                        {searchType} unavailable here — compatible alternative{bank.compatible_alternatives.length > 1 ? "s" : ""} in stock:
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {bank.compatible_alternatives.map((alt) => (
-                          <button
-                            key={alt.blood_type}
-                            onClick={(e) => { e.stopPropagation(); setSearchType(alt.blood_type); }}
-                            className="flex items-center gap-1.5 rounded-lg hover:opacity-80 transition-opacity"
-                          >
-                            <BloodTypeBadge type={alt.blood_type} size="lg" />
-                            <span className="flex items-center gap-1 text-[12px] font-semibold bg-status-safe-tint text-status-safe-text px-2 py-0.5 rounded-full border border-status-safe-border">
-                              <CheckCircle size={11} /> Available
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {selectedBank === bank.id && bank.available && (
-                    <div className="mt-3 pt-3 border-t border-border">
-                      {justSentBankId === bank.id ? (
-                        <div className="w-full h-8 bg-status-safe-tint text-status-safe-text border border-status-safe-border rounded-lg text-[13px] font-semibold flex items-center justify-center gap-1.5">
-                          <CheckCircle size={14} /> Request Sent
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => sendRequest(bank.id)}
-                          disabled={submitting}
-                          className="w-full h-8 bg-primary text-white text-[13px] font-semibold rounded-lg hover:bg-primary-hover transition-colors flex items-center justify-center gap-1.5 disabled:opacity-60"
-                        >
-                          <ArrowRight size={14} /> {submitting ? "Sending…" : "Request from this facility"}
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Facility detail panel */}
-          <div className="lg:col-span-3 bg-card border border-border rounded-xl flex flex-col">
-            {banksLoading && (
-              <div className="flex-1 flex items-center justify-center text-center px-8 py-16 text-[14px] text-muted-foreground">
-                Loading facilities…
-              </div>
-            )}
-            {!banksLoading && banksError && (
-              <div className="flex-1 flex items-center justify-center text-center px-8 py-16 text-[14px] text-status-critical-text">
-                Failed to load facilities: {banksError}
-              </div>
-            )}
-            {!banksLoading && !banksError && (selectedBank ? (() => {
-              const bank = banks.find((b) => b.id === selectedBank)!;
-              return (
-                <>
-                  <div className="px-6 py-4 border-b border-border flex items-center justify-between">
-                    <div>
-                      <h3 className="font-semibold text-foreground">{bank.name}</h3>
-                      <p className="text-[13px] text-muted-foreground mt-0.5">{bank.address}</p>
-                    </div>
-                    {bank.available ? (
-                      <span className="flex items-center gap-1 text-[13px] font-semibold bg-status-safe-tint text-status-safe-text px-3 py-1 rounded-full border border-status-safe-border">
-                        <CheckCircle size={13} /> Available
-                      </span>
-                    ) : (
-                      <span className="text-[13px] font-semibold bg-gray-100 text-foreground px-3 py-1 rounded-full border border-gray-200">
-                        Unavailable
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Real map — every ranked candidate is a real pin at its
-                      real coordinates; the selected one is the larger, primary-
-                      colored pin. Click any pin to select that facility. */}
-                  <div className="mx-6 mt-5 rounded-xl overflow-hidden border border-border" style={{ height: 360 }}>
-                    <FacilityNetworkMap key={`${searchType}-${component}`} banks={banks} selectedBankId={selectedBank} onSelectBank={setSelectedBank} />
-                  </div>
-
-                  <div className="px-6 py-5 space-y-3">
-                    <div className="grid grid-cols-2 gap-3 text-[14px]">
-                      {[
-                        { label: "Distance", value: `${bank.distance_km} km` },
-                        { label: "Availability", value: bank.available ? "Available" : "Unavailable" },
-                        { label: "Blood type needed", value: `${searchType}${component ? ` ${component}` : ""} (${quantityNeeded} units)` },
-                        // No exact stock number here — a facility never sees another
-                        // facility's raw inventory count, matching the paper's
-                        // Availability Status definition. "Availability" above is
-                        // the complete signal; a separate tile repeating it as a
-                        // number-shaped fact would be misleading, not just redundant.
-                      ].map(({ label, value }) => (
-                        <div key={label} className="bg-secondary rounded-lg px-4 py-3">
-                          <div className="text-[12px] text-muted-foreground font-medium mb-0.5">{label}</div>
-                          <div className="font-semibold text-foreground">{value}</div>
-                        </div>
-                      ))}
-                    </div>
-
-                    {!bank.available && bank.compatible_alternatives.length > 0 && (
-                      <div className="bg-info-tint border border-info-border rounded-lg px-4 py-3">
-                        <div className="text-[13px] font-semibold text-info-text mb-1.5">
-                          {searchType} unavailable here — compatible alternatives in stock:
-                        </div>
-                        <div className="flex flex-wrap gap-2.5">
-                          {bank.compatible_alternatives.map((alt) => (
-                            <button
-                              key={alt.blood_type}
-                              onClick={() => setSearchType(alt.blood_type)}
-                              className="flex items-center gap-1.5 rounded-lg hover:opacity-80 transition-opacity"
-                            >
-                              <BloodTypeBadge type={alt.blood_type} size="xl" />
-                              <span className="flex items-center gap-1 text-[13px] font-semibold bg-status-safe-tint text-status-safe-text px-2.5 py-1 rounded-full border border-status-safe-border">
-                                <CheckCircle size={13} /> Available
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-                        <div className="text-[11px] text-info mt-1.5 leading-snug">
-                          Selecting a type re-runs the search — you'll need to review and confirm before sending a request for a different type.
-                        </div>
-                      </div>
-                    )}
-
-                    {bank.available && (
-                      <>
-                        <div>
-                          <label className="text-[13px] font-semibold text-muted-foreground block mb-1.5">
-                            Reason for request
-                          </label>
-                          {isBloodBankRequester ? (
-                            <div className="py-2 px-3 text-[13px] font-bold rounded-lg border border-border bg-secondary text-foreground w-fit">
-                              Restock
-                            </div>
-                          ) : (
-                            <div className="grid grid-cols-3 gap-1.5">
-                              {(Object.keys(EMERGENCY_TYPE_LABELS) as EmergencyType[]).map((et) => (
-                                <button
-                                  key={et}
-                                  onClick={() => setEmergencyType(et)}
-                                  className={`py-2 text-[13px] font-bold rounded-lg border transition-all duration-200 ease-out ${
-                                    emergencyType === et
-                                      ? "bg-primary text-white border-primary scale-105"
-                                      : "bg-card text-foreground border-border hover:border-primary/40"
-                                  }`}
-                                >
-                                  {EMERGENCY_TYPE_LABELS[et]}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-
-                        {submitError && (
-                          <div className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-lg px-3 py-2">
-                            Failed to send request: {submitError}
-                          </div>
-                        )}
-
-                        {justSentBankId === bank.id ? (
-                          <div className="w-full h-10 bg-status-safe-tint text-status-safe-text border border-status-safe-border rounded-lg text-[14px] font-semibold flex items-center justify-center gap-2">
-                            <CheckCircle size={15} /> Request Sent
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => sendRequest(bank.id)}
-                            disabled={submitting}
-                            className="w-full h-10 bg-primary text-white text-[14px] font-semibold rounded-lg hover:bg-primary-hover transition-colors flex items-center justify-center gap-2 disabled:opacity-60"
-                          >
-                            <ArrowRight size={15} /> {submitting ? "Sending…" : "Send Request to This Facility"}
-                          </button>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </>
-              );
-            })() : (
-              <div className="flex-1 flex flex-col items-center justify-center text-center px-8 py-16">
-                <div className="w-14 h-14 rounded-full bg-secondary flex items-center justify-center mb-4">
-                  <MapPin size={22} className="text-muted-foreground" />
-                </div>
-                <h3 className="font-semibold text-foreground mb-1">Select a facility</h3>
-                <p className="text-[14px] text-muted-foreground max-w-xs leading-relaxed">
-                  Choose a blood bank from the list to view its details and send a request.
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
       )}
 
       {tab === "transfer" && (

@@ -24,6 +24,10 @@ const RAISED = "shadow-[var(--shadow-raised)]";
 const what = (p: { searchType: string; component: BloodComponent | null }) => (p.component ? `${p.searchType} ${p.component}` : p.searchType);
 
 export type HospitalSourcingProps = {
+  // A hospital sources for patients; a blood bank is restocking. The differences are small and deliberate: a bank states that its
+  // request is a restock instead of choosing a reason, is never offered compatible alternatives (covering an A- restock with O- is a
+  // patient-side substitution, not a restock), and types its quantity, which can be in the dozens.
+  role: "hospital" | "bloodbank";
   searchType: string;
   onSearchType: (type: string) => void;
   component: BloodComponent | null;
@@ -126,13 +130,13 @@ export function HospitalSourcingView(p: HospitalSourcingProps) {
 
 function Controls(p: HospitalSourcingProps) {
   // Red-cell compatibility only: it does not describe platelets, so for them (or before a component is chosen) it is not shown.
-  const compatible = usesRedCellCompatibility(p.component) ? (BLOOD_COMPATIBILITY[p.searchType] ?? []).filter((t) => t !== p.searchType) : [];
+  const compatible = p.role === "hospital" && usesRedCellCompatibility(p.component) ? (BLOOD_COMPATIBILITY[p.searchType] ?? []).filter((t) => t !== p.searchType) : [];
   // Only claim "nothing available" once the list has loaded.
   const nobodyHasIt = !p.loading && !p.error && !p.banks.some((b) => b.available);
   return (
     <section aria-labelledby="sourcing-heading">
       <h2 id="sourcing-heading" className="font-display font-bold text-2xl tracking-tight text-foreground">
-        Find blood supply
+        {p.role === "bloodbank" ? "Source supply" : "Find blood supply"}
       </h2>
       <div className="mt-4 flex flex-wrap items-end gap-x-10 gap-y-4">
         <ComponentPicker value={p.component} onChange={p.onComponent} />
@@ -167,7 +171,11 @@ function Controls(p: HospitalSourcingProps) {
             >
               <Minus size={16} />
             </button>
-            <span aria-live="polite" className="w-10 text-center text-xl font-bold tabular-nums text-foreground">{p.quantity}</span>
+            {p.role === "bloodbank" ? (
+              <QuantityField value={p.quantity} onChange={p.onQuantity} />
+            ) : (
+              <span aria-live="polite" className="w-10 text-center text-xl font-bold tabular-nums text-foreground">{p.quantity}</span>
+            )}
             <button
               type="button"
               aria-label="More units"
@@ -201,6 +209,29 @@ function Controls(p: HospitalSourcingProps) {
         </p>
       )}
     </section>
+  );
+}
+
+// A blood bank restocks in dozens, so its quantity can be typed. The field keeps what is being typed (including nothing, mid-edit)
+// and only reports a whole number of at least 1; on leaving it shows the number that will be used.
+function QuantityField({ value, onChange }: { value: number; onChange: (n: number) => void }) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => { setDraft(String(value)); }, [value]); // a prefill or the stepper changed it from outside
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      aria-label="Units needed"
+      value={draft}
+      onChange={(e) => {
+        const text = e.target.value.replace(/\D/g, "").slice(0, 4);
+        setDraft(text);
+        const n = Number(text);
+        if (n >= 1) onChange(n);
+      }}
+      onBlur={() => setDraft(String(value))}
+      className="w-16 h-10 text-center text-xl font-bold tabular-nums text-foreground border border-border rounded-md bg-card"
+    />
   );
 }
 
@@ -381,7 +412,9 @@ function RequestPanel(p: HospitalSourcingProps & { selected: Facility | null }) 
               </div>
             </>
           ) : (
-            <p className="mt-1.5 text-[15px] text-foreground">No compatible type in stock there either.</p>
+            <p className="mt-1.5 text-[15px] text-foreground">
+              {p.role === "bloodbank" ? "Choose another facility from the list or the map." : "No compatible type in stock there either."}
+            </p>
           )}
         </>
       )}
@@ -412,8 +445,12 @@ function RequestPanel(p: HospitalSourcingProps & { selected: Facility | null }) 
             <span className="block text-[14px] font-[500] tracking-normal font-sans text-foreground mt-0.5">from {selected.name}</span>
           </h2>
 
+          {/* A blood bank's request is always a restock (the server forces it), so it is stated, not offered as a choice. */}
+          {p.role === "bloodbank" && <p className="mt-3.5 text-[15px] font-semibold text-foreground">This is a restock request.</p>}
+
           {/* Required: nothing is pre-selected. The server uses the reason for one thing, the order of the supplier's pending
               requests (_apply_priority_sort: trauma and scheduled surgery ahead of restock). The sentence below says only that. */}
+          {p.role === "hospital" && (
           <div role="radiogroup" aria-labelledby="reason-label" aria-required="true" className="mt-3.5">
             <div id="reason-label" className="text-[14px] font-semibold text-foreground mb-1.5">Reason for request</div>
             <div className="grid grid-cols-3 gap-1.5">
@@ -436,6 +473,7 @@ function RequestPanel(p: HospitalSourcingProps & { selected: Facility | null }) 
             </div>
             <p className="mt-2 text-[13px] text-foreground text-balance">Trauma and scheduled surgery are listed ahead of restock in the supplier's pending requests.</p>
           </div>
+          )}
 
           {p.submitError && (
             <div role="alert" className="mt-4 text-[14px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">

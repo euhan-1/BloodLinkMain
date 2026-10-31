@@ -171,7 +171,8 @@ export default function App() {
   // Emergency Sourcing for a specific blood type. RequestsScreen consumes it
   // on mount (via onConsumedSourcingPrefill) so a later, unrelated visit to
   // Requests (e.g. the top nav) doesn't inherit a stale prefill.
-  const [sourcingPrefillType, setSourcingPrefillType] = useState<string | null>(null);
+  // A blood bank's "Order 90 by 4 Nov" also carries the quantity; a hospital's prompt carries only the type.
+  const [sourcingPrefill, setSourcingPrefill] = useState<{ bloodType: string; quantity?: number } | null>(null);
 
   // Same one-shot pattern, driven by clicking a "requests:{id}" notification
   // — jumps Requests straight to its transfer tab with that request selected.
@@ -184,7 +185,7 @@ export default function App() {
       if (!Number.isNaN(id)) setRequestsHighlightId(id);
       setScreen("requests");
     } else if (n.link.startsWith("sourcing:")) {
-      setSourcingPrefillType(n.link.slice("sourcing:".length));
+      setSourcingPrefill({ bloodType: n.link.slice("sourcing:".length) });
       setScreen("requests");
     } else if (n.link === "dashboard" || n.link === "inventory" || n.link === "requests" || n.link === "chat") {
       setScreen(n.link);
@@ -312,8 +313,8 @@ export default function App() {
         <Suspense fallback={<ScreenFallback />}>
           {screen === "dashboard" && (
             <DashboardScreen
-              onRequestBloodType={(bloodType) => {
-                setSourcingPrefillType(bloodType);
+              onRequestBloodType={(bloodType, quantity) => {
+                setSourcingPrefill({ bloodType, quantity });
                 setScreen("requests");
               }}
               onViewRequests={() => setScreen("requests")}
@@ -322,8 +323,9 @@ export default function App() {
           {screen === "inventory" && <InventoryScreen />}
           {screen === "requests" && (
             <RequestsScreen
-              initialSearchType={sourcingPrefillType}
-              onConsumedSourcingPrefill={() => setSourcingPrefillType(null)}
+              initialSearchType={sourcingPrefill?.bloodType ?? null}
+              initialQuantity={sourcingPrefill?.quantity ?? null}
+              onConsumedSourcingPrefill={() => setSourcingPrefill(null)}
               initialHighlightRequestId={requestsHighlightId}
               onConsumedHighlight={() => setRequestsHighlightId(null)}
             />

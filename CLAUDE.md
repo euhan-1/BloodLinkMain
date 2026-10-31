@@ -94,6 +94,11 @@ requests, SARIMAX demand forecasting, donor broadcast.
   NULL on the 12 requests that predate it (meaning not recorded, not releasable). Compatible alternatives are
   red-cell compatibility, offered only for `RED_CELL_COMPONENTS`. Adding a component: one line in `COMPONENTS`, one in
   `src/app/lib/bloodComponents.ts`.
+- **One definition of a releasable unit** (`RELEASABLE_UNITS_SQL`, `_releasable_counts`): of the requested component, with
+  enough time before expiry (`_release_expiry_cutoff`), and not reserved for another request. `confirm_release` selects from it,
+  `/facilities/nearby` counts it, and any "can give" figure must use it, so no screen promises more than release delivers.
+  Compatible alternatives are offered to hospitals only: a blood bank is restocking, and covering A- with O- is a patient-side
+  substitution. A bank's tab is "Source supply" and its request is always restock.
 - **The transfer ledger** (`request_units`): `confirm_release` writes one row per reserved unit, copied from the unit at
   release (DIN, type, component, volume, dates, supplier shelf, days left), and `confirm_receipt` settles each as
   `received` or `failed` with days left at receipt (from the live unit's expiry, the value the decision used; the row's
@@ -132,7 +137,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (452 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (461 tests plus
   134 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`

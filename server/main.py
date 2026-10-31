@@ -3854,6 +3854,37 @@ def _release_expiry_cutoff(component: str, today: date) -> date:
     return today + timedelta(days=max(RELEASE_EXPIRY_FLOOR_DAYS, MIN_DAYS_TO_EXPIRY_AT_RELEASE.get(component, 0)))
 
 
+# THE definition of a unit another facility could be given: of the requested component, with enough time left before it
+# expires (see _release_expiry_cutoff), and not already reserved for another request. confirm_release selects from exactly
+# this, the nearby search counts exactly this, and so does anything that says how much a facility "can give", so no screen can
+# promise more than release delivers. Needs :component and :cutoff (see _releasable_params).
+RELEASABLE_UNITS_SQL = "component = :component AND expires_date >= :cutoff AND reserved_for_request_id IS NULL"
+
+
+def _releasable_params(component: str, today: date) -> dict:
+    return {"component": component, "cutoff": _release_expiry_cutoff(component, today)}
+
+
+def _releasable_counts(conn, component: str, today: date, facility_id: Optional[int] = None) -> dict[int, dict[str, int]]:
+    """{facility_id: {blood_type: releasable units}} under RELEASABLE_UNITS_SQL; one facility's when `facility_id` is given.
+    A facility's "can give" for a type is this minus that type's minimum (the reserve), as the nearby search computes it."""
+    rows = conn.execute(
+        text(
+            f"""
+            SELECT facility_id, blood_type, count(*) AS unit_count
+            FROM blood_units
+            WHERE {RELEASABLE_UNITS_SQL} AND (CAST(:facility_id AS bigint) IS NULL OR facility_id = :facility_id)
+            GROUP BY facility_id, blood_type
+            """
+        ),
+        {**_releasable_params(component, today), "facility_id": facility_id},
+    ).mappings().all()
+    counts: dict[int, dict[str, int]] = {}
+    for r in rows:
+        counts.setdefault(r["facility_id"], {})[r["blood_type"]] = r["unit_count"]
+    return counts
+
+
 def _component_error(component: str) -> str | None:
     return None if component in COMPONENTS else f"component must be one of {list(COMPONENTS)}"
 
@@ -3905,7 +3936,9 @@ def get_nearby_facilities(
     does not then fail. Only units confirm_release would reserve are counted:
     those with enough time left before expiry (see _release_expiry_cutoff).
     Compatible alternatives are red-cell compatibility, so only a red-cell
-    component gets them.
+    component gets them, and only a hospital is offered them: a blood bank is
+    restocking, and covering an A- restock with O- is a patient-side
+    substitution, not a restock.
 
     Expired units are excluded on purpose — expired stock isn't usable, so it
     can't count as available. Safety reserve is each CANDIDATE facility's own
@@ -3922,7 +3955,7 @@ def get_nearby_facilities(
     today = business_today()
     with engine.connect() as conn:
         origin = conn.execute(
-            text("SELECT latitude, longitude FROM facilities WHERE id = :id"),
+            text("SELECT latitude, longitude, facility_type FROM facilities WHERE id = :id"),
             {"id": acting_facility_id},
         ).mappings().first()
         if origin is None:
@@ -3937,17 +3970,7 @@ def get_nearby_facilities(
         for row in threshold_rows:
             thresholds_by_facility.setdefault(row["facility_id"], {})[row["blood_type"]] = row["minimum_units"]
 
-        stock_rows = conn.execute(
-            text(
-                """
-                SELECT facility_id, blood_type, count(*) AS unit_count
-                FROM blood_units
-                WHERE component = :component AND expires_date >= :cutoff
-                GROUP BY facility_id, blood_type
-                """
-            ),
-            {"component": component, "cutoff": _release_expiry_cutoff(component, today)},
-        ).mappings().all()
+        stock_by_facility = _releasable_counts(conn, component, today)
 
         # profile_completed facilities only — an admin-onboarded blood bank
         # with no confirmed location yet can't be distance-ranked, so it
@@ -3970,15 +3993,12 @@ def get_nearby_facilities(
             {"acting_facility_id": acting_facility_id},
         ).mappings().all()
 
-    stock_by_facility: dict[int, dict[str, int]] = {}
-    for row in stock_rows:
-        stock_by_facility.setdefault(row["facility_id"], {})[row["blood_type"]] = row["unit_count"]
-
     results = []
     for facility in facility_rows:
         evaluation = _evaluate_facility_stock(
             stock_by_facility.get(facility["id"], {}), thresholds_by_facility.get(facility["id"], {}),
-            blood_type, quantity, BLOOD_COMPATIBILITY if component in RED_CELL_COMPONENTS else {},
+            blood_type, quantity,
+            BLOOD_COMPATIBILITY if component in RED_CELL_COMPONENTS and origin["facility_type"] == "hospital" else {},
         )
         results.append({
             **dict(facility),
@@ -4441,14 +4461,13 @@ def confirm_release(
         cutoff = _release_expiry_cutoff(req["component"], today)
         candidates = conn.execute(
             text(
-                """
+                f"""
                 SELECT id, expires_date FROM blood_units
-                WHERE facility_id = :facility_id AND blood_type = :blood_type AND component = :component
-                  AND expires_date >= :cutoff AND reserved_for_request_id IS NULL
+                WHERE facility_id = :facility_id AND blood_type = :blood_type AND {RELEASABLE_UNITS_SQL}
                 FOR UPDATE
                 """
             ),
-            {"facility_id": facility_id, "blood_type": req["blood_type"], "component": req["component"], "cutoff": cutoff},
+            {"facility_id": facility_id, "blood_type": req["blood_type"], **_releasable_params(req["component"], today)},
         ).mappings().all()
 
         try:
