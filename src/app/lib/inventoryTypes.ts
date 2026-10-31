@@ -44,4 +44,8 @@ export function toInventoryUnit(row: InventoryApiRow): InventoryUnit {
 }
 
 // One row of GET /inventory/summary: current usable stock for a type against the facility's own thresholds.
-export type InventorySummaryRow = { blood_type: string; minimum_units: number; maximum_units: number; units: number };
+// can_give is a blood bank's: per component, the releasable units above this type's minimum, by the same rule release and
+// the nearby search use ({} for a hospital, and absent from an older API).
+export type InventorySummaryRow = {
+  blood_type: string; minimum_units: number; maximum_units: number; units: number; can_give?: Record<string, number>;
+};

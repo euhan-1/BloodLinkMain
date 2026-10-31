@@ -21,6 +21,13 @@ export function formatDate(at: string | Date, timeZone?: string): string {
   return `${p.day} ${MONTHS[p.month - 1]} ${p.year}`;
 }
 
+// "4 Nov", from a date-only string ("2026-11-04"). Read from its parts, never through a Date, so it names the calendar date
+// whatever time zone the browser is in.
+export function formatDayMonth(isoDate: string): string {
+  const [, month, day] = isoDate.split("-").map(Number);
+  return `${day} ${MONTHS[month - 1]}`;
+}
+
 // "2026-10-30": which calendar day an instant falls on, in `timeZone` (default the viewer's own). For comparing days, not display.
 export function dayKey(at: string | Date, timeZone?: string): string {
   const p = parts(at, timeZone);

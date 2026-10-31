@@ -99,6 +99,16 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `/facilities/nearby` counts it, and any "can give" figure must use it, so no screen promises more than release delivers.
   Compatible alternatives are offered to hospitals only: a blood bank is restocking, and covering A- with O- is a patient-side
   substitution. A bank's tab is "Source supply" and its request is always restock.
+- **The blood bank Dashboard** (`BankDashboard.tsx`, logic in `lib/bankDashboard.ts`): one sentence in the worst state's colour,
+  one per-type table (stock against minimum, units, status, **can give**, outlook), "Waiting for you", expiring units grouped by
+  type, component and day (`GET /inventory/expiring`, one `POST /inventory/notify-nearby-hospitals` per group), and everything
+  that is not a daily decision behind "Forecast details" (trend chart, history upload and undo). `/inventory/summary` rows carry
+  `can_give` per component from `_releasable_counts`, the same predicate as release and search; it is {} for a hospital.
+  Thresholds are per blood type, not per component, so a component's figure subtracts the type's one minimum: a known
+  limitation while platelets are rare (one unit in production). The outlook is an estimate in its own column with its basis
+  (SARIMAX or linear trend) in the row, and "Order 90 by 4 Nov" opens Source supply with type, quantity and Packed RBC
+  prefilled. `/inventory/expiring` still runs the once-per-tier expiry notification that `GET /inventory` runs, since the
+  Dashboard no longer loads every unit.
 - **The transfer ledger** (`request_units`): `confirm_release` writes one row per reserved unit, copied from the unit at
   release (DIN, type, component, volume, dates, supplier shelf, days left), and `confirm_receipt` settles each as
   `received` or `failed` with days left at receipt (from the live unit's expiry, the value the decision used; the row's
@@ -137,7 +147,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (461 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (482 tests plus
   134 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
@@ -151,7 +161,8 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `node scripts/check_incoming_groups.ts` (the blood bank's incoming-request sections) and
   `node scripts/check_components.ts` (request components match the server's) and
   `node scripts/check_request_timeline.ts` (status-event wording and the chat thread) and
-  `node scripts/check_transfers.ts` (transfer-history filters, date presets and wording), each printing `ok`, plus
+  `node scripts/check_transfers.ts` (transfer-history filters, date presets and wording) and
+  `node scripts/check_bank_dashboard.ts` (the blood bank Dashboard's sentence, outlook, basis and order prefill), each printing `ok`, plus
   `npm run typecheck`. The frontend has no component test runner.
   A red suite is a finding, not a footnote — "known failure" is how a real
   bug hides.

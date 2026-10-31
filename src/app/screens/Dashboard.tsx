@@ -1,284 +1,59 @@
 import { useState, useRef, useEffect } from "react";
-import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
-  ComposedChart, Area, Line, ReferenceLine, ReferenceArea,
-} from "recharts";
-import { AlertTriangle, CheckCircle, Clock, FlaskConical, TrendingUp, Upload } from "lucide-react";
-import {
-  apiGet, uploadHistoricalInventorySnapshots, type HistoricalUploadResult,
-} from "../lib/api";
-import {
-  getExpiryStatus, type StatusLevel, STATUS_STYLES, stockStatus, STATUS_HEX,
-  STOCK_LABELS, isNotStocked, EXPIRED_STYLE,
-} from "../lib/statusTokens";
-import { StatusDot, BloodTypeBadge } from "../components/BloodTypeBadge";
-import { Skeleton } from "../components/Skeleton";
-import { UploadHistoryPanel } from "../components/UploadHistoryPanel";
-import { useFlashOnChange } from "../lib/motion";
+import { apiGet } from "../lib/api";
+import { getExpiryStatus } from "../lib/statusTokens";
 import { getCurrentUser } from "../lib/session";
+import { isDevModeEnabled } from "../lib/devMode";
 import { type InventoryUnit, type InventoryApiRow, type InventorySummaryRow, toInventoryUnit } from "../lib/inventoryTypes";
-import { ExpiryWarningRow } from "../components/ExpiryWarningRow";
 import { HospitalDashboardView, type ThresholdView } from "./HospitalDashboard";
-import { isOutstandingRequest, type RequestRow } from "../lib/requestTypes";
-import { forecastSourceTag } from "../lib/forecastSource";
-import { buildTrendChart, shortDate, tickLabel, type HistoryPoint, type SeriesPoint, type TrendPoint } from "../lib/trendChart";
+import { BankDashboardView } from "./BankDashboard";
+import { type RequestRow } from "../lib/requestTypes";
+import { type ForecastView } from "../lib/forecastTypes";
 
 // Same order of magnitude as AccountMenu's NOTIFICATION_POLL_MS — frequent
 // enough that a status change is visible within one sitting, infrequent
 // enough not to matter for API load.
 const SUMMARY_POLL_MS = 25000;
 
-// ─── Dashboard ────────────────────────────────────────────────────────────────
-
-// Recharts' default Tooltip would list every series on the chart, including
-// the two Area layers that only exist to draw the shaded confidence band —
-// "lower: 320, band: 45, units: 340" means nothing to a reader. This says what
-// the hovered day is: recorded, carried forward (not recorded), or projected,
-// and for a projected day its predicted range.
-function TrendTooltip({ active, payload, todayISO }: { active?: boolean; payload?: { payload: TrendPoint }[]; todayISO: string | null }) {
-  if (!active || !payload || payload.length === 0) return null;
-  const d = payload[0].payload;
-  const projected = d.forecastUnits !== null && d.t > 0;
-  const heading = d.t === 0 ? "Today" : d.date ? shortDate(d.date) : tickLabel(d.t, todayISO);
-  return (
-    <div className="bg-card border border-border rounded-md px-3 py-2 text-[13px] shadow-sm">
-      <div className="font-bold text-foreground mb-0.5">{projected && d.label ? `${heading} (${d.label})` : heading}</div>
-      <div className="text-foreground">{d.units} units</div>
-      {projected && d.lower !== null && d.band !== null && (
-        <div className="text-foreground text-[12px]">
-          Likely range: {d.lower}–{d.lower + d.band}
-        </div>
-      )}
-      {d.recorded === true && <div className="text-foreground text-[12px]">Recorded</div>}
-      {d.recorded === false && (
-        <div className="text-foreground text-[12px]">
-          Not recorded{d.carriedFrom ? ` — carried forward from ${shortDate(d.carriedFrom)}` : ""}
-        </div>
-      )}
-    </div>
-  );
-}
-
-type ForecastAlert = {
-  type: string;
-  severity: "critical" | "warn";
-  reason: string;
-  days_until_threshold: number;
-};
-
-// Plain-language restock recommendation — the translated, staff-facing form
-// of whatever the forecast math already produced. See
-// _compute_restock_recommendation in main.py: this is a pure post-processing
-// step over the point forecast, not a second model.
-type RestockRecommendation = {
-  blood_type: string;
-  breach_date: string;
-  days_until_breach: number;
-  recommended_units: number;
-};
-
-// Blood-bank-type facilities: /forecast returns this shape (Steps 4 + SARIMAX work).
-type ForecastView = {
-  view: "forecast";
-  has_sufficient_history: boolean;
-  days_of_history: number;
-  min_days_required: number;
-  is_dengue_season: boolean;
-  forecast_source: "sarimax_facility_history" | "linear_trend" | "synthetic_model_stand_in" | "none";
-  synthetic_model_label?: string;
-  // Only present when forecast_source is "sarimax_facility_history" — see
-  // _fit_sarimax_facility_forecast in main.py.
-  sarimax_model_label?: string;
-  sarimax_fallback_types?: string[];
-  // {blood_type: "SARIMAX(p,d,q)x(P,D,Q,s)+dengue [grid-searched|ai-recommended|default-order]"} for
-  // every type that has a SARIMAX forecast. A type missing from it is on the linear trend.
-  sarimax_orders?: Record<string, string>;
-  sarimax_min_days_required?: number;
-  // Present (non-null) on both the linear_trend and sarimax_facility_history
-  // paths once at least one blood type has an interval to report — see
-  // _prediction_interval_half_width / _fit_sarimax_facility_forecast in
-  // main.py. null on every other path (synthetic never has one; "none" has
-  // no series at all).
-  interval_confidence: number | null;
-  restock_recommendations: RestockRecommendation[];
-  // null only on the "none" (no forecast at all yet) source — every other
-  // source always says one or the other.
-  // "pending" = some blood types are still being calculated and none of the ready
-  // ones needs action yet, so "on_track" would be a claim the server can't make.
-  restock_status: "on_track" | "action_needed" | "pending" | null;
-  // Blood types the server hasn't fitted yet (it fits a couple per request); the
-  // dashboard re-asks until this is empty. `series` (the facility-wide total) is
-  // empty while any are pending. Absent on the non-SARIMAX paths.
-  pending_types?: string[];
-  types_total?: number;
-  // The forward checkpoints (Today, Day 5 ... Day 30); `date` is the calendar date each one falls on.
-  series: SeriesPoint[];
-  // The last 90 days of the facility's total stock, oldest first, ending today. observed=false marks a day
-  // nobody recorded: its units are the last recorded value carried forward, as the model was fed it. Present
-  // even while the forecast is pending; absent from an older API.
-  history?: HistoryPoint[];
-  alerts: ForecastAlert[];
-};
-
-// True once the forecast is derived from this facility's own real history —
-// via either method (SARIMAX once there's enough of it, a linear trend
-// before that) — as opposed to the synthetic stand-in or no data at all.
-function isRealForecastSource(source: ForecastView["forecast_source"]): boolean {
-  return source === "sarimax_facility_history" || source === "linear_trend";
-}
-
-// breach_date is a date-only string ("2026-09-30") — parsed via its Y/M/D
-// components (not `new Date(isoString)`) so this always reads as the local
-// calendar date it names, the same UTC-vs-local pitfall already fixed for
-// expiry dates in inventoryTypes.ts's toInventoryUnit.
-function formatBreachDate(isoDate: string): string {
-  const [year, month, day] = isoDate.split("-").map(Number);
-  return new Date(year, month - 1, day).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-// The one plain-language sentence a non-technical staff member needs per
-// at-risk type: what, how much, how soon, and why — no mention of the
-// model, checkpoints, or any other forecasting-internals vocabulary.
-function formatRecommendationSentence(rec: RestockRecommendation, minimumUnits: number | undefined): string {
-  const timing = rec.days_until_breach <= 0 ? "now" : `within ${rec.days_until_breach} day${rec.days_until_breach === 1 ? "" : "s"}`;
-  const minimumClause = minimumUnits !== undefined ? `its ${minimumUnits}-unit minimum` : "its minimum";
-  const whenClause = rec.days_until_breach <= 0 ? "today" : `around ${formatBreachDate(rec.breach_date)}`;
-  return `restock about ${rec.recommended_units} unit${rec.recommended_units === 1 ? "" : "s"} ${timing} (projected below ${minimumClause} ${whenClause})`;
-}
-
 type DashboardData = ForecastView | ThresholdView;
 
-// A single blood type's card in the "Status by Type" grid. Split out from
-// the grid's .map so it can hold its own useFlashOnChange — a brief ring
-// pulse plays exactly when this type's status actually flips (e.g. Adequate
-// -> Below minimum), not on every render the grid happens to re-render for.
-function StatusTypeTile({ bloodType, units, minimumUnits }: { bloodType: string; units: number; minimumUnits: number }) {
-  const status = stockStatus(units, minimumUnits);
-  const notStocked = isNotStocked(units, minimumUnits);
-  const style = notStocked ? EXPIRED_STYLE : STATUS_STYLES[status];
-  const label = notStocked ? "Not stocked" : STOCK_LABELS[status];
-  const flash = useFlashOnChange(status);
-  return (
-    <div
-      className={`rounded-xl border p-4 ${style.panel} ${flash ? "animate-value-flash-ring" : ""}`}
-      style={{ "--flash-ring-color": STATUS_HEX[status] } as React.CSSProperties}
-    >
-      <div className="flex items-center justify-between mb-1.5">
-        <BloodTypeBadge type={bloodType} size="md" />
-        {notStocked ? <span className={`inline-block w-2 h-2 rounded-full ${style.dot} mr-1.5`} /> : <StatusDot status={status} />}
-      </div>
-      <div className={`text-3xl font-display font-bold leading-tight tabular-nums ${style.text}`}>{units}</div>
-      <div className={`text-[14px] font-semibold mt-0.5 ${style.text}`}>{label}</div>
-    </div>
-  );
-}
+// ─── Dashboard ───────────────────────────────────────────────────────────────
+// The data both facility types share (the stock summary, /forecast, the request list) is loaded here, and each type has its
+// own view: HospitalDashboardView for a hospital's threshold view, BankDashboardView for a blood bank's forecast view. The
+// server decides which one once /forecast has answered (it follows the acting facility, which ?dev=1 can override).
 
-// "B- at 15 of 26 minimum units · …" for the hero banner: actual counts, not
-// the band edges, worst ratio first, capped at three so the line stays one
-// line — "+N more" keeps it matching the headline's count.
-function describeStockRows(rows: InventorySummaryRow[]): string {
-  const worstFirst = [...rows].sort((a, b) => a.units / a.minimum_units - b.units / b.minimum_units);
-  const shown = worstFirst.slice(0, 3).map((r) => `${r.blood_type} at ${r.units} of ${r.minimum_units} minimum units`);
-  if (rows.length > 3) shown.push(`+${rows.length - 3} more`);
-  return shown.join(" · ");
-}
-
-// The forecast panels only exist once /forecast has answered, so before that
-// (first load, or a first load that failed) the whole panel used to be absent:
-// no loading text, and on a timeout nothing at all. This stands in for it. It
-// is deliberately separate from the "Collecting Data" / reference-model states,
-// which are real answers from the server, not the absence of one.
-function ForecastPendingCard({ title, error, onRetry, progress }: { title: string; error: string | null; onRetry: () => void; progress?: string }) {
-  return (
-    <div className="lg:col-span-2 self-start bg-card border border-border rounded-xl p-6 flex flex-col">
-      <h3 className="font-semibold text-foreground text-[19px] mb-1">{title}</h3>
-      {error === null ? (
-        <div role="status" className="py-8 text-center text-[15px] text-foreground leading-relaxed">
-          {progress ?? "Loading forecast…"}
-          <br />
-          <span className="text-[13.5px] text-muted-foreground">
-            {progress
-              ? "This page updates by itself as each blood type finishes. It can take a couple of minutes after new data is added."
-              : "The first load after new data is added can take a moment."}
-          </span>
-        </div>
-      ) : (
-        <div role="alert" className="py-8 text-center text-[15px] text-foreground leading-relaxed">
-          <span className="text-status-critical-text font-semibold">The forecast didn't load.</span>
-          <br />
-          <span className="text-[13.5px] text-muted-foreground">
-            Your stock and the rest of the dashboard are unaffected. If the server is still working on it, a retry in a
-            moment will usually succeed. ({error})
-          </span>
-          <div className="mt-3">
-            <button
-              onClick={onRetry}
-              className="h-8 px-3 bg-primary text-white rounded-lg text-[13px] font-semibold hover:bg-primary-hover transition-colors"
-            >
-              Retry
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-export function DashboardScreen({ onRequestBloodType, onViewRequests }: { onRequestBloodType: (bloodType: string, quantity?: number) => void; onViewRequests: () => void }) {
+export function DashboardScreen({
+  onRequestBloodType, onViewRequests, onViewInventory,
+}: {
+  onRequestBloodType: (bloodType: string, quantity?: number, component?: string) => void;
+  onViewRequests: () => void;
+  onViewInventory: () => void;
+}) {
   const [summary, setSummary] = useState<InventorySummaryRow[]>([]);
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [summaryError, setSummaryError] = useState<string | null>(null);
 
+  // A hospital's expiring units come from the full unit list. A blood bank's come grouped from /inventory/expiring (see
+  // BankDashboardView), so it does not load every unit just to find the few that expire.
   const [expiryUnits, setExpiryUnits] = useState<InventoryUnit[]>([]);
   const [expiryLoading, setExpiryLoading] = useState(true);
   const [expiryError, setExpiryError] = useState<string | null>(null);
 
-  // Both lists default to a 3-item preview so a facility with many shortages/
-  // expiring units doesn't force its card (and, since these two cards sit in
-  // the same grid row, its sibling too) to grow arbitrarily tall.
-  const VISIBLE_ITEM_LIMIT = 3;
-  const FORECAST_PENDING_POLL_MS = 2000;
-  const [showAllExpiry, setShowAllExpiry] = useState(false);
-
-  // The forecast card leads with plain-language recommendations; the actual
-  // trend chart is real supporting detail, not the headline, so it starts
-  // collapsed. Likewise the "95% prediction interval" explanation stays
-  // tucked behind its own toggle rather than printed inline as jargon.
-  const [showTrendDetail, setShowTrendDetail] = useState(false);
-  const [showIntervalDetail, setShowIntervalDetail] = useState(false);
-
-  // Named for what it actually is now — either a blood bank's forecast or a
-  // hospital's threshold view, discriminated by "view" (see DashboardData).
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(null);
   const [forecastLoading, setForecastLoading] = useState(true);
   const [forecastError, setForecastError] = useState<string | null>(null);
+  const FORECAST_PENDING_POLL_MS = 2000;
 
   // The requests this facility is party to: a hospital's own outgoing ones, a blood bank's incoming ones. null until
   // the first answer; requestsFailed says that answer never came.
   const [requestRows, setRequestRows] = useState<RequestRow[] | null>(null);
   const [requestsFailed, setRequestsFailed] = useState(false);
 
-  // Historical inventory-snapshot backfill — only ever rendered when
-  // dashboardData.view === "forecast", i.e. never for hospitals (see
-  // DashboardData and _build_hospital_threshold_view server-side).
-  const historyFileInputRef = useRef<HTMLInputElement>(null);
-  const [uploadingHistory, setUploadingHistory] = useState(false);
-  const [historyUploadResult, setHistoryUploadResult] = useState<HistoricalUploadResult | null>(null);
-  const [historyUploadError, setHistoryUploadError] = useState<string | null>(null);
-  const [backfillUploadHistoryKey, setBackfillUploadHistoryKey] = useState(0);
-
   useEffect(() => {
     let cancelled = false;
-    // latestRequestId guards against response reordering, not just unmount:
-    // this panel is, per the poll comment above, the one most exposed to
-    // Render's cold-start delay, so a slow initial request can resolve AFTER
-    // a later 25s-poll response already landed — without this check it would
-    // silently revert the grid back to stale numbers.
+    // latestRequestId guards against response reordering, not just unmount: a slow initial request (Render's cold start)
+    // can resolve AFTER a later 25s-poll response already landed, and would silently revert the numbers.
     let latestRequestId = 0;
-    // Silent background refresh (no loading flag on subsequent ticks) so
-    // the Status by Type grid reflects changes made by other facilities —
-    // and so a status that flips while this screen is open actually plays
-    // the value-flash instead of only ever showing the state as of page load.
+    // Silent background refresh (no loading flag on subsequent ticks) so the numbers reflect changes made by other facilities.
     function loadSummary(isFirstLoad: boolean) {
       const requestId = ++latestRequestId;
       apiGet<InventorySummaryRow[]>("/inventory/summary")
@@ -292,6 +67,11 @@ export function DashboardScreen({ onRequestBloodType, onViewRequests }: { onRequ
   }, []);
 
   useEffect(() => {
+    // The account's own type is the best guess before /forecast answers; under the dev override it can be wrong, so load then.
+    if (!isDevModeEnabled() && getCurrentUser()?.facility_type === "bloodbank") {
+      setExpiryLoading(false);
+      return;
+    }
     let cancelled = false;
     apiGet<InventoryApiRow[]>("/inventory")
       .then((data) => { if (!cancelled) setExpiryUnits(data.map(toInventoryUnit)); })
@@ -300,14 +80,10 @@ export function DashboardScreen({ onRequestBloodType, onViewRequests }: { onRequ
     return () => { cancelled = true; };
   }, []);
 
-  // Shared across every call site (initial mount, post-upload, and undo's
-  // onUndone) so a slow earlier request can never clobber a faster later one
-  // — e.g. a slow initial /forecast landing AFTER a post-upload reload
-  // already showed "Real forecast active" would otherwise silently revert
-  // the screen back to "Not enough history yet".
+  // Shared across every call site (initial mount, post-upload, undo) so a slow earlier request can never clobber a faster
+  // later one.
   const forecastRequestIdRef = useRef(0);
-  // silent = a follow-up poll for still-pending blood types: keep showing what we
-  // have instead of flipping the panel back to "Loading…".
+  // silent = a follow-up poll for still-pending blood types: keep showing what we have instead of flipping back to "Loading…".
   function loadForecast(silent = false) {
     const requestId = ++forecastRequestIdRef.current;
     if (!silent) setForecastLoading(true);
@@ -319,99 +95,36 @@ export function DashboardScreen({ onRequestBloodType, onViewRequests }: { onRequ
   }
   useEffect(() => { loadForecast(); }, []);
 
-  // The server fits only a couple of blood types per request and lists the rest
-  // as pending; ask again (after the previous answer, never overlapping) until none are.
+  // The server fits only a couple of blood types per request and lists the rest as pending; ask again (after the previous
+  // answer, never overlapping) until none are.
   const pendingCount = dashboardData?.view === "forecast" ? (dashboardData.pending_types?.length ?? 0) : 0;
-  // The trend chart has something to draw once there is a forecast or any recorded history (history is
-  // independent of the fits, so it is there while forecasts are still pending).
-  const hasTrend = dashboardData?.view === "forecast" && (dashboardData.series.length > 0 || (dashboardData.history?.length ?? 0) > 0);
-  const nothingReadyYet =
-    dashboardData?.view === "forecast" && pendingCount > 0 && pendingCount === dashboardData.types_total;
   useEffect(() => {
     if (pendingCount === 0 || forecastLoading || forecastError) return;
     const timer = setTimeout(() => loadForecast(true), FORECAST_PENDING_POLL_MS);
     return () => clearTimeout(timer);
   }, [dashboardData, forecastLoading, forecastError]);
 
-  async function handleHistoryFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploadingHistory(true);
-    setHistoryUploadError(null);
-    setHistoryUploadResult(null);
-    try {
-      const result = await uploadHistoricalInventorySnapshots(file);
-      setHistoryUploadResult(result);
-      loadForecast();
-      setBackfillUploadHistoryKey((k) => k + 1);
-    } catch (err) {
-      setHistoryUploadError(err instanceof Error ? err.message : "Upload failed");
-    } finally {
-      setUploadingHistory(false);
-      if (historyFileInputRef.current) historyFileInputRef.current.value = "";
-    }
-  }
-
   useEffect(() => {
     if (!dashboardData?.view) return;
     let cancelled = false;
-    // Hospitals see their own outgoing requests; blood banks the requests directed at them as the supplier —
-    // /requests/incoming is the same endpoint the Transfer tab's "Incoming Requests" panel already uses.
-    const isHospital = dashboardData.view === "threshold_status";
-    const endpoint = isHospital ? "/requests" : "/requests/incoming";
+    // Hospitals see their own outgoing requests; blood banks the requests directed at them as the supplier.
+    const endpoint = dashboardData.view === "threshold_status" ? "/requests" : "/requests/incoming";
     function load() {
       apiGet<RequestRow[]>(endpoint)
         .then((rows) => { if (!cancelled) { setRequestRows(rows); setRequestsFailed(false); } })
         .catch(() => { if (!cancelled) setRequestsFailed(true); }); // a failed refresh keeps what is already on screen
     }
     load();
-    // A hospital's column shows each request's status, which changes while the page is open.
-    const interval = isHospital ? setInterval(load, SUMMARY_POLL_MS) : undefined;
-    return () => { cancelled = true; if (interval) clearInterval(interval); };
+    // Both sides' request lists change while the page is open: a hospital's statuses, a bank's waiting requests.
+    const interval = setInterval(load, SUMMARY_POLL_MS);
+    return () => { cancelled = true; clearInterval(interval); };
   }, [dashboardData?.view]);
 
-  const totalUnits = summary.reduce((a, b) => a + b.units, 0);
-  // Sum of every type's own minimum — the forecast chart plots TOTAL units
-  // (all 8 types combined), so "minimum" only means anything there as this
-  // combined figure; it's not any single type's own threshold.
-  const totalMinimumUnits = summary.reduce((a, b) => a + b.minimum_units, 0);
   const expiringRows = expiryUnits.filter((r) => {
     const status = getExpiryStatus(r.daysLeft);
     return status === "critical" || status === "near-expiry";
   });
 
-  // One overall read on "are we okay," not four competing numbers — worst
-  // condition present wins: critically low outranks below minimum, which
-  // outranks everything being fine; the second hero line keeps below-minimum
-  // types visible under a critical headline. Minimum-0 types are always
-  // "safe" (see stockStatus), so they never count here. See STATUS_STYLES.
-  const criticalTypes = summary.filter((b) => stockStatus(b.units, b.minimum_units) === "critical");
-  const watchTypes = summary.filter((b) => stockStatus(b.units, b.minimum_units) === "watch");
-  const heroStatus: StatusLevel =
-    criticalTypes.length > 0 ? "critical" : watchTypes.length > 0 || expiringRows.length > 0 ? "watch" : "safe";
-  const heroHeadline =
-    heroStatus === "critical"
-      ? `${criticalTypes.length} blood type${criticalTypes.length === 1 ? "" : "s"} critically low`
-      : heroStatus === "watch" && watchTypes.length > 0
-      ? `${watchTypes.length} blood type${watchTypes.length === 1 ? "" : "s"} below minimum`
-      : heroStatus === "watch"
-      ? `${expiringRows.length} unit${expiringRows.length === 1 ? "" : "s"} expiring within 7 days`
-      : "Supply steady across all types";
-  const heroDetail =
-    heroStatus === "critical"
-      ? describeStockRows(criticalTypes)
-      : heroStatus === "watch" && watchTypes.length > 0
-      ? describeStockRows(watchTypes)
-      : heroStatus === "watch"
-      ? "See Expiry Warnings below for which units"
-      : "No shortages or expiring stock flagged right now";
-
-  const activeRequests = requestRows?.filter(isOutstandingRequest) ?? null;
-  const activeRequestsCount = activeRequests?.length ?? null;
-  const activeRequestsEmergencyCount = activeRequests?.filter((r) => r.emergency_type === "trauma" || r.emergency_type === "scheduled_surgery").length ?? null;
-
-  // Which layout to draw. The server decides once /forecast has answered (it follows the acting facility, which
-  // ?dev=1 can override); until then the logged-in account's own type is the best guess.
   const isHospitalView = dashboardData
     ? dashboardData.view === "threshold_status"
     : getCurrentUser()?.facility_type === "hospital";
@@ -437,757 +150,20 @@ export function DashboardScreen({ onRequestBloodType, onViewRequests }: { onRequ
   }
 
   return (
-    <div className="max-w-screen-2xl mx-auto px-6 py-6 space-y-6">
-      {/* Hero status — the one thing to know at a glance. Shaped like the
-          real hero banner below (headline + detail + 3 stats) so the layout
-          doesn't jump once real data arrives — this is the panel most
-          exposed to Render's cold-start delay, since it's the first thing
-          rendered after login. */}
-      {(summaryLoading || expiryLoading) && (
-        <div className="rounded-xl border border-border bg-card p-6">
-          <div className="flex items-start justify-between gap-6 flex-wrap">
-            <div className="flex-1 min-w-[260px] space-y-2.5">
-              <Skeleton className="h-3.5 w-28" />
-              <Skeleton className="h-7 w-72 max-w-full" />
-              <Skeleton className="h-4 w-52 max-w-full" />
-            </div>
-            <div className="flex items-center gap-6 sm:gap-8 flex-wrap">
-              {[0, 1, 2].map((i) => (
-                <div key={i} className="space-y-1.5">
-                  <Skeleton className="h-3 w-20" />
-                  <Skeleton className="h-7 w-12" />
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-      {!summaryLoading && !expiryLoading && (summaryError || expiryError) && (
-        <div className="rounded-xl border border-status-critical-border bg-status-critical-tint p-6 text-center text-[15px] text-status-critical-text">
-          Failed to load supply status: {summaryError || expiryError}
-        </div>
-      )}
-      {!summaryLoading && !expiryLoading && !summaryError && !expiryError && (
-        <div className={`rounded-xl border p-7 animate-card-rise-in ${STATUS_STYLES[heroStatus].panel}`} style={{ animationDelay: "250ms" }}>
-          <div className="flex items-start justify-between gap-6 flex-wrap">
-            <div className="flex-1 min-w-[260px]">
-              <div className="flex items-center gap-2 mb-2">
-                <StatusDot status={heroStatus} />
-                <span className={`text-[13px] font-bold uppercase tracking-wider ${STATUS_STYLES[heroStatus].text}`}>
-                  Supply Status
-                </span>
-              </div>
-              <h2 className={`font-display font-extrabold text-[30px] leading-tight tracking-tight text-balance ${STATUS_STYLES[heroStatus].text}`}>
-                {heroHeadline}
-              </h2>
-              <p className="text-[15px] text-foreground mt-1.5">{heroDetail}</p>
-              {heroStatus === "critical" && watchTypes.length > 0 && (
-                <p className="text-[15px] text-foreground mt-1">Also below minimum: {describeStockRows(watchTypes)}</p>
-              )}
-            </div>
-
-            <div className="flex items-center gap-6 sm:gap-8 flex-wrap">
-              <div>
-                <div className="text-[12px] font-bold uppercase tracking-wide text-foreground mb-1">Total Units</div>
-                <div className="text-3xl font-display font-bold tabular-nums text-foreground">{totalUnits}</div>
-              </div>
-              <div className="w-px h-10 bg-border hidden sm:block" />
-              <div>
-                <div className="text-[12px] font-bold uppercase tracking-wide text-foreground mb-1">Expiring ≤7d</div>
-                <div className="text-3xl font-display font-bold tabular-nums text-foreground">{expiringRows.length}</div>
-              </div>
-              <div className="w-px h-10 bg-border hidden sm:block" />
-              <div
-                title={
-                  activeRequestsCount !== null
-                    ? `${activeRequestsEmergencyCount ?? 0} emergency, ${activeRequestsCount - (activeRequestsEmergencyCount ?? 0)} routine`
-                    : undefined
-                }
-              >
-                <div className="text-[12px] font-bold uppercase tracking-wide text-foreground mb-1">Active Requests</div>
-                <div className="text-3xl font-display font-bold tabular-nums text-foreground">
-                  {activeRequestsCount === null ? "…" : activeRequestsCount}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Blood type breakdown */}
-      {summaryLoading && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <div className="lg:col-span-2 bg-card border border-border rounded-xl p-6">
-            <Skeleton className="h-4 w-44 mb-2" />
-            <Skeleton className="h-3.5 w-56 mb-5" />
-            <Skeleton className="h-[220px] w-full" />
-          </div>
-          <div className="bg-card border border-border rounded-xl p-6">
-            <Skeleton className="h-4 w-28 mb-4" />
-            <div className="grid grid-cols-2 gap-2">
-              {Array.from({ length: 8 }).map((_, i) => (
-                <div key={i} className="rounded-lg border border-border p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Skeleton className="h-6 w-9" />
-                    <Skeleton className="h-2.5 w-2.5 rounded-full" />
-                  </div>
-                  <Skeleton className="h-6 w-10" />
-                  <Skeleton className="h-3.5 w-16" />
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-      {!summaryLoading && summaryError && (
-        <div className="bg-status-critical-tint border border-status-critical-border rounded-xl p-6 text-center text-[14px] text-status-critical-text">
-          Failed to load inventory summary: {summaryError}
-        </div>
-      )}
-      {!summaryLoading && !summaryError && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 animate-card-rise-in" style={{ animationDelay: "750ms" }}>
-          <div className="lg:col-span-2 bg-card border border-border rounded-xl p-6 flex flex-col">
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 mb-5">
-              <div>
-                <h3 className="font-semibold text-foreground text-[19px]">Inventory by Blood Type</h3>
-                <p className="text-[15px] text-foreground mt-0.5">
-                  Current units vs. minimum/maximum thresholds
-                </p>
-              </div>
-              {/* Swatch colors are picked to exactly match what's actually
-                  drawn in the chart below, not approximated with a generic
-                  Tailwind shade — "Current" uses the same teal as a
-                  fully-stocked bar (its most common real state; watch/critical
-                  types still render amber/red in the chart itself), and
-                  Minimum/Maximum reuse their bars' literal hex values. */}
-              <div className="flex flex-wrap gap-x-3.5 gap-y-1 text-[15px] font-semibold text-foreground">
-                <span className="flex items-center gap-2">
-                  <span className="w-3.5 h-3.5 rounded-sm inline-block" style={{ backgroundColor: "#0F766E" }} /> Current
-                </span>
-                <span className="flex items-center gap-2">
-                  <span className="w-3.5 h-3.5 rounded-sm inline-block" style={{ backgroundColor: "#A9A29A" }} /> Minimum
-                </span>
-                <span className="flex items-center gap-2">
-                  <span className="w-3.5 h-3.5 rounded-sm inline-block border-2 border-info" style={{ backgroundColor: "#DCE7FB" }} /> Maximum
-                </span>
-              </div>
-            </div>
-            {/* flex-1 lets the chart claim whatever height the grid row
-                actually stretched this card to (set by the taller "Status by
-                Type" card alongside it), instead of staying a fixed 220px
-                and leaving the rest of the card blank. min-h keeps it usable
-                if this card is ever the tall one instead. */}
-            <div className="flex-1 min-h-[220px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={summary} barGap={2} barCategoryGap="25%">
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.35} vertical={false} />
-                <XAxis
-                  dataKey="blood_type"
-                  tick={{ fontSize: 15, fontFamily: "var(--font-body)", fill: "var(--foreground)", fontWeight: 700 }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <YAxis
-                  tick={{ fontSize: 13, fontFamily: "var(--font-body)", fill: "var(--foreground)", fontWeight: 700 }}
-                  axisLine={false}
-                  tickLine={false}
-                  width={34}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "var(--card)",
-                    border: "1px solid var(--border)",
-                    borderRadius: "8px",
-                    fontSize: 14,
-                    fontFamily: "var(--font-body)",
-                  }}
-                  labelStyle={{ color: "var(--foreground)", fontWeight: 700, marginBottom: 4 }}
-                  itemStyle={{ color: "var(--foreground)", fontWeight: 700 }}
-                  cursor={{ fill: "var(--secondary)" }}
-                />
-                <Bar dataKey="units" radius={[4, 4, 0, 0]} name="Units">
-                  {summary.map((entry, i) => (
-                    <Cell key={`bt-${i}`} fill={STATUS_HEX[stockStatus(entry.units, entry.minimum_units)]} />
-                  ))}
-                </Bar>
-                {/* var(--gray-400) is the app's neutral-scale token — reads
-                    correctly against the chart background in both themes,
-                    unlike a hardcoded hex snapshot of just the light value. */}
-                <Bar dataKey="minimum_units" fill="var(--gray-400)" radius={[4, 4, 0, 0]} name="Minimum" />
-                <Bar dataKey="maximum_units" fill="var(--info-tint)" stroke="var(--info)" strokeWidth={1.5} radius={[4, 4, 0, 0]} name="Maximum" />
-              </BarChart>
-            </ResponsiveContainer>
-            </div>
-          </div>
-
-          {/* Type grid */}
-          <div className="bg-card border border-border rounded-xl p-6">
-            <h3 className="font-semibold text-foreground text-[19px] mb-4">Status by Type</h3>
-            <div className="grid grid-cols-2 gap-2">
-              {summary.map((bt) => (
-                <StatusTypeTile key={bt.blood_type} bloodType={bt.blood_type} units={bt.units} minimumUnits={bt.minimum_units} />
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Forecast/Threshold + Alert/Action + Expiry */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {(!dashboardData || nothingReadyYet) && (
-          <ForecastPendingCard
-            title="Restock Outlook"
-            error={forecastLoading ? null : (forecastError ?? (nothingReadyYet ? null : "no response"))}
-            onRetry={() => loadForecast()}
-            progress={nothingReadyYet ? `Calculating your forecast: 0 of ${dashboardData.types_total} blood types ready…` : undefined}
-          />
-        )}
-
-        {dashboardData?.view === "forecast" && !nothingReadyYet && (() => {
-          const recommendationByType = new Map(
-            dashboardData.restock_recommendations.map((r) => [r.blood_type, r])
-          );
-          return (
-          <div className="lg:col-span-2 bg-card border border-border rounded-xl p-6 flex flex-col">
-            <div className="flex items-center justify-between mb-1">
-              <h3 className="font-semibold text-foreground text-[19px]">Restock Outlook</h3>
-              {dashboardData.forecast_source === "synthetic_model_stand_in" && (
-                <span className="flex items-center gap-1 text-[13px] font-bold text-synthetic-text bg-synthetic-tint px-2 py-0.5 rounded-full border border-synthetic-border">
-                  <FlaskConical size={13} /> Synthetic Model
-                </span>
-              )}
-              {isRealForecastSource(dashboardData.forecast_source) && dashboardData.restock_status === "action_needed" && (
-                <span className="flex items-center gap-1 text-[13px] font-bold text-status-watch-text bg-status-watch-tint px-2 py-0.5 rounded-full border border-status-watch-border">
-                  <AlertTriangle size={13} /> Action Needed
-                </span>
-              )}
-              {isRealForecastSource(dashboardData.forecast_source) && dashboardData.restock_status === "pending" && (
-                <span className="flex items-center gap-1 text-[13px] font-bold text-foreground bg-secondary px-2 py-0.5 rounded-full border border-border">
-                  <Clock size={13} /> Calculating…
-                </span>
-              )}
-              {isRealForecastSource(dashboardData.forecast_source) && dashboardData.restock_status === "on_track" && (
-                <span className="flex items-center gap-1 text-[13px] font-bold text-status-safe-text bg-status-safe-tint px-2 py-0.5 rounded-full border border-status-safe-border">
-                  <CheckCircle size={13} /> On Track
-                </span>
-              )}
-              {dashboardData.forecast_source === "none" && (
-                <span className="flex items-center gap-1 text-[13px] font-bold text-foreground bg-secondary px-2 py-0.5 rounded-full border border-border">
-                  <Clock size={13} /> Collecting Data
-                </span>
-              )}
-            </div>
-            <p className="text-[15px] text-foreground mb-4">
-              {dashboardData.forecast_source === "none" &&
-                "What to restock and when — once enough daily stock records are on file."}
-              {dashboardData.forecast_source === "synthetic_model_stand_in" &&
-                "What to restock over the next 30 days — based on a reference model, not yet this facility's own history (see below)."}
-              {isRealForecastSource(dashboardData.forecast_source) &&
-                "What to restock over the next 30 days, based on this facility's own recent history. These are estimates, not guarantees."}
-            </p>
-
-            {/* Historical backfill — lets a facility with real past
-                records skip the days_of_history wait instead of it. */}
-            <input
-              ref={historyFileInputRef}
-              type="file"
-              accept=".csv"
-              onChange={handleHistoryFileSelected}
-              className="hidden"
-            />
-
-            {forecastLoading && (
-              <div className="py-8 text-center text-[15px] text-foreground">Loading forecast…</div>
-            )}
-            {!forecastLoading && forecastError && (
-              <div className="py-8 text-center text-[15px] text-status-critical-text">
-                Failed to load: {forecastError}
-                <div className="mt-3">
-                  <button onClick={() => loadForecast()} className="h-8 px-3 bg-primary text-white rounded-lg text-[13px] font-semibold hover:bg-primary-hover transition-colors">
-                    Retry
-                  </button>
-                </div>
-              </div>
-            )}
-            {!forecastLoading && !forecastError && dashboardData.forecast_source === "none" && (
-              <div className="py-6 text-center text-[15px] text-foreground leading-relaxed">
-                Not enough history yet to forecast a trend.
-                <br />
-                Collecting daily snapshots: <strong className="text-foreground">{dashboardData.days_of_history}</strong> of{" "}
-                <strong className="text-foreground">{dashboardData.min_days_required}</strong> days needed.
-              </div>
-            )}
-
-            {!forecastLoading && !forecastError && dashboardData.forecast_source !== "none" && (
-              <>
-                {/* Lead with the plain-language answer: what to restock and
-                    when, in staff-facing language — no model/checkpoint
-                    vocabulary. The chart and its jargon are demoted to the
-                    "Trend detail" disclosure further down. */}
-                {pendingCount > 0 && (
-                  <div role="status" className="mb-3 rounded-lg border border-border bg-secondary px-3.5 py-2.5 text-[13.5px] text-foreground leading-snug">
-                    Still calculating {pendingCount} of {dashboardData.types_total} blood types
-                    ({(dashboardData.pending_types ?? []).join(", ")}). This updates by itself.
-                    {dashboardData.restock_status === "action_needed" && " The items below are for the types that are ready."}
-                  </div>
-                )}
-                {dashboardData.restock_status === "action_needed" ? (
-                  <div className="mb-4 space-y-2">
-                    {dashboardData.restock_recommendations.map((rec) => {
-                      const minimumUnits = summary.find((s) => s.blood_type === rec.blood_type)?.minimum_units;
-                      const urgent = rec.days_until_breach <= 14;
-                      return (
-                        <div
-                          key={rec.blood_type}
-                          className={`rounded-lg border px-3.5 py-3 flex items-start gap-2.5 ${
-                            urgent
-                              ? "border-status-critical-border bg-status-critical-tint"
-                              : "border-status-watch-border bg-status-watch-tint"
-                          }`}
-                        >
-                          <AlertTriangle
-                            size={16}
-                            className={`shrink-0 mt-0.5 ${urgent ? "text-status-critical-text" : "text-status-watch-text"}`}
-                          />
-                          <p className={`text-[14px] leading-snug ${urgent ? "text-status-critical-text" : "text-status-watch-text"}`}>
-                            <strong className="font-bold">{rec.blood_type}</strong> —{" "}
-                            {formatRecommendationSentence(rec, minimumUnits)}
-                          </p>
-                        </div>
-                      );
-                    })}
-                    {dashboardData.is_dengue_season && (
-                      <p className="text-[12.5px] text-muted-foreground leading-snug">
-                        Coincides with dengue season, a period of historically elevated demand in this region.
-                      </p>
-                    )}
-                  </div>
-                ) : dashboardData.restock_status === "pending" ? null : (
-                  <div className="mb-4 rounded-lg border border-status-safe-border bg-status-safe-tint px-3.5 py-3 flex items-center gap-2.5">
-                    <CheckCircle size={16} className="text-status-safe-text shrink-0" />
-                    <p className="text-[14px] font-semibold text-status-safe-text">
-                      All blood types on track for the next 30 days
-                      {dashboardData.forecast_source === "synthetic_model_stand_in"
-                        ? " — based on the synthetic reference model."
-                        : ` — based on ${dashboardData.days_of_history} days of history.`}
-                    </p>
-                  </div>
-                )}
-
-                {/* Compact per-type status list — every type at a glance,
-                    not just the ones needing action. */}
-                <div className="mb-4">
-                  <div className="text-[12px] font-bold text-muted-foreground uppercase tracking-wide mb-2">
-                    Per-type outlook
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-2">
-                    {summary.map((s) => {
-                      const rec = recommendationByType.get(s.blood_type);
-                      // Which mechanism produced this type's forecast. Neutral on purpose: the status
-                      // colors above mean stock status, and this tag is not a status.
-                      const sourceTag = forecastSourceTag(dashboardData, s.blood_type);
-                      return (
-                        <div key={s.blood_type} className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12.5px] min-w-0">
-                            <BloodTypeBadge type={s.blood_type} size="sm" />
-                            {(dashboardData.pending_types ?? []).includes(s.blood_type) ? (
-                              <span className="text-muted-foreground font-semibold">Calculating…</span>
-                            ) : rec ? (
-                              <span className="text-status-watch-text font-semibold">
-                                ⚠ {rec.recommended_units} by {formatBreachDate(rec.breach_date)}
-                              </span>
-                            ) : (
-                              <span className="text-status-safe-text font-semibold">✓ On track</span>
-                            )}
-                          </div>
-                          {sourceTag && (
-                            <span
-                              title={sourceTag.title}
-                              className="mt-1 block w-fit max-w-full truncate rounded-full border border-border bg-secondary px-2 py-px text-[11px] font-semibold text-muted-foreground"
-                            >
-                              {sourceTag.text}
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Trend detail — the chart, demoted to supporting detail
-                    behind a disclosure instead of leading the card. */}
-                <div className="border-t border-border pt-3">
-                  <button
-                    type="button"
-                    onClick={() => setShowTrendDetail((v) => !v)}
-                    aria-expanded={showTrendDetail}
-                    disabled={!hasTrend}
-                    className="flex items-center gap-1.5 text-[13px] font-bold text-muted-foreground hover:text-foreground transition-colors disabled:opacity-60 disabled:cursor-default"
-                  >
-                    <TrendingUp size={14} />
-                    {!hasTrend
-                      ? "Trend detail appears once every blood type is calculated"
-                      : showTrendDetail ? "Hide trend detail" : "View trend detail"}
-                  </button>
-
-                  {showTrendDetail && hasTrend && (() => {
-                    // The backend omits this key entirely (rather than sending
-                    // null) on the synthetic path, so `!== null` alone lets
-                    // `undefined` through and produces "NaN%" below — check the
-                    // actual type instead of trusting the declared null-only union.
-                    const hasInterval = typeof dashboardData.interval_confidence === "number";
-                    const isStandIn = dashboardData.forecast_source === "synthetic_model_stand_in";
-                    const chart = buildTrendChart({ history: dashboardData.history, series: dashboardData.series, standIn: isStandIn });
-                    // Projected values use the forecast colour (violet for the synthetic
-                    // stand-in); recorded history keeps the role accent, or a neutral
-                    // grey beside a stand-in so it never reads as part of that forecast.
-                    const forecastColor = isStandIn ? "var(--synthetic)" : "var(--role-accent)";
-                    const historyColor = chart.historyTone === "neutral" ? "var(--gray-500)" : "var(--role-accent)";
-                    const dotsOnly = chart.mode === "dots";
-                    const widestRun = chart.filledRuns.reduce<{ from: number; to: number } | null>(
-                      (best, r) => (best === null || r.to - r.from > best.to - best.from ? r : best), null);
-                    return (
-                      <div className="mt-3">
-                        <p className="text-[13px] text-foreground mb-2">
-                          Total units across every blood type combined. A steady total doesn't mean every type is steady —
-                          see the per-type outlook above.
-                        </p>
-                        {!chart.hasForecast && (
-                          <p className="text-[13px] font-semibold text-foreground mb-2">
-                            The forecast is still calculating. Recorded stock so far is shown.
-                          </p>
-                        )}
-                        <ResponsiveContainer width="100%" height={200}>
-                          {/* Today is the last tick while the forecast is pending, so leave room for its label. */}
-                          <ComposedChart data={chart.points} margin={{ top: 8, right: chart.hasForecast ? 8 : 22, left: 0, bottom: 0 }}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.35} vertical={false} />
-                            <XAxis
-                              // One numeric axis in days from today: history is daily and the
-                              // forecast has a point every 5 days, so a category axis would
-                              // space them equally. Negative = recorded past, 0 = today.
-                              type="number"
-                              dataKey="t"
-                              domain={chart.domain}
-                              ticks={chart.ticks}
-                              interval={0}
-                              tickFormatter={(t: number) => tickLabel(t, chart.todayISO)}
-                              tick={{ fontSize: 12, fill: "var(--foreground)", fontFamily: "var(--font-body)", fontWeight: 700 }}
-                              axisLine={false}
-                              tickLine={false}
-                            />
-                            <YAxis
-                              tick={{ fontSize: 11, fill: "var(--foreground)", fontFamily: "var(--font-body)", fontWeight: 700 }}
-                              axisLine={false}
-                              tickLine={false}
-                              width={34}
-                            />
-                            <Tooltip content={<TrendTooltip todayISO={chart.todayISO} />} cursor={{ stroke: "var(--border)", strokeDasharray: "3 3" }} />
-                            {/* Days nobody recorded: shaded and labelled (once, on the widest
-                                run) so the flat stretch reads as "not recorded", not as a
-                                steady supply. */}
-                            {chart.filledRuns.map((r) => (
-                              <ReferenceArea
-                                key={r.from}
-                                x1={r.from}
-                                x2={r.to}
-                                fill="var(--gray-400)"
-                                fillOpacity={0.18}
-                                stroke="none"
-                                ifOverflow="hidden"
-                                label={r === widestRun ? { value: "Not recorded", position: "insideBottom", fontSize: 11, fontWeight: 700, fill: "var(--foreground)" } : undefined}
-                              />
-                            ))}
-                            {chart.minimumSegment && totalMinimumUnits > 0 && (
-                              <ReferenceLine
-                                segment={[{ x: chart.minimumSegment[0], y: totalMinimumUnits }, { x: chart.minimumSegment[1], y: totalMinimumUnits }]}
-                                stroke="var(--gray-400)"
-                                strokeWidth={1.5}
-                                strokeDasharray="4 4"
-                              />
-                            )}
-                            {hasInterval && chart.hasForecast && (
-                              <>
-                                {/* Stacked-area trick for a shaded confidence band:
-                                    an invisible area up to `lower`, then a visible
-                                    one for the `lower..upper` gap stacked on top —
-                                    reads as "the range this could fall in," far
-                                    more legible than the old whisker caps, and
-                                    gets visibly wider further into the future. */}
-                                <Area dataKey="lower" stackId="ci" stroke="none" fill="transparent" isAnimationActive={false} />
-                                <Area
-                                  dataKey="band"
-                                  stackId="ci"
-                                  stroke={forecastColor}
-                                  strokeWidth={1}
-                                  strokeOpacity={0.35}
-                                  fill={forecastColor}
-                                  fillOpacity={0.3}
-                                  isAnimationActive={false}
-                                />
-                              </>
-                            )}
-                            {/* Not-recorded days, dashed; it also touches the recorded day on
-                                each side so it joins the solid line. */}
-                            {!dotsOnly && (
-                              <Line
-                                type="linear"
-                                dataKey="filledUnits"
-                                stroke="var(--gray-500)"
-                                strokeWidth={2}
-                                strokeDasharray="5 4"
-                                dot={false}
-                                activeDot={false}
-                                connectNulls={false}
-                                isAnimationActive={false}
-                              />
-                            )}
-                            {/* Recorded days: a solid line, or with fewer than 7 recorded
-                                days just the dots (a line through the gaps would be invented). */}
-                            <Line
-                              type="linear"
-                              dataKey="observedUnits"
-                              stroke={dotsOnly ? "none" : historyColor}
-                              strokeWidth={2.5}
-                              dot={{ r: dotsOnly ? 4 : 0, strokeWidth: 0, fill: historyColor }}
-                              activeDot={{ r: 4.5, fill: historyColor }}
-                              connectNulls={false}
-                              isAnimationActive={false}
-                            />
-                            <Line
-                              type="monotone"
-                              dataKey="forecastUnits"
-                              stroke={forecastColor}
-                              strokeWidth={3}
-                              dot={{ r: 3.5, strokeWidth: 0, fill: forecastColor }}
-                              activeDot={{ r: 5 }}
-                              isAnimationActive={false}
-                            />
-                          </ComposedChart>
-                        </ResponsiveContainer>
-                        {/* A small legend instead of labeling the reference line
-                            inline on the chart — this data tends to sit flat and
-                            close to its own minimum, so an inline label kept
-                            landing right on top of the last data point. */}
-                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] font-semibold text-foreground -mt-1 mb-1">
-                          {chart.observedCount > 0 && (
-                            <span className="flex items-center gap-1.5">
-                              <span className="w-3 h-0.5 rounded-full inline-block" style={{ backgroundColor: historyColor }} />
-                              Recorded
-                            </span>
-                          )}
-                          {chart.filledRuns.length > 0 && (
-                            <span className="flex items-center gap-1.5">
-                              <span className="w-3 h-3 inline-block rounded-sm border border-dashed border-gray-500" style={{ backgroundColor: "color-mix(in srgb, var(--gray-400) 18%, transparent)" }} />
-                              Not recorded, carried forward
-                            </span>
-                          )}
-                          {chart.hasForecast && (
-                            <span className="flex items-center gap-1.5">
-                              <span className="w-3 h-0.5 rounded-full inline-block" style={{ backgroundColor: forecastColor }} />
-                              Projected total
-                            </span>
-                          )}
-                          {chart.hasForecast && totalMinimumUnits > 0 && (
-                            <span className="flex items-center gap-1.5">
-                              <span className="w-3 h-0.5 rounded-full inline-block border-t-2 border-dashed border-gray-400" />
-                              Combined minimum ({totalMinimumUnits})
-                            </span>
-                          )}
-                        </div>
-                        {dotsOnly && chart.observedCount > 0 && (
-                          <p className="text-[12.5px] text-foreground leading-snug mb-1">
-                            Only {chart.observedCount} day{chart.observedCount === 1 ? "" : "s"} of stock {chart.observedCount === 1 ? "has" : "have"} been
-                            recorded so far, so just {chart.observedCount === 1 ? "that day is" : "those days are"} shown — no line is drawn through the days
-                            nobody recorded.
-                          </p>
-                        )}
-                        {chart.hasForecast && (
-                          <p className="text-[12.5px] text-foreground leading-snug flex items-start gap-1.5">
-                            <span>
-                              {hasInterval
-                                ? "The shaded band after Today shows the range this could realistically fall in."
-                                : "Line shows the projected trend for total units on file."}
-                            </span>
-                            {hasInterval && (
-                              <button
-                                type="button"
-                                onClick={() => setShowIntervalDetail((v) => !v)}
-                                aria-expanded={showIntervalDetail}
-                                aria-label="What does the shaded band mean, technically?"
-                                title="What does the shaded band mean, technically?"
-                                className="shrink-0 w-4 h-4 rounded-full border border-border text-[10px] font-bold text-muted-foreground hover:text-foreground hover:border-foreground flex items-center justify-center leading-none"
-                              >
-                                ?
-                              </button>
-                            )}
-                          </p>
-                        )}
-                        {hasInterval && chart.hasForecast && showIntervalDetail && (
-                          <p className="text-[11.5px] text-muted-foreground leading-snug mt-1">
-                            Technically, this is a {Math.round((dashboardData.interval_confidence as number) * 100)}% prediction
-                            interval — wider with less history on file or further into the future, narrowing as more real
-                            days accumulate.
-                          </p>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </div>
-              </>
-            )}
-
-            {/* Data provenance — the honesty note on where these numbers
-                come from, kept regardless of trend-detail visibility. */}
-            <div className="mt-4 pt-4 border-t border-border">
-              {!isRealForecastSource(dashboardData.forecast_source) ? (
-                <div className="rounded-lg border border-role-accent-border bg-primary-tint p-3.5">
-                  <div className="flex items-center gap-2.5 mb-3">
-                    <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                      <TrendingUp size={16} className="text-primary" />
-                    </div>
-                    <div>
-                      <div className="text-[14px] font-bold text-foreground leading-tight">Unlock your real forecast</div>
-                      <div className="text-[13px] text-muted-foreground leading-tight">
-                        Have past stock records? Upload them to switch off the synthetic model now.
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mb-3">
-                    <div className="flex items-center justify-between text-[12px] font-bold text-muted-foreground uppercase tracking-wide mb-1">
-                      <span>History on file</span>
-                      <span className="font-mono tabular-nums normal-case">
-                        {dashboardData.days_of_history} of {dashboardData.min_days_required} days
-                      </span>
-                    </div>
-                    <div className="h-2.5 rounded-full bg-card border border-border overflow-hidden">
-                      <div
-                        className="h-full bg-primary rounded-full transition-all duration-500"
-                        style={{ width: `${Math.min(100, (dashboardData.days_of_history / dashboardData.min_days_required) * 100)}%` }}
-                      />
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => historyFileInputRef.current?.click()}
-                    disabled={uploadingHistory}
-                    title="Columns: snapshot_date, blood_type, units. Dates must be before today — today's stock is recorded automatically."
-                    className="w-full h-9 bg-primary text-white text-[13.5px] font-bold rounded-lg hover:bg-primary-hover transition-colors disabled:opacity-60 flex items-center justify-center gap-1.5"
-                  >
-                    <Upload size={14} /> {uploadingHistory ? "Uploading…" : "Upload Historical Data"}
-                  </button>
-                  <p className="text-[11.5px] text-muted-foreground mt-1.5 leading-snug">
-                    CSV columns: snapshot_date, blood_type, units — one row per day per blood type, dated before today.
-                  </p>
-                </div>
-              ) : (
-                <div className="flex items-center justify-between gap-3 rounded-lg border border-status-safe-border bg-status-safe-tint px-3 py-2.5">
-                  <div className="flex items-center gap-1.5 text-[13px] font-bold text-status-safe-text">
-                    <CheckCircle size={14} />
-                    {dashboardData.forecast_source === "sarimax_facility_history"
-                      ? `Real SARIMAX forecast active — ${dashboardData.days_of_history} days of history on file`
-                      : `Real forecast active — ${dashboardData.days_of_history} days of history on file`}
-                  </div>
-                  <button
-                    onClick={() => historyFileInputRef.current?.click()}
-                    disabled={uploadingHistory}
-                    className="text-[12px] font-bold text-primary hover:underline hover:underline-offset-2 disabled:opacity-60 shrink-0"
-                  >
-                    {uploadingHistory ? "Uploading…" : "Add more history"}
-                  </button>
-                </div>
-              )}
-
-              {historyUploadError && (
-                <div className="mt-3 text-[12px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-lg px-2.5 py-2">
-                  {historyUploadError}
-                </div>
-              )}
-              {historyUploadResult && (
-                <div className="mt-3 text-[12px] bg-secondary rounded-lg px-2.5 py-2 space-y-1">
-                  <div className="font-semibold text-foreground">
-                    {historyUploadResult.rows_processed} day{historyUploadResult.rows_processed === 1 ? "" : "s"}-of-type
-                    record{historyUploadResult.rows_processed === 1 ? "" : "s"} processed
-                    {historyUploadResult.errors.length > 0 && `, ${historyUploadResult.errors.length} row${historyUploadResult.errors.length === 1 ? "" : "s"} skipped`}
-                  </div>
-                  <div className="text-muted-foreground">
-                    Now {historyUploadResult.days_of_history} of {historyUploadResult.min_days_required} days of history on file.
-                  </div>
-                  {historyUploadResult.errors.map((e, i) => (
-                    <div key={i} className="text-status-critical-text">
-                      Row {e.row}: {e.reason}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <div className="mt-3">
-                <UploadHistoryPanel uploadType="historical_stock" refreshKey={backfillUploadHistoryKey} onUndone={() => loadForecast()} />
-              </div>
-
-              {dashboardData.forecast_source === "synthetic_model_stand_in" && (
-                <div className="mt-3 rounded-lg border border-synthetic-border bg-synthetic-tint px-3 py-2 text-[14px] text-synthetic-text leading-relaxed">
-                  <strong>SYNTHETIC — not real data.</strong> Only {dashboardData.days_of_history} of{" "}
-                  {dashboardData.min_days_required} days of this facility's own history have been collected, so this
-                  trajectory comes from {dashboardData.synthetic_model_label ?? "a synthetic reference model"} trained on
-                  generated data, rescaled to today's real stock. It will switch to a real facility-derived trend once
-                  enough history accumulates.
-                </div>
-              )}
-            </div>
-          </div>
-          );
-        })()}
-
-        {/* Expiry warnings */}
-        <div className="lg:col-span-1 self-start bg-card border border-border rounded-xl p-6 flex flex-col">
-          <div className="flex items-center justify-between mb-4 gap-3">
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-status-watch-tint flex items-center justify-center">
-                <Clock size={15} className="text-status-watch" />
-              </div>
-              <h3 className="font-semibold text-foreground text-[19px]">Expiry Warnings</h3>
-            </div>
-            {expiringRows.length > VISIBLE_ITEM_LIMIT && (
-              <button
-                onClick={() => setShowAllExpiry((v) => !v)}
-                className="text-[13px] font-semibold text-status-watch-text hover:underline hover:underline-offset-2 shrink-0"
-              >
-                {showAllExpiry ? "Show less" : `Show ${expiringRows.length - VISIBLE_ITEM_LIMIT} more`}
-              </button>
-            )}
-          </div>
-          <div className="flex-1 flex flex-col">
-          {expiryLoading && (
-            <div className="py-8 text-center text-[15px] text-foreground">Loading…</div>
-          )}
-          {!expiryLoading && expiryError && (
-            <div className="py-8 text-center text-[15px] text-status-critical-text">Failed to load: {expiryError}</div>
-          )}
-          {!expiryLoading && !expiryError && expiringRows.length === 0 && (
-            <div className="flex flex-col items-center text-center py-6">
-              <div className="w-12 h-12 rounded-full bg-status-safe-tint flex items-center justify-center mb-3">
-                <CheckCircle size={22} className="text-status-safe-text" />
-              </div>
-              <div className="font-semibold text-foreground mb-1">Nothing expiring soon</div>
-              <p className="text-[14px] text-foreground leading-relaxed max-w-[220px]">
-                No units are inside the near-expiry window right now.
-              </p>
-            </div>
-          )}
-          {!expiryLoading && !expiryError && expiringRows.length > 0 && (() => {
-            const visible = showAllExpiry ? expiringRows : expiringRows.slice(0, VISIBLE_ITEM_LIMIT);
-            return (
-              <div className="space-y-2">
-                {visible.map((row) => (
-                  <ExpiryWarningRow key={row.din} row={row} />
-                ))}
-              </div>
-            );
-          })()}
-          </div>
-        </div>
-      </div>
-    </div>
+    <BankDashboardView
+      summary={summary}
+      summaryLoading={summaryLoading}
+      summaryError={summaryError}
+      forecast={dashboardData?.view === "forecast" ? dashboardData : null}
+      forecastLoading={forecastLoading}
+      forecastError={forecastError}
+      onRetryForecast={() => loadForecast()}
+      onForecastChanged={() => loadForecast()}
+      requests={requestRows}
+      requestsFailed={requestsFailed}
+      onOrder={onRequestBloodType}
+      onViewRequests={onViewRequests}
+      onViewInventory={onViewInventory}
+    />
   );
 }

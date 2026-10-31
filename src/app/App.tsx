@@ -172,7 +172,9 @@ export default function App() {
   // on mount (via onConsumedSourcingPrefill) so a later, unrelated visit to
   // Requests (e.g. the top nav) doesn't inherit a stale prefill.
   // A blood bank's "Order 90 by 4 Nov" also carries the quantity; a hospital's prompt carries only the type.
-  const [sourcingPrefill, setSourcingPrefill] = useState<{ bloodType: string; quantity?: number } | null>(null);
+  // "View all requests" and "Open the incoming list" open Request and chats, not whichever tab the screen opens on.
+  const [requestsOpenOnChats, setRequestsOpenOnChats] = useState(false);
+  const [sourcingPrefill, setSourcingPrefill] = useState<{ bloodType: string; quantity?: number; component?: string } | null>(null);
 
   // Same one-shot pattern, driven by clicking a "requests:{id}" notification
   // — jumps Requests straight to its transfer tab with that request selected.
@@ -313,11 +315,12 @@ export default function App() {
         <Suspense fallback={<ScreenFallback />}>
           {screen === "dashboard" && (
             <DashboardScreen
-              onRequestBloodType={(bloodType, quantity) => {
-                setSourcingPrefill({ bloodType, quantity });
+              onRequestBloodType={(bloodType, quantity, component) => {
+                setSourcingPrefill({ bloodType, quantity, component });
                 setScreen("requests");
               }}
-              onViewRequests={() => setScreen("requests")}
+              onViewRequests={() => { setRequestsOpenOnChats(true); setScreen("requests"); }}
+              onViewInventory={() => setScreen("inventory")}
             />
           )}
           {screen === "inventory" && <InventoryScreen />}
@@ -325,7 +328,10 @@ export default function App() {
             <RequestsScreen
               initialSearchType={sourcingPrefill?.bloodType ?? null}
               initialQuantity={sourcingPrefill?.quantity ?? null}
+              initialComponent={sourcingPrefill?.component ?? null}
               onConsumedSourcingPrefill={() => setSourcingPrefill(null)}
+              initialTab={requestsOpenOnChats ? "transfer" : null}
+              onConsumedInitialTab={() => setRequestsOpenOnChats(false)}
               initialHighlightRequestId={requestsHighlightId}
               onConsumedHighlight={() => setRequestsHighlightId(null)}
             />

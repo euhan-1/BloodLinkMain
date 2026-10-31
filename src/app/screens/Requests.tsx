@@ -9,7 +9,7 @@ import { type Facility } from "../components/FacilityNetworkMap";
 import { HospitalSourcingView } from "./HospitalSourcing";
 import { RequestThread } from "../components/RequestThread";
 import { listIsBehind, mergeThread, type RequestDetail } from "../lib/requestTimeline";
-import { type BloodComponent } from "../lib/bloodComponents";
+import { BLOOD_COMPONENTS, type BloodComponent } from "../lib/bloodComponents";
 import { useFlashOnChange } from "../lib/motion";
 import { groupIncomingRequests, requestUnitsText, type EmergencyType, type RequestRow } from "../lib/requestTypes";
 import { ReasonTag } from "../components/ReasonTag";
@@ -240,16 +240,20 @@ function AcceptedRequestCard({
 }
 
 export function RequestsScreen({
-  initialSearchType, initialQuantity, onConsumedSourcingPrefill,
-  initialHighlightRequestId, onConsumedHighlight,
+  initialSearchType, initialQuantity, initialComponent, onConsumedSourcingPrefill,
+  initialTab, onConsumedInitialTab, initialHighlightRequestId, onConsumedHighlight,
 }: {
   initialSearchType?: string | null;
   initialQuantity?: number | null;
+  initialTab?: "transfer" | null;
+  onConsumedInitialTab?: () => void;
+  initialComponent?: string | null;
   onConsumedSourcingPrefill?: () => void;
   initialHighlightRequestId?: number | null;
   onConsumedHighlight?: () => void;
 }) {
-  const [tab, setTab] = useState<RequestTab>(initialHighlightRequestId ? "transfer" : "sourcing");
+  const [tab, setTab] = useState<RequestTab>(initialHighlightRequestId || initialTab ? "transfer" : "sourcing");
+  useEffect(() => { if (initialTab) onConsumedInitialTab?.(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [searchType, setSearchType] = useState(initialSearchType ?? "O-");
   const [quantityNeeded, setQuantityNeeded] = useState(3);
 
@@ -330,6 +334,7 @@ export function RequestsScreen({
     if (initialSearchType) {
       setSearchType(initialSearchType);
       if (initialQuantity && initialQuantity >= 1) setQuantityNeeded(initialQuantity); // "Order 90 by 4 Nov" arrives with its 90
+      if (initialComponent && (BLOOD_COMPONENTS as readonly string[]).includes(initialComponent)) setComponent(initialComponent as BloodComponent);
       setTab("sourcing");
       onConsumedSourcingPrefill?.();
     }

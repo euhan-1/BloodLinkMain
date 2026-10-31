@@ -2003,6 +2003,8 @@ def _compute_restock_recommendation(
         "breach_date": (today + timedelta(days=round(days_until_breach))).isoformat(),
         "days_until_breach": round(days_until_breach),
         "recommended_units": recommended_units,
+        # The projection's lowest point in the window: an estimate, shown beside (never blended with) current stock.
+        "projected_low_units": round(projected_low_point),
     }
 
 
@@ -2511,7 +2513,14 @@ def get_inventory_summary(facility_id: int = Depends(get_acting_facility_id)):
     (see GET /facilities/nearby, which has always filtered this way) — a
     unit that's excluded from availability elsewhere but still inflating
     this count would just be a second, inconsistent definition of "stock."
+
+    A blood bank's rows also carry `can_give`, per component: the units above that type's minimum (its reserve) that are
+    releasable, which is what another facility's search (GET /facilities/nearby) would see available from it. Both come from
+    _releasable_counts, the same predicate release selects from, so this cannot promise more than release delivers. It is
+    {} for a hospital, which supplies nobody. Thresholds are per blood type, not per component, so a component's
+    figure subtracts the type's one minimum, exactly as the search does (a known limitation, while platelets are rare).
     """
+    today = business_today()
     with engine.connect() as conn:
         rows = conn.execute(
             text(
@@ -2528,9 +2537,18 @@ def get_inventory_summary(facility_id: int = Depends(get_acting_facility_id)):
                 ORDER BY t.blood_type
                 """
             ),
-            {"facility_id": facility_id, "today": business_today()},
+            {"facility_id": facility_id, "today": today},
         ).mappings().all()
-    return [dict(row) for row in rows]
+        is_bank = conn.execute(text("SELECT facility_type FROM facilities WHERE id = :id"), {"id": facility_id}).scalar() == "bloodbank"
+        releasable = {c: _releasable_counts(conn, c, today, facility_id).get(facility_id, {}) for c in COMPONENTS} if is_bank else {}
+    out = []
+    for row in rows:
+        entry = dict(row)
+        entry["can_give"] = (
+            {c: max(0, releasable[c].get(entry["blood_type"], 0) - entry["minimum_units"]) for c in COMPONENTS} if is_bank else {}
+        )
+        out.append(entry)
+    return out
 
 
 class UpdateThresholdBody(BaseModel):
@@ -4018,6 +4036,104 @@ def get_nearby_facilities(
 
     results.sort(key=rank)
     return results
+
+
+@app.get("/inventory/expiring")
+def get_expiring_inventory(facility_id: int = Depends(get_acting_facility_id)):
+    """The facility's units that expire within NOTIFY_EXPIRY_NEAR_DAYS (today included), grouped by blood type, component and
+    expiry date, soonest first, for the Dashboard: a bank holding hundreds of units wants "3 units of O+ expire on 2 Nov",
+    not one row per DIN. Expired units are the Inventory screen's business, and units reserved for a request are leaving
+    anyway, so neither is listed.
+
+    Like GET /inventory, this runs _check_expiry_notifications on the rows it reads (the once-per-tier "this unit is now near
+    expiry" notification), so the Dashboard keeps triggering it now that it no longer loads every unit. Only units inside the
+    window can ever fire it (a unit further out is "ok", which it ignores), so reading just those is the same as reading all."""
+    today = business_today()
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT id, din, blood_type, component, expires_date, last_notified_expiry_status, reserved_for_request_id
+                FROM blood_units
+                WHERE facility_id = :facility_id AND archived_at IS NULL
+                  AND expires_date >= :today AND expires_date <= :last_day
+                ORDER BY expires_date ASC
+                """
+            ),
+            {"facility_id": facility_id, "today": today, "last_day": today + timedelta(days=NOTIFY_EXPIRY_NEAR_DAYS)},
+        ).mappings().all()
+        _check_expiry_notifications(conn, facility_id, rows, today)
+    groups: dict[tuple, int] = {}
+    for r in rows:
+        if r["reserved_for_request_id"] is None:
+            key = (r["expires_date"], r["blood_type"], r["component"])
+            groups[key] = groups.get(key, 0) + 1
+    listed = [
+        {"blood_type": bt, "component": comp, "expires_date": d, "days_left": (d - today).days, "units": n}
+        for (d, bt, comp), n in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2]))
+    ]
+    return {"window_days": NOTIFY_EXPIRY_NEAR_DAYS, "total_units": sum(g["units"] for g in listed), "groups": listed}
+
+
+class NotifyExpiringGroupBody(BaseModel):
+    blood_type: str
+    component: str
+    expires_date: date
+
+
+@app.post("/inventory/notify-nearby-hospitals")
+def notify_nearby_hospitals_of_expiring_group(body: NotifyExpiringGroupBody, acting_facility_id: int = Depends(get_acting_facility_id)):
+    """One in-system notification per nearby hospital for a whole group of near-expiry units (one blood type, component and
+    expiry date), instead of one per DIN. Same recipients and the same Emergency Sourcing link as the per-unit endpoint, with
+    the number of units in the message. The group must exist at the acting facility (units not reserved for a request) and
+    still be inside the near-expiry window."""
+    today = business_today()
+    days_left = (body.expires_date - today).days
+    if days_left < 0:
+        raise HTTPException(status_code=400, detail="these units have already expired")
+    if days_left > NOTIFY_EXPIRY_NEAR_DAYS:
+        raise HTTPException(status_code=400, detail="these units aren't near-expiry yet")
+    with engine.begin() as conn:
+        units = conn.execute(
+            text(
+                """
+                SELECT count(*) FROM blood_units
+                WHERE facility_id = :facility_id AND archived_at IS NULL AND reserved_for_request_id IS NULL
+                  AND blood_type = :blood_type AND component = :component AND expires_date = :expires_date
+                """
+            ),
+            {"facility_id": acting_facility_id, "blood_type": body.blood_type, "component": body.component, "expires_date": body.expires_date},
+        ).scalar()
+        if not units:
+            raise HTTPException(status_code=404, detail="no such units at your facility")
+        origin = conn.execute(
+            text("SELECT name, latitude, longitude FROM facilities WHERE id = :id"), {"id": acting_facility_id}
+        ).mappings().first()
+        if origin["latitude"] is None or origin["longitude"] is None:
+            raise HTTPException(status_code=400, detail="complete your facility profile before notifying nearby hospitals")
+        hospitals = conn.execute(
+            text(
+                """
+                SELECT id, name, latitude, longitude FROM facilities
+                WHERE facility_type = 'hospital' AND id != :acting_facility_id AND profile_completed AND is_active
+                  AND latitude IS NOT NULL AND longitude IS NOT NULL
+                """
+            ),
+            {"acting_facility_id": acting_facility_id},
+        ).mappings().all()
+        verb = "expires" if units == 1 else "expire"
+        when = f"{verb} today" if days_left == 0 else f"{verb} in {days_left} {'day' if days_left == 1 else 'days'}"
+        notified_names = []
+        for hospital in hospitals:
+            distance_km = round(_haversine_km(origin["latitude"], origin["longitude"], hospital["latitude"], hospital["longitude"]), 1)
+            _create_notification(
+                conn, hospital["id"], "expiring_unit_alert",
+                f"{origin['name']} has {units} near-expiry {body.blood_type} {body.component} {'unit' if units == 1 else 'units'} that {when}, "
+                f"{distance_km}km away",
+                f"sourcing:{body.blood_type}",
+            )
+            notified_names.append(hospital["name"])
+    return {"notified_count": len(notified_names), "notified_facilities": notified_names, "units": units}
 
 
 @app.post("/inventory/{din}/notify-nearby-hospitals")

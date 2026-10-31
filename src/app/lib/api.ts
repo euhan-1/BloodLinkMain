@@ -500,6 +500,19 @@ export function notifyNearbyHospitals(din: string): Promise<NotifyNearbyHospital
   return apiPost<NotifyNearbyHospitalsResult>(`/inventory/${encodeURIComponent(din)}/notify-nearby-hospitals`, {});
 }
 
+// The blood bank Dashboard's expiring units: grouped by type, component and day, not one row per DIN.
+export type ExpiringGroup = { blood_type: string; component: string; expires_date: string; days_left: number; units: number };
+export type ExpiringInventory = { window_days: number; total_units: number; groups: ExpiringGroup[] };
+
+export function getExpiringInventory(): Promise<ExpiringInventory> {
+  return apiGet<ExpiringInventory>("/inventory/expiring");
+}
+
+// One notification per nearby hospital for a whole group, instead of one per DIN.
+export function notifyNearbyHospitalsForGroup(group: Pick<ExpiringGroup, "blood_type" | "component" | "expires_date">): Promise<NotifyNearbyHospitalsResult & { units: number }> {
+  return apiPost<NotifyNearbyHospitalsResult & { units: number }>("/inventory/notify-nearby-hospitals", group);
+}
+
 // ─── Notifications ──────────────────────────────────────────────────────────
 
 export type NotificationItem = {
