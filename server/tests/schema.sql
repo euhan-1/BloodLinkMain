@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 8hDJh7iq2rNf1M8kAxwKMJCvXGhAxePp09fUdmuLIbXxREYIyNkRedyKAcuBpFU
+\restrict 7qlQiybfj0dN2mbTk1prtVufy1USyF7uPcC6DieySNPgZfXqQPBPccRZWdk3XDD
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.11
@@ -571,6 +571,46 @@ ALTER TABLE public.request_unit_failures ALTER COLUMN id ADD GENERATED ALWAYS AS
 
 
 --
+-- Name: request_units; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.request_units (
+    id bigint NOT NULL,
+    request_id bigint NOT NULL,
+    blood_unit_id bigint,
+    din text NOT NULL,
+    blood_type text NOT NULL,
+    component text NOT NULL,
+    volume_ml integer NOT NULL,
+    collected_date date NOT NULL,
+    expires_date date NOT NULL,
+    origin_location text NOT NULL,
+    days_remaining_at_release integer NOT NULL,
+    outcome text DEFAULT 'reserved'::text NOT NULL,
+    reason text,
+    days_remaining_at_receipt integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT request_units_outcome_valid CHECK ((outcome = ANY (ARRAY['reserved'::text, 'received'::text, 'failed'::text]))),
+    CONSTRAINT request_units_reason_matches_outcome CHECK ((((outcome = 'failed'::text) AND (reason IS NOT NULL) AND (reason = 'expired_before_receipt'::text)) OR ((outcome <> 'failed'::text) AND (reason IS NULL)))),
+    CONSTRAINT request_units_receipt_days_when_settled CHECK (((outcome = 'reserved'::text) = (days_remaining_at_receipt IS NULL)))
+);
+
+
+--
+-- Name: request_units_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.request_units ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.request_units_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: requests; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -598,6 +638,62 @@ CREATE TABLE public.requests (
 
 
 --
+-- Name: COLUMN requests.accepted_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.requests.accepted_at IS 'When the supplier accepted. NULL = not recorded (requests before this column), or not accepted.';
+
+
+--
+-- Name: COLUMN requests.declined_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.requests.declined_at IS 'When the supplier declined. NULL = not recorded (requests before this column), or not declined.';
+
+
+--
+-- Name: COLUMN requests.cancelled_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.requests.cancelled_at IS 'When the requester cancelled. NULL = not recorded (requests before this column), or not cancelled.';
+
+
+--
+-- Name: COLUMN requests.accepted_by; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.requests.accepted_by IS 'The supplier facility''s account that accepted. One account per facility: identifies the facility''s login, not a named person. NULL = not recorded.';
+
+
+--
+-- Name: COLUMN requests.declined_by; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.requests.declined_by IS 'The supplier facility''s account that declined. One account per facility: identifies the facility''s login, not a named person. NULL = not recorded.';
+
+
+--
+-- Name: COLUMN requests.cancelled_by; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.requests.cancelled_by IS 'The requester facility''s account that cancelled. One account per facility: identifies the facility''s login, not a named person. NULL = not recorded.';
+
+
+--
+-- Name: COLUMN requests.released_by; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.requests.released_by IS 'The supplier facility''s account that confirmed release (pairs with supplier_confirmed_at). One account per facility: not a named person. NULL = not recorded.';
+
+
+--
+-- Name: COLUMN requests.received_by; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.requests.received_by IS 'The requester facility''s account that confirmed receipt (pairs with requester_confirmed_at). One account per facility: not a named person. NULL = not recorded.';
+
+
+--
 -- Name: requests_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -609,7 +705,6 @@ ALTER TABLE public.requests ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
     NO MAXVALUE
     CACHE 1
 );
-
 
 
 --
@@ -945,6 +1040,30 @@ ALTER TABLE ONLY public.request_unit_failures
 
 
 --
+-- Name: request_units request_units_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_units
+    ADD CONSTRAINT request_units_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: request_units request_units_request_id_blood_unit_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_units
+    ADD CONSTRAINT request_units_request_id_blood_unit_id_key UNIQUE (request_id, blood_unit_id);
+
+
+--
+-- Name: request_units request_units_request_id_din_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_units
+    ADD CONSTRAINT request_units_request_id_din_key UNIQUE (request_id, din);
+
+
+--
 -- Name: requests requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1090,6 +1209,13 @@ CREATE INDEX idx_request_messages_request_id ON public.request_messages USING bt
 --
 
 CREATE INDEX idx_request_unit_failures_unit ON public.request_unit_failures USING btree (blood_unit_id);
+
+
+--
+-- Name: idx_request_units_unit; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_request_units_unit ON public.request_units USING btree (blood_unit_id);
 
 
 --
@@ -1330,6 +1456,62 @@ ALTER TABLE ONLY public.request_unit_failures
 
 
 --
+-- Name: request_units request_units_blood_unit_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_units
+    ADD CONSTRAINT request_units_blood_unit_id_fkey FOREIGN KEY (blood_unit_id) REFERENCES public.blood_units(id) ON DELETE SET NULL;
+
+
+--
+-- Name: request_units request_units_request_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_units
+    ADD CONSTRAINT request_units_request_id_fkey FOREIGN KEY (request_id) REFERENCES public.requests(id);
+
+
+--
+-- Name: requests requests_accepted_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.requests
+    ADD CONSTRAINT requests_accepted_by_fkey FOREIGN KEY (accepted_by) REFERENCES public.users(id);
+
+
+--
+-- Name: requests requests_cancelled_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.requests
+    ADD CONSTRAINT requests_cancelled_by_fkey FOREIGN KEY (cancelled_by) REFERENCES public.users(id);
+
+
+--
+-- Name: requests requests_declined_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.requests
+    ADD CONSTRAINT requests_declined_by_fkey FOREIGN KEY (declined_by) REFERENCES public.users(id);
+
+
+--
+-- Name: requests requests_received_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.requests
+    ADD CONSTRAINT requests_received_by_fkey FOREIGN KEY (received_by) REFERENCES public.users(id);
+
+
+--
+-- Name: requests requests_released_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.requests
+    ADD CONSTRAINT requests_released_by_fkey FOREIGN KEY (released_by) REFERENCES public.users(id);
+
+
+--
 -- Name: requests requests_requesting_facility_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1370,56 +1552,8 @@ ALTER TABLE ONLY public.users
 
 
 --
--- Name: request_units; Type: TABLE; Schema: public; Owner: -
--- HAND-WRITTEN (stage 2), inline constraints, appended at the end so the keys it references exist: not pg_dump output.
--- Regenerate this file after the migration is applied.
---
-
-CREATE TABLE public.request_units (
-    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    request_id bigint NOT NULL REFERENCES public.requests(id),
-    blood_unit_id bigint REFERENCES public.blood_units(id) ON DELETE SET NULL,
-    din text NOT NULL,
-    blood_type text NOT NULL,
-    component text NOT NULL,
-    volume_ml integer NOT NULL,
-    collected_date date NOT NULL,
-    expires_date date NOT NULL,
-    origin_location text NOT NULL,
-    days_remaining_at_release integer NOT NULL,
-    outcome text DEFAULT 'reserved'::text NOT NULL,
-    reason text,
-    days_remaining_at_receipt integer,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    UNIQUE (request_id, blood_unit_id),
-    UNIQUE (request_id, din),
-    CONSTRAINT request_units_outcome_valid CHECK (outcome IN ('reserved', 'received', 'failed')),
-    CONSTRAINT request_units_reason_matches_outcome CHECK (
-        (outcome = 'failed' AND reason IS NOT NULL AND reason = 'expired_before_receipt') OR (outcome <> 'failed' AND reason IS NULL)
-    ),
-    CONSTRAINT request_units_receipt_days_when_settled CHECK ((outcome = 'reserved') = (days_remaining_at_receipt IS NULL))
-);
-
-CREATE INDEX idx_request_units_unit ON public.request_units USING btree (blood_unit_id);
-
-
---
--- Name: requests stage 3 actor foreign keys; Type: FK CONSTRAINT; Schema: public; Owner: -
--- HAND-WRITTEN (stage 3), appended at the end so users' primary key exists: not pg_dump output. Regenerate this file
--- after the migration is applied (pg_dump will also emit the COMMENT ON COLUMN lines).
---
-
-ALTER TABLE ONLY public.requests
-    ADD CONSTRAINT requests_accepted_by_fkey FOREIGN KEY (accepted_by) REFERENCES public.users(id),
-    ADD CONSTRAINT requests_declined_by_fkey FOREIGN KEY (declined_by) REFERENCES public.users(id),
-    ADD CONSTRAINT requests_cancelled_by_fkey FOREIGN KEY (cancelled_by) REFERENCES public.users(id),
-    ADD CONSTRAINT requests_released_by_fkey FOREIGN KEY (released_by) REFERENCES public.users(id),
-    ADD CONSTRAINT requests_received_by_fkey FOREIGN KEY (received_by) REFERENCES public.users(id);
-
-
---
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 8hDJh7iq2rNf1M8kAxwKMJCvXGhAxePp09fUdmuLIbXxREYIyNkRedyKAcuBpFU
+\unrestrict 7qlQiybfj0dN2mbTk1prtVufy1USyF7uPcC6DieySNPgZfXqQPBPccRZWdk3XDD
 
