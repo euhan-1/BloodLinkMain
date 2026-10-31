@@ -105,8 +105,12 @@ requests, SARIMAX demand forecasting, donor broadcast.
   that is not a daily decision behind "Forecast details" (trend chart, history upload and undo). `/inventory/summary` rows carry
   `can_give` per component from `_releasable_counts`, the same predicate as release and search; it is {} for a hospital.
   Thresholds are per blood type, not per component, so a component's figure subtracts the type's one minimum: a known
-  limitation while platelets are rare (one unit in production). The outlook is an estimate in its own column with its basis
-  (SARIMAX or linear trend) in the row, and "Order 90 by 4 Nov" opens Source supply with type, quantity and Packed RBC
+  limitation while platelets are rare (one unit in production). The outlook is an estimate in its own column, under one plain sentence
+  saying what it is (a 30-day projection from how the stock has moved, blind to donation drives and emergencies). **The row's
+  basis tag is plain words, two states**: "From its own history" (any SARIMAX fit) or "Simple trend line" (the linear trend),
+  plus "Not from your records yet" for the stand-in; no model names, settings or "optimized"-style claims there. The technical
+  layer (SARIMAX, grid-searched / AI-recommended / default order, the full order label) is `technicalBasisFor` in
+  **Forecast details**, per blood type, worded as the API names it. A hospital has no forecast and no such tag. And "Order 90 by 4 Nov" opens Source supply with type, quantity and Packed RBC
   prefilled. `/inventory/expiring` still runs the once-per-tier expiry notification that `GET /inventory` runs, since the
   Dashboard no longer loads every unit.
 - **"At risk"** is a third Dashboard outlook, between On track and an order: the central projection holds at or above the minimum at

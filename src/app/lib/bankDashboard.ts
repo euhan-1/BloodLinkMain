@@ -113,8 +113,49 @@ export function orderPrefill(bloodType: string, o: Extract<Outlook, { kind: "ord
   return { bloodType, quantity: o.units, component: ORDER_COMPONENT };
 }
 
-// Which mechanism this row's outlook rests on, in the row. null where the row says its state instead (calculating, collecting).
+// What the row says about where its outlook comes from, in plain words, for the people reading the Dashboard: two states, built
+// on this blood type's own history (any SARIMAX fit) or a simple trend line. Which settings a fit used lives in Forecast
+// details (technicalBasisFor). null where the row says its state instead (calculating, collecting).
 export function basisFor(f: ForecastView | null, bloodType: string): { text: string; title: string } | null {
+  const t = technicalBasisFor(f, bloodType);
+  if (t === null || f === null) return null;
+  if (f.forecast_source === "synthetic_model_stand_in") {
+    return { text: "Not from your records yet", title: "Built from an example pattern on generated data, not from this facility's own stock history yet." };
+  }
+  if (t.text === "Linear trend") {
+    return { text: "Simple trend line", title: "A simple trend line, because there wasn't enough pattern in this blood type's history to model. It doesn't use the dengue season calendar." };
+  }
+  return { text: "From its own history", title: "Built on this blood type's own stock history." };
+}
+
+// The one sentence saying what the outlook is, read above the table. The dengue season calendar is an input to the models built on a
+// type's own history (SARIMAX) and to nothing else: the simple trend line does not use it. So the clause is dropped only when every
+// blood type on screen is known to be on the trend line; for a loading, collecting, mixed or stand-in forecast it stays.
+export function forecastExplainer(f: ForecastView | null): string {
+  const allTrendLine =
+    f !== null &&
+    (f.forecast_source === "linear_trend" ||
+      (f.forecast_source === "sarimax_facility_history" &&
+        Object.keys(f.sarimax_orders ?? {}).filter((t) => !(f.pending_types ?? []).includes(t)).length === 0));
+  return `The outlook projects how many units you'll have over the next 30 days, based on how your stock has moved in the past${allTrendLine ? "" : " and the dengue season calendar"}. It doesn't know about planned donation drives or emergencies.`;
+}
+
+// The same, in plain words, for the whole panel: "5 blood types built on their own history, 3 on a simple trend line."
+export function basisSummaryPlain(f: ForecastView | null): string | null {
+  if (f === null || f.forecast_source === "none" || f.forecast_source === "synthetic_model_stand_in") return null;
+  const total = f.types_total ?? 8;
+  const ready = total - (f.pending_types ?? []).length;
+  if (f.forecast_source === "linear_trend") return `${ready} blood ${plural(ready, "type", "types")} on a simple trend line.`;
+  const own = Object.keys(f.sarimax_orders ?? {}).filter((t) => !(f.pending_types ?? []).includes(t)).length;
+  const simple = ready - own;
+  return simple > 0
+    ? `${own} blood ${plural(own, "type", "types")} built on ${own === 1 ? "its" : "their"} own history, ${simple} on a simple trend line.`
+    : `${own} blood ${plural(own, "type", "types")} built on ${own === 1 ? "its" : "their"} own history.`;
+}
+
+// Which mechanism this row's outlook rests on, by name (SARIMAX and the order's source). Shown in Forecast details, where the
+// technical terms stay available. null where the row says its state instead (calculating, collecting).
+export function technicalBasisFor(f: ForecastView | null, bloodType: string): { text: string; title: string } | null {
   if (f === null || f.forecast_source === "none" || (f.pending_types ?? []).includes(bloodType)) return null;
   if (f.forecast_source === "synthetic_model_stand_in") {
     return { text: "Reference model", title: "A reference model trained on generated data, not this facility's own history." };
@@ -126,7 +167,7 @@ export function basisFor(f: ForecastView | null, bloodType: string): { text: str
   return { text: tag === null ? "SARIMAX" : `SARIMAX, ${tag.text}`, title: tag?.title ?? "A SARIMAX model fitted to this blood type's recorded stock." };
 }
 
-// "SARIMAX for 4 blood types, linear trend for 4." Counts only the types that have an answer.
+// "SARIMAX for 4 blood types, linear trend for 4." Counts only the types that have an answer. Forecast details.
 export function basisSummary(f: ForecastView | null): string | null {
   if (f === null || f.forecast_source === "none" || f.forecast_source === "synthetic_model_stand_in") return null;
   const total = f.types_total ?? 8;

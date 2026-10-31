@@ -1,7 +1,7 @@
 // Asserts what the blood bank Dashboard says (src/app/lib/bankDashboard.ts). Run: node scripts/check_bank_dashboard.ts
 import { readFileSync } from "node:fs";
 import {
-  ORDER_COMPONENT, basisFor, basisSummary, canGiveText, expiryLine, orderLabel, orderPrefill, outlookFor, sortedRows, supplySentence, waitingRequests,
+  ORDER_COMPONENT, basisFor, basisSummary, basisSummaryPlain, canGiveText, expiryLine, forecastExplainer, orderLabel, orderPrefill, outlookFor, sortedRows, supplySentence, technicalBasisFor, waitingRequests,
 } from "../src/app/lib/bankDashboard.ts";
 import { formatDayMonth } from "../src/app/lib/dateFormat.ts";
 import { BLOOD_COMPONENTS } from "../src/app/lib/bloodComponents.ts";
@@ -99,22 +99,66 @@ eq(outlookFor("B+", forecast({ insufficient_history: [{ blood_type: "B+", observ
 for (const w of ["better", "optimized", "improved", "best", "safe"]) if (new RegExp(w, "i").test(ar.sentence)) throw new Error(`the at-risk detail claims ${w}`);
 
 // ── the basis in the row
-eq(basisFor(f, "A+")?.text, "SARIMAX, grid-searched", "SARIMAX with its order's source");
-eq(basisFor(f, "B+")?.text, "SARIMAX, AI-recommended", "AI-recommended is named, never as better");
-eq(basisFor(f, "O+")?.text, "SARIMAX, default order", "default order");
-eq(basisFor(f, "O-")?.text, "Linear trend", "a type missing from sarimax_orders is on the linear trend");
-eq(basisFor(forecast({ forecast_source: "linear_trend" }), "A+")?.text, "Linear trend", "an all-linear forecast");
-eq(basisFor(forecast({ pending_types: ["A+"] }), "A+"), null, "calculating has no basis yet: the row says its state");
-eq(basisFor(forecast({ forecast_source: "none" }), "A+"), null, "collecting has none either");
-eq(basisFor(forecast({ forecast_source: "synthetic_model_stand_in" }), "A+")?.text, "Reference model", "the synthetic stand-in is not passed off as real");
-eq(basisFor(null, "A+"), null, "nothing loaded");
+eq(technicalBasisFor(f, "A+")?.text, "SARIMAX, grid-searched", "SARIMAX with its order's source");
+eq(technicalBasisFor(f, "B+")?.text, "SARIMAX, AI-recommended", "AI-recommended is named, never as better");
+eq(technicalBasisFor(f, "O+")?.text, "SARIMAX, default order", "default order");
+eq(technicalBasisFor(f, "O-")?.text, "Linear trend", "a type missing from sarimax_orders is on the linear trend");
+eq(technicalBasisFor(forecast({ forecast_source: "linear_trend" }), "A+")?.text, "Linear trend", "an all-linear forecast");
+eq(technicalBasisFor(forecast({ pending_types: ["A+"] }), "A+"), null, "calculating has no basis yet: the row says its state");
+eq(technicalBasisFor(forecast({ forecast_source: "none" }), "A+"), null, "collecting has none either");
+eq(technicalBasisFor(forecast({ forecast_source: "synthetic_model_stand_in" }), "A+")?.text, "Reference model", "the synthetic stand-in is not passed off as real");
+eq(technicalBasisFor(null, "A+"), null, "nothing loaded");
 for (const w of ["better", "optimized", "improved", "best"]) {
-  for (const t of ["A+", "B+", "O+", "O-"]) if (new RegExp(w, "i").test(basisFor(f, t)?.text ?? "") || new RegExp(w, "i").test(basisFor(f, t)?.title ?? "")) throw new Error(`a basis label claims quality: ${w}`);
+  for (const t of ["A+", "B+", "O+", "O-"]) if (new RegExp(w, "i").test(technicalBasisFor(f, t)?.text ?? "") || new RegExp(w, "i").test(technicalBasisFor(f, t)?.title ?? "")) throw new Error(`a basis label claims quality: ${w}`);
 }
 eq(basisSummary(f), "SARIMAX for 3 blood types, linear trend for 5.", "the summary line");
 eq(basisSummary(forecast({ pending_types: ["O-", "B-"] })), "SARIMAX for 3 blood types, linear trend for 3.", "the summary counts only what is ready");
 eq(basisSummary(forecast({ forecast_source: "linear_trend", pending_types: [] })), "Linear trend for 8 blood types.", "all linear");
 eq(basisSummary(forecast({ forecast_source: "none" })), null, "no summary while collecting");
+
+// ── the plain-language layer: what the row says is two states, with no model names; the names stay in Forecast details
+const plainStates = [
+  ["A+", "From its own history", "any SARIMAX fit, whatever its settings"],
+  ["B+", "From its own history", "an AI-recommended order is still just its own history"],
+  ["O+", "From its own history", "a default order too"],
+  ["O-", "Simple trend line", "a type on the linear trend"],
+] as const;
+for (const [t, text, why] of plainStates) eq(basisFor(f, t)?.text, text, why);
+eq(basisFor(forecast({ forecast_source: "linear_trend" }), "A+")?.text, "Simple trend line", "an all-linear forecast");
+eq(basisFor(forecast({ pending_types: ["A+"] }), "A+"), null, "calculating still has no basis");
+eq(basisFor(forecast({ forecast_source: "none" }), "A+"), null, "collecting has none either");
+eq(basisFor(null, "A+"), null, "nothing loaded");
+eq(basisFor(forecast({ forecast_source: "synthetic_model_stand_in" }), "A+")?.text, "Not from your records yet", "the stand-in is not passed off as the facility's history");
+if (basisFor(f, "O-")?.title !== "A simple trend line, because there wasn't enough pattern in this blood type's history to model. It doesn't use the dengue season calendar.") throw new Error("the trend-line explanation");
+if (basisFor(f, "A+")?.title !== "Built on this blood type's own stock history.") throw new Error("the own-history explanation");
+// nothing a reader sees in the row, or in its hover text, is a model name or a setting
+const jargon = /sarimax|arima|linear|grid|search|\bai\b|recommend|\border\b|default|\bfit|regress|exog|seasonal|\(\d,\d/i;
+for (const fx of [f, forecast({ forecast_source: "linear_trend" }), forecast({ forecast_source: "synthetic_model_stand_in" })]) {
+  for (const t of ["A+", "B+", "O+", "O-", "AB+"]) {
+    const b = basisFor(fx, t);
+    if (b !== null && (jargon.test(b.text) || jargon.test(b.title))) throw new Error(`jargon in the row's basis for ${t}: ${b.text} / ${b.title}`);
+  }
+}
+const plain = (x: ForecastView) => basisSummaryPlain(x);
+eq(plain(f), "3 blood types built on their own history, 5 on a simple trend line.", "the plain summary");
+eq(plain(forecast({ pending_types: ["O-", "B-"] })), "3 blood types built on their own history, 3 on a simple trend line.", "counts only what is ready");
+eq(plain(forecast({ forecast_source: "linear_trend", pending_types: [] })), "8 blood types on a simple trend line.", "all trend line");
+eq(plain(forecast({ forecast_source: "none" })), null, "none while collecting");
+eq(plain(forecast({ forecast_source: "synthetic_model_stand_in" })), null, "none for the stand-in, which says its own thing");
+if (jargon.test(plain(f) ?? "")) throw new Error("jargon in the plain summary");
+// the one explanatory sentence: the dengue clause appears where a model uses it, and only there
+const FULL = "The outlook projects how many units you'll have over the next 30 days, based on how your stock has moved in the past and the dengue season calendar. It doesn't know about planned donation drives or emergencies.";
+const TREND = FULL.replace(" and the dengue season calendar", "");
+eq(forecastExplainer(f), FULL, "a mixed forecast says the season calendar is used");
+eq(forecastExplainer(null), FULL, "still loading: the sentence stays");
+eq(forecastExplainer(forecast({ forecast_source: "none" })), FULL, "collecting: the sentence stays");
+eq(forecastExplainer(forecast({ forecast_source: "synthetic_model_stand_in" })), FULL, "the stand-in's reference model uses the calendar too");
+eq(forecastExplainer(forecast({ forecast_source: "linear_trend" })), TREND, "all trend line: no season calendar is claimed");
+eq(forecastExplainer(forecast({ sarimax_orders: {} })), TREND, "no type built on its own history: none claimed");
+eq(forecastExplainer(forecast({ sarimax_orders: { "A+": "SARIMAX(1,1,1)x(1,0,1,7)+dengue [grid-searched]" }, pending_types: ["A+"] })), TREND, "the only model type is still calculating: none shown yet");
+if (!FULL.includes("planned donation drives or emergencies") || !TREND.includes("planned donation drives or emergencies")) throw new Error("the blind spots are always named");
+// the technical layer is untouched: same words as before, and the full label is on hand for Forecast details
+eq(technicalBasisFor(f, "A+")?.title, "SARIMAX(1,1,1)x(1,0,1,7)+dengue [grid-searched]", "the full order label is kept for Forecast details");
 
 // ── can give
 eq(canGiveText(row("O+", 100, 40, { "Packed RBC": 60, Platelets: 0 })), { main: 60, extra: null }, "can give, packed RBC");

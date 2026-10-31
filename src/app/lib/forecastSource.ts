@@ -1,5 +1,6 @@
-// Which mechanism produced one blood type's forecast, for the small tag in the Dashboard's
-// per-type outlook. The tag names the mechanism and nothing more.
+// Which mechanism produced one blood type's forecast, by name (SARIMAX and where its order came from). The technical layer:
+// Forecast details shows it per blood type; the Dashboard rows say the plain-language version of the same fact (bankDashboard.ts).
+// The tag names the mechanism and nothing more.
 
 export type ForecastSourceTag = { text: string; title: string };
 

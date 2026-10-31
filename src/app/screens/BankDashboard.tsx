@@ -14,13 +14,13 @@ import { StockBar } from "../components/StockBar";
 import { UploadHistoryPanel } from "../components/UploadHistoryPanel";
 import { type InventorySummaryRow } from "../lib/inventoryTypes";
 import { isRealForecastSource, type ForecastView } from "../lib/forecastTypes";
-import { STATUS_STYLES, STOCK_LABELS, isNotStocked, stockStatus } from "../lib/statusTokens";
+import { BLOOD_TYPE_ORDER, STATUS_STYLES, STOCK_LABELS, isNotStocked, stockStatus } from "../lib/statusTokens";
 import { buildTrendChart, shortDate, tickLabel, type TrendPoint } from "../lib/trendChart";
 import { manilaToday } from "../lib/transfers";
 import { formatDayMonth } from "../lib/dateFormat";
 import { requestUnitsText, type RequestRow } from "../lib/requestTypes";
 import {
-  basisFor, basisSummary, canGiveText, expiryLine, limitedHistoryNote, orderLabel, orderPrefill, outlookFor, sortedRows, statusWord, supplySentence,
+  basisFor, basisSummary, basisSummaryPlain, canGiveText, expiryLine, forecastExplainer, limitedHistoryNote, orderLabel, orderPrefill, outlookFor, sortedRows, statusWord, supplySentence, technicalBasisFor,
   waitingRequests, type Outlook,
 } from "../lib/bankDashboard";
 
@@ -114,7 +114,7 @@ function StockAndOutlook(p: BankDashboardProps) {
   const rows = sortedRows(p.summary, p.forecast);
   const today = manilaToday();
   const pending = p.forecast?.pending_types ?? [];
-  const summaryLine = basisSummary(p.forecast);
+  const summaryLine = basisSummaryPlain(p.forecast);
   const anyOrder = (p.forecast?.restock_recommendations.length ?? 0) > 0;
 
   return (
@@ -124,7 +124,10 @@ function StockAndOutlook(p: BankDashboardProps) {
       </h2>
       <p className="text-[14px] text-foreground mt-1 max-w-[70ch]">
         What you hold, and what you can give another facility: the units above each type's minimum that a search would find
-        available. The outlook is a 30-day estimate, shown apart from the stock and with the method it rests on.
+        available.
+      </p>
+      <p className="text-[14px] text-foreground mt-1 max-w-[70ch]">
+        {forecastExplainer(p.forecast)}
       </p>
 
       {p.summaryLoading && (
@@ -172,7 +175,7 @@ function StockAndOutlook(p: BankDashboardProps) {
               Still calculating {pending.length} of {p.forecast.types_total} blood types ({pending.join(", ")}). This updates by itself.
             </p>
           )}
-          {summaryLine && <p>Outlook basis: {summaryLine} Details are under Forecast details.</p>}
+          {summaryLine && <p>Outlook basis: {summaryLine} The technical details are under Forecast details.</p>}
           {p.forecast?.forecast_source === "synthetic_model_stand_in" && (
             <p className="text-synthetic-text font-semibold">
               This outlook comes from a reference model, not this facility's own history yet. See Forecast details.
@@ -422,6 +425,25 @@ function ExpiringGroupRow({ group }: { group: ExpiringGroup }) {
 
 // ─── Forecast details (a disclosure) ────────────────────────────────────────
 
+// The technical layer behind the plain tag in each row: which method, and for a model fit which settings, exactly as named in
+// the API (grid-searched, AI-recommended, default order). A tag names a mechanism only; it makes no claim about accuracy.
+function MethodByType({ f }: { f: ForecastView }) {
+  const rows = BLOOD_TYPE_ORDER.map((type) => ({ type, basis: technicalBasisFor(f, type), label: f.sarimax_orders?.[type] }))
+    .filter((r) => r.basis !== null);
+  if (rows.length === 0) return null;
+  return (
+    <ul aria-label="Forecast method by blood type" className="mt-2 divide-y divide-gray-200 border-y border-gray-200 text-[14px]">
+      {rows.map((r) => (
+        <li key={r.type} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5">
+          <span className="w-10 shrink-0"><BloodTypeBadge type={r.type} size="sm" /></span>
+          <span title={r.basis!.title} className="w-48 shrink-0 font-semibold">{r.basis!.text}</span>
+          <span className="text-gray-700 break-words flex-1 min-w-[14rem]">{r.label ?? r.basis!.title}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function TrendTooltip({ active, payload, todayISO }: { active?: boolean; payload?: { payload: TrendPoint }[]; todayISO: string | null }) {
   if (!active || !payload || payload.length === 0) return null;
   const d = payload[0].payload;
@@ -508,6 +530,7 @@ function ForecastDetailsBody(p: BankDashboardProps) {
             {real && `Built from ${f.days_of_history} days of this facility's recorded stock. These are estimates, not guarantees.`}
           </p>
           {summaryLine && <p>{summaryLine}</p>}
+          {real && <MethodByType f={f} />}
           {f.forecast_source === "synthetic_model_stand_in" && (
             <p className="rounded-md border border-synthetic-border bg-synthetic-tint px-3 py-2 text-synthetic-text">
               <FlaskConical size={14} className="inline mr-1.5 -mt-0.5" aria-hidden="true" />
