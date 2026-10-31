@@ -51,14 +51,12 @@ class InventoryRowTests(unittest.TestCase):
             c.execute(text("UPDATE blood_units SET archived_at = now() WHERE din = :d"), {"d": self.din("GONE")})
         self.assertEqual(set(self.rows()), {self.din("LIVE"), self.din("EXPIRED")})
 
-    def test_the_read_still_runs_the_once_per_tier_expiry_notification_over_every_row(self):
+    def test_the_read_writes_no_expiry_notification(self):
         add(self.bank, self.din("NEAR"), 5)
         add(self.bank, self.din("FAR"), 60)
         app.get_inventory(facility_id=self.bank)
-        app.get_inventory(facility_id=self.bank)   # a second load does not notify again
-        sent = q("SELECT message FROM notifications WHERE facility_id = :f AND type = 'unit_expiry'", f=self.bank)
-        self.assertEqual(len(sent), 1)
-        self.assertIn(self.din("NEAR"), sent[0][0])
+        app.get_inventory(facility_id=self.bank)
+        self.assertEqual(q("SELECT count(*) FROM notifications WHERE facility_id = :f", f=self.bank)[0][0], 0)
 
     def test_clearing_the_backlog_archives_expired_units_but_not_ones_still_reserved(self):
         add(self.bank, self.din("OLD1"), -4)

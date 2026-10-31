@@ -524,8 +524,19 @@ export type NotificationItem = {
   created_at: string;
 };
 
-export function listNotifications(): Promise<NotificationItem[]> {
-  return apiGet<NotificationItem[]>("/notifications");
+// Newest first. `beforeId` = the oldest id already held: the rows older than it, so the list can be paged past the first 50.
+export function listNotifications(opts: { limit?: number; beforeId?: number } = {}): Promise<NotificationItem[]> {
+  const params = new URLSearchParams();
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  if (opts.beforeId !== undefined) params.set("before_id", String(opts.beforeId));
+  const query = params.toString();
+  return apiGet<NotificationItem[]>(query ? `/notifications?${query}` : "/notifications");
+}
+
+// The bell's badge and its poll: every unread notification (not just the newest page) and the newest id, so an arrival can be told
+// from a count that merely changed.
+export function getNotificationUnreadCount(): Promise<{ unread: number; latest_id: number }> {
+  return apiGet<{ unread: number; latest_id: number }>("/notifications/unread-count");
 }
 
 export function markNotificationRead(notificationId: number): Promise<{ id: number; read?: boolean; already_read_or_not_found?: boolean }> {

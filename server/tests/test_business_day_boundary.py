@@ -71,12 +71,12 @@ class BusinessDayBoundaryTests(unittest.TestCase):
         with freeze(JUST_AFTER_MIDNIGHT):
             self.assertEqual(app.archive_expired_inventory(facility_id=self.fid)["archived_count"], 1)
 
-    def test_expiry_warning_days_left_are_counted_from_the_manila_day(self):
+    def test_expiring_days_left_are_counted_from_the_manila_day(self):
         with freeze(JUST_AFTER_MIDNIGHT):
-            app.get_inventory(facility_id=self.fid)
-        msgs = [r[0] for r in q("SELECT message FROM notifications WHERE facility_id=:f ORDER BY id", f=self.fid)]
-        # today's unit is 0d left (critical), tomorrow's 1d; yesterday's is expired and skipped
-        self.assertEqual(sorted(m.split(" — ")[1] for m in msgs), ["0d left", "1d left"])
+            groups = app.get_expiring_inventory(facility_id=self.fid)["groups"]
+        # today's unit has 0 days left, tomorrow's 1; yesterday's is expired and not listed
+        self.assertEqual(sorted(g["days_left"] for g in groups), [0, 1])
+        self.assertEqual(q("SELECT count(*) FROM notifications WHERE facility_id=:f", f=self.fid)[0][0], 0, "and it notifies nothing")
 
     def test_snapshot_lands_on_the_manila_date_not_the_utc_date(self):
         for label, instant in BOTH:

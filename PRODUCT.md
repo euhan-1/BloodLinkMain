@@ -22,7 +22,7 @@ The core differentiator is direct hospital↔blood-bank coordination — real-ti
 
 Built and evaluated as a thesis/capstone project — success is measured by a technical adviser/panel defense. It is nonetheless built and maintained to a real production standard (live-deployed on Vercel + Render, tested, iteratively hardened) rather than as a throwaway prototype.
 
-Core workflows: CSV upload of inventory and donor rosters; per-blood-type minimum/maximum stock thresholds, set per facility (a new facility starts from default values); emergency sourcing via nearest-facility search ranked by distance and blood-type compatibility; the request lifecycle (create → accept → confirm-release → transfer, using first-expiry-first-out unit selection); a donor roster with SMS "blast" outreach; an in-app coordination chat per request; and notifications for expiry warnings, forecast shortage alerts, request status changes, and blast completion.
+Core workflows: CSV upload of inventory and donor rosters; per-blood-type minimum/maximum stock thresholds, set per facility (a new facility starts from default values); emergency sourcing via nearest-facility search ranked by distance and blood-type compatibility; the request lifecycle (create → accept → confirm-release → transfer, using first-expiry-first-out unit selection); a donor roster with SMS "blast" outreach; an in-app coordination chat per request; and notifications for what changed in a transfer (incoming, accepted, declined, cancelled, released, received, units that expired in transit) and for forecast shortage alerts, each resolving itself once it no longer needs anyone. Expiring units are shown on the dashboard, not notified.
 
 ## Capabilities and Constraints
 

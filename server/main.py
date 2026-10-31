@@ -398,20 +398,20 @@ def get_acting_user_id(authorization: Optional[str] = Header(default=None)) -> O
     return int(user["sub"]) if user else None
 
 
-# ─── Notifications (Step 13A) ───────────────────────────────────────────────
-# Facility-scoped (see schema_notifications.sql). Two kinds of trigger:
-#   - Action-triggered: inserted directly at the point of the state change
-#     (request created/accepted/declined, transfer confirmation needed, blast
-#     completes) — real-time, no polling needed to generate these.
-#   - State-diff-triggered (forecast newly predicting a shortage, a unit
-#     newly crossing into near-expiry/critical): there's no scheduler in this
-#     app, so instead of a background job, the diff-and-notify check rides
-#     along inside the existing endpoint that already computes the relevant
-#     state fresh on every call (GET /forecast, GET /inventory) — the first
-#     time a blood-bank facility loads its dashboard (or a facility loads its
-#     inventory) after a real transition, that's when the notification fires.
-#     See _check_forecast_shortage_notifications / _check_expiry_notifications.
-NOTIFY_EXPIRY_CRITICAL_DAYS = 3
+# ─── Notifications ─────────────────────────────────────────────────────────
+# Facility-scoped. THE RULE: a row exists because something needs the facility or something changed in a transfer it is part
+# of. When that stops being true the row resolves itself, meaning the system marks it read (read_at), never deletes it.
+#   - Transfer events, written at the state change (request created / accepted / declined / cancelled / released / received):
+#     incoming_request, request_accepted, request_declined, request_cancelled, receipt_needed, transfer_completed,
+#     transfer_units_failed. Two of them are prompts and resolve on their own: incoming_request when the request leaves
+#     "pending" (accepted, declined or cancelled), receipt_needed when receipt is confirmed. Any row linked to a request that
+#     no longer exists resolves too (_resolve_stale_notifications).
+#   - forecast_shortage: written when GET /forecast newly projects a type below its minimum, only for a type with at least
+#     SARIMAX_MIN_DAYS_REQUIRED recorded days, in the Dashboard's wording, and resolved when the projection clears.
+#   - expiring_unit_alert (a bank offering near-expiry units to hospitals) is written by that action and resolves once the units
+#     it names have expired; blast_complete is written by its own action.
+# Expiring units are NOT a notification: the Dashboard lists them, grouped, with an action (GET /inventory/expiring).
+# unit_expiry rows written before that change remain; nothing writes them now.
 NOTIFY_EXPIRY_NEAR_DAYS = 7
 
 
@@ -423,6 +423,117 @@ def _create_notification(conn, facility_id: int, notif_type: str, message: str, 
         ),
         {"facility_id": facility_id, "type": notif_type, "message": message, "link": link},
     )
+
+
+_MONTH_NAMES = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _format_date(d: date) -> str:
+    """"28 Oct 2026": written out here, not by strftime (whose month names follow the server's locale), the same form
+    src/app/lib/dateFormat.ts writes."""
+    return f"{d.day} {_MONTH_NAMES[d.month - 1]} {d.year}"
+
+
+def _format_day_month(d: date) -> str:
+    return f"{d.day} {_MONTH_NAMES[d.month - 1]}"
+
+
+def _request_phrase(req) -> str:
+    """"3-unit O+ Packed RBC request": what a request is, in every notification about it, so two requests for the same
+    blood type read differently. The component is NULL on requests that predate it (not recorded): then it is left out."""
+    component = req["component"]
+    return f"{req['quantity']}-unit {req['blood_type']}{' ' + component if component else ''} request"
+
+
+def _failed_units_text(expired: list, shown: int = 5) -> str:
+    """"W0412 26 100200 (expired 28 Oct 2026), ... and 3 more": a long list of DINs is not something a notification can carry."""
+    parts = [f"{u['din']} (expired {_format_date(u['expires_date'])})" for u in expired[:shown]]
+    more = len(expired) - shown
+    return ", ".join(parts) + (f", and {more} more" if more > 0 else "")
+
+
+def _kilometers_text(km: float) -> str:
+    return "1 kilometer" if km == 1 else f"{km} kilometers"
+
+
+def _expiry_when(days_left: int, units: int) -> str:
+    """"expires today" / "expire in 2 days" (the verb agrees with the number of units)."""
+    verb = "expires" if units == 1 else "expire"
+    return f"{verb} today" if days_left == 0 else f"{verb} in {days_left} {'day' if days_left == 1 else 'days'}"
+
+
+def _resolve_notifications(conn, facility_id: int, notif_type: str, link: str) -> int:
+    """Marks read, by the system, the unread `notif_type` notifications at `facility_id` that point at `link` (a transfer
+    event just made them untrue). Never deletes. Returns how many rows it resolved."""
+    return conn.execute(
+        text(
+            "UPDATE notifications SET read_at = now() "
+            "WHERE facility_id = :f AND type = :t AND link = :l AND read_at IS NULL"
+        ),
+        {"f": facility_id, "t": notif_type, "l": link},
+    ).rowcount
+
+
+# Notifications written before this instant are left alone by the automatic sweep below: they were written under the old rules,
+# and what to do with them is a separate decision (CLAUDE.md). 2026-11-01 00:00 Manila. None would sweep every row.
+NOTIFICATIONS_AUTORESOLVE_SINCE: Optional[datetime] = datetime(2026, 10, 31, 16, 0, tzinfo=timezone.utc)
+
+
+def _resolve_stale_notifications(conn, facility_id: Optional[int], since: Optional[datetime], today: Optional[date] = None) -> int:
+    """Resolves (marks read) the unread notifications whose truth has already gone: the request no longer exists, an
+    incoming_request whose request is no longer pending, a receipt prompt whose receipt has been confirmed, and an
+    expiring_unit_alert whose units have expired. The request rules are the ones the transfer functions apply at the moment of
+    the change, derived here from the request's state, so a missed event or a concurrent change cannot leave a finished to-do
+    behind. `facility_id` None = every facility; `since` limits it to rows created at or after that instant (None = all rows);
+    `today` is the Manila business date (default: now).
+
+    An offer of near-expiry units (expiring_unit_alert) carries no unit reference except its own text, which says when the units
+    expire ("expire in 2 days", "expires today") counted from the day it was written. So its expiry date is that day plus those
+    days, and the offer resolves once that date has passed, which is when the units can no longer be released. This reads the
+    text _expiry_when writes: tests/test_notifications.py builds the offer through both notify endpoints, so rewording one
+    without the other fails there."""
+    today = today or business_today()
+    return conn.execute(
+        text(
+            """
+            UPDATE notifications n SET read_at = now()
+            WHERE n.read_at IS NULL
+              AND (CAST(:facility_id AS bigint) IS NULL OR n.facility_id = :facility_id)
+              AND (CAST(:since AS timestamptz) IS NULL OR n.created_at >= :since)
+              AND (
+                -- an offer of expiring units, once the date it names has passed
+                (
+                  n.type = 'expiring_unit_alert'
+                  AND n.message ~ 'expires? (today|in [0-9]+ days?)'
+                  AND (n.created_at AT TIME ZONE 'Asia/Manila')::date
+                      + COALESCE((substring(n.message from 'expires? in ([0-9]+) days?'))::int, 0) < :today
+                )
+                -- anything about a request that is gone, or that no longer needs the prompt
+                OR (
+                  n.link ~ '^requests:[0-9]+$'
+                  AND (
+                    NOT EXISTS (SELECT 1 FROM requests r WHERE r.id = (substring(n.link from '^requests:([0-9]+)$'))::bigint)
+                    OR EXISTS (
+                        SELECT 1 FROM requests r
+                        WHERE r.id = (substring(n.link from '^requests:([0-9]+)$'))::bigint
+                          AND (
+                            (n.type = 'incoming_request' AND r.status <> 'pending')
+                            OR (n.type = 'receipt_needed'
+                                AND (r.requester_confirmed_at IS NOT NULL OR r.status IN ('completed', 'failed')))
+                            -- the old shared type: the supplier's prompt is done once it has released, the requester's once it has received
+                            OR (n.type = 'transfer_confirmation_needed' AND (
+                                  (n.facility_id = r.supplying_facility_id AND r.supplier_confirmed_at IS NOT NULL)
+                                  OR (n.facility_id = r.requesting_facility_id
+                                      AND (r.requester_confirmed_at IS NOT NULL OR r.status IN ('completed', 'failed')))))
+                          )
+                    )
+                  )
+                )
+              )
+            """
+        ),
+        {"facility_id": facility_id, "since": since, "today": today},
+    ).rowcount
 
 
 def _start_upload_record(
@@ -763,48 +874,36 @@ UPLOAD_UNDO_HANDLERS = {
 }
 
 
-def _check_expiry_notifications(conn, facility_id: int, rows: list, today: date) -> None:
-    """Runs as a side effect of GET /inventory, reusing that endpoint's own
-    query result instead of re-scanning blood_units a second time (rows may
-    include already-expired units, since the caller doesn't filter those out
-    — skipped below instead). Only ever notifies about a unit the FIRST time
-    it reaches a given tier — last_notified_expiry_status is what makes this
-    idempotent across repeated loads instead of spamming a notification every
-    time the screen is opened while a unit sits at the same status."""
-    for row in rows:
-        if row["expires_date"] < today:
-            continue
-        days_left = (row["expires_date"] - today).days
-        if days_left <= NOTIFY_EXPIRY_CRITICAL_DAYS:
-            status = "critical"
-        elif days_left <= NOTIFY_EXPIRY_NEAR_DAYS:
-            status = "near-expiry"
-        else:
-            status = "ok"
-
-        if status in ("critical", "near-expiry") and status != row["last_notified_expiry_status"]:
-            _create_notification(
-                conn, facility_id, "unit_expiry",
-                f"{row['din']} ({row['blood_type']}) is now {status.replace('-', ' ')} — {days_left}d left",
-                "inventory",
-            )
-            conn.execute(
-                text("UPDATE blood_units SET last_notified_expiry_status = :status WHERE id = :id"),
-                {"status": status, "id": row["id"]},
-            )
+_SHORTAGE_MSG_TAIL = "forecast now predicts a shortage within"  # the OLD wording: still matched so a row written before the change resolves too
+_SHORTAGE_MSG_HEAD = "projected below its minimum"  # the Dashboard's wording: "O+: projected below its minimum around 4 Nov; ordering 90 units ..."
 
 
-_SHORTAGE_MSG_TAIL = "forecast now predicts a shortage within"  # shared by the create and the resolve below
+def _shortage_message(blood_type: str, alert: dict, recommendation: Optional[dict], today: date) -> str:
+    """The Dashboard's sentence (outlookFor in src/app/lib/bankDashboard.ts) behind the blood type. With a recommendation it
+    says the order that brings the type back to its maximum; without one (no maximum configured) it says only when."""
+    if recommendation is not None:
+        when = "today" if recommendation["days_until_breach"] <= 0 else f"around {_format_day_month(date.fromisoformat(recommendation['breach_date']))}"
+        units = recommendation["recommended_units"]
+        return f"{blood_type}: {_SHORTAGE_MSG_HEAD} {when}; ordering {units} {'unit' if units == 1 else 'units'} brings it back to its maximum."
+    days = alert["days_until_threshold"]
+    when = "today" if days <= 0 else f"around {_format_day_month(today + timedelta(days=days))}"
+    return f"{blood_type}: {_SHORTAGE_MSG_HEAD} {when}."
 
 
 def _check_forecast_shortage_notifications(
-    conn, facility_id: int, alerts: list[dict], evaluated_types: Optional[set[str]] = None
+    conn, facility_id: int, alerts: list[dict], evaluated_types: Optional[set[str]] = None,
+    recommendations: Optional[dict[str, dict]] = None, today: Optional[date] = None,
 ) -> None:
     """Runs as a side effect of GET /forecast, blood-bank branches only —
     called with whatever `alerts` that call already computed, so this never
     re-derives the trend/synthetic-model logic itself. forecast_alert_state
     is what makes "newly flips to predicting a shortage" mean an actual
     transition (false -> true), not "still alerting from before".
+
+    The caller passes only alerts it is willing to stand behind: a type with fewer than SARIMAX_MIN_DAYS_REQUIRED recorded
+    days, and the synthetic stand-in, are left out (the Dashboard says "not enough history" for them, and a notification
+    must not say more than the screen does). A type left out while it is in `evaluated_types` is read as "not alerting".
+    `recommendations` ({blood_type: recommendation}) gives the text the Dashboard's order and date.
 
     The false->true check-and-set for each alerting type is done as ONE
     atomic UPSERT (WHERE alerting = FALSE on the DO UPDATE branch), not a
@@ -816,6 +915,8 @@ def _check_forecast_shortage_notifications(
     target row, so the second call's UPSERT can only run after the first has
     committed, and by then its own WHERE alerting = FALSE no longer matches —
     it updates nothing and RETURNING yields no row, so nothing double-fires."""
+    today = today or business_today()
+    recommendations = recommendations or {}
     alerting_types = {a["type"] for a in alerts}
 
     for alert in alerts:
@@ -836,7 +937,7 @@ def _check_forecast_shortage_notifications(
         if flipped is not None:
             _create_notification(
                 conn, facility_id, "forecast_shortage",
-                f"{blood_type} {_SHORTAGE_MSG_TAIL} {alert['days_until_threshold']} days",
+                _shortage_message(blood_type, alert, recommendations.get(blood_type), today),
                 "dashboard",
             )
 
@@ -863,16 +964,20 @@ def _check_forecast_shortage_notifications(
         # Notifications have no archive/delete column; "read_at" is how they are
         # resolved everywhere else, so the now-obsolete shortage notice is marked
         # read (it stays in history, just stops counting as unread). The blood
-        # type is only recoverable from the message text.
+        # type is only recoverable from the message text: the Dashboard-wording prefix, or the old one.
         conn.execute(
             text(
                 """
                 UPDATE notifications SET read_at = now()
                 WHERE facility_id = :facility_id AND type = 'forecast_shortage' AND read_at IS NULL
-                  AND message LIKE :prefix
+                  AND (message LIKE :prefix OR message LIKE :old_prefix)
                 """
             ),
-            {"facility_id": facility_id, "prefix": f"{blood_type} {_SHORTAGE_MSG_TAIL}%"},
+            {
+                "facility_id": facility_id,
+                "prefix": f"{blood_type}: {_SHORTAGE_MSG_HEAD}%",
+                "old_prefix": f"{blood_type} {_SHORTAGE_MSG_TAIL}%",
+            },
         )
 
 
@@ -2203,23 +2308,47 @@ def health():
     return {"status": "ok", "database": "connected", "cors_allowed_origins": CORS_ALLOWED_ORIGINS}
 
 
+NOTIFICATIONS_PAGE_SIZE = 50
+NOTIFICATIONS_MAX_PAGE_SIZE = 100
+
+
 @app.get("/notifications")
-def list_notifications(facility_id: int = Depends(get_acting_facility_id)):
-    """Most recent first, capped at 50 — this is a notification feed, not an
-    archive. The frontend polls this on load and on a short interval; there's
-    no push/WebSocket involved."""
-    with engine.connect() as conn:
+def list_notifications(limit: int = NOTIFICATIONS_PAGE_SIZE, before_id: Optional[int] = None, facility_id: int = Depends(get_acting_facility_id)):
+    """Newest first, `limit` rows (default 50, at most 100). To reach older rows pass `before_id` = the id of the oldest row
+    already held: this returns the rows older than it. The frontend polls GET /notifications/unread-count instead of this
+    on a short interval; there's no push/WebSocket involved. Rows whose truth has gone (see _resolve_stale_notifications)
+    are marked read first, so the list never offers a finished to-do as new."""
+    limit = max(1, min(limit, NOTIFICATIONS_MAX_PAGE_SIZE))
+    with engine.begin() as conn:
+        _resolve_stale_notifications(conn, facility_id, NOTIFICATIONS_AUTORESOLVE_SINCE)
         rows = conn.execute(
             text(
                 """
                 SELECT id, type, message, link, read_at, created_at
-                FROM notifications WHERE facility_id = :facility_id
-                ORDER BY created_at DESC LIMIT 50
+                FROM notifications
+                WHERE facility_id = :facility_id AND (CAST(:before_id AS bigint) IS NULL OR id < :before_id)
+                ORDER BY id DESC LIMIT :limit
                 """
             ),
-            {"facility_id": facility_id},
+            {"facility_id": facility_id, "before_id": before_id, "limit": limit},
         ).mappings().all()
     return [dict(row) for row in rows]
+
+
+@app.get("/notifications/unread-count")
+def notifications_unread_count(facility_id: int = Depends(get_acting_facility_id)):
+    """The bell's badge: how many notifications this facility has unread, all of them, not only the newest page.
+    `latest_id` is the newest row's id (read or not), so the bell can tell a new arrival from a count that merely changed."""
+    with engine.begin() as conn:
+        _resolve_stale_notifications(conn, facility_id, NOTIFICATIONS_AUTORESOLVE_SINCE)
+        row = conn.execute(
+            text(
+                "SELECT count(*) FILTER (WHERE read_at IS NULL) AS unread, COALESCE(max(id), 0) AS latest_id "
+                "FROM notifications WHERE facility_id = :facility_id"
+            ),
+            {"facility_id": facility_id},
+        ).mappings().first()
+    return {"unread": row["unread"], "latest_id": row["latest_id"]}
 
 
 @app.post("/notifications/{notification_id}/read")
@@ -2461,13 +2590,12 @@ def get_inventory(facility_id: int = Depends(get_acting_facility_id)):
     POST /inventory/archive-expired. Only excludes units already archived,
     so the working list declutters once that backlog is cleared without
     losing the rows (archived_at IS NULL, never a DELETE)."""
-    today = business_today()
-    with engine.begin() as conn:
+    with engine.connect() as conn:
         rows = conn.execute(
             text(
                 """
                 SELECT id, din, blood_type, component, location, volume_ml,
-                       collected_date, expires_date, last_notified_expiry_status, reserved_for_request_id
+                       collected_date, expires_date, reserved_for_request_id
                 FROM blood_units
                 WHERE facility_id = :facility_id AND archived_at IS NULL
                 ORDER BY expires_date ASC
@@ -2475,10 +2603,6 @@ def get_inventory(facility_id: int = Depends(get_acting_facility_id)):
             ),
             {"facility_id": facility_id},
         ).mappings().all()
-        # Side effect: notifies once per unit the first time it crosses into
-        # near-expiry/critical — reuses the rows just fetched above instead
-        # of re-querying blood_units a second time (see _check_expiry_notifications).
-        _check_expiry_notifications(conn, facility_id, rows, today)
     return [
         {
             "din": r["din"], "blood_type": r["blood_type"], "component": r["component"],
@@ -3300,7 +3424,8 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
 
         if days_of_history < MIN_DAYS_REQUIRED:
             if stand_in is not None:
-                _check_forecast_shortage_notifications(conn, facility_id, stand_in["alerts"])
+                # the reference model is not this facility's own history: nothing it projects is worth an interruption
+                _check_forecast_shortage_notifications(conn, facility_id, [])
                 return {
                     "view": "forecast",
                     "has_sufficient_history": False,
@@ -3347,6 +3472,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
     sarimax_fallback_types: list[str] = []
     alerts = []
     restock_recommendations = []
+    limited_history_types: set[str] = set()  # types whose alert is not notified (too few recorded days)
     downside_risks = []
     insufficient_history = []
     type_bounds: dict[str, list[dict]] = {}
@@ -3428,6 +3554,8 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
             today,
         )
         limited = _limited_history(len(points))
+        if limited is not None:
+            limited_history_types.add(blood_type)
         if recommendation is not None:
             # Recommendations are not gated, but one made on limited history says so, with the day count.
             if limited is not None:
@@ -3514,8 +3642,11 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
     ] if not pending_types else []
 
     with engine.begin() as conn:
+        # Same thresholds as the Dashboard: a type on limited history shows "not enough history" there, so it is not notified.
         _check_forecast_shortage_notifications(
-            conn, facility_id, alerts, evaluated_types=set(by_type) - set(pending_types)
+            conn, facility_id, [a for a in alerts if a["type"] not in limited_history_types],
+            evaluated_types=set(by_type) - set(pending_types),
+            recommendations={r["blood_type"]: r for r in restock_recommendations}, today=today,
         )
 
     restock_recommendations.sort(key=lambda r: r["days_until_breach"])
@@ -4184,15 +4315,13 @@ def get_expiring_inventory(facility_id: int = Depends(get_acting_facility_id)):
     not one row per DIN. Expired units are the Inventory screen's business, and units reserved for a request are leaving
     anyway, so neither is listed.
 
-    Like GET /inventory, this runs _check_expiry_notifications on the rows it reads (the once-per-tier "this unit is now near
-    expiry" notification), so the Dashboard keeps triggering it now that it no longer loads every unit. Only units inside the
-    window can ever fire it (a unit further out is "ok", which it ignores), so reading just those is the same as reading all."""
+    This is where expiring units live; it writes no notification (the old once-per-tier unit_expiry notification is gone)."""
     today = business_today()
-    with engine.begin() as conn:
+    with engine.connect() as conn:
         rows = conn.execute(
             text(
                 """
-                SELECT id, din, blood_type, component, expires_date, last_notified_expiry_status, reserved_for_request_id
+                SELECT id, din, blood_type, component, expires_date, reserved_for_request_id
                 FROM blood_units
                 WHERE facility_id = :facility_id AND archived_at IS NULL
                   AND expires_date >= :today AND expires_date <= :last_day
@@ -4201,7 +4330,6 @@ def get_expiring_inventory(facility_id: int = Depends(get_acting_facility_id)):
             ),
             {"facility_id": facility_id, "today": today, "last_day": today + timedelta(days=NOTIFY_EXPIRY_NEAR_DAYS)},
         ).mappings().all()
-        _check_expiry_notifications(conn, facility_id, rows, today)
     groups: dict[tuple, int] = {}
     for r in rows:
         if r["reserved_for_request_id"] is None:
@@ -4260,15 +4388,14 @@ def notify_nearby_hospitals_of_expiring_group(body: NotifyExpiringGroupBody, act
             ),
             {"acting_facility_id": acting_facility_id},
         ).mappings().all()
-        verb = "expires" if units == 1 else "expire"
-        when = f"{verb} today" if days_left == 0 else f"{verb} in {days_left} {'day' if days_left == 1 else 'days'}"
+        when = _expiry_when(days_left, units)
         notified_names = []
         for hospital in hospitals:
             distance_km = round(_haversine_km(origin["latitude"], origin["longitude"], hospital["latitude"], hospital["longitude"]), 1)
             _create_notification(
                 conn, hospital["id"], "expiring_unit_alert",
                 f"{origin['name']} has {units} near-expiry {body.blood_type} {body.component} {'unit' if units == 1 else 'units'} that {when}, "
-                f"{distance_km}km away",
+                f"{_kilometers_text(distance_km)} away",
                 f"sourcing:{body.blood_type}",
             )
             notified_names.append(hospital["name"])
@@ -4336,8 +4463,8 @@ def notify_nearby_hospitals_of_expiring_unit(din: str, acting_facility_id: int =
             )
             _create_notification(
                 conn, hospital["id"], "expiring_unit_alert",
-                f"{origin['name']} has a near-expiry {unit['blood_type']} unit ({unit['component']}) — "
-                f"{days_left}d left, {distance_km}km away",
+                f"{origin['name']} has 1 near-expiry {unit['blood_type']} {unit['component']} unit that {_expiry_when(days_left, 1)}, "
+                f"{_kilometers_text(distance_km)} away",
                 f"sourcing:{unit['blood_type']}",
             )
             notified_names.append(hospital["name"])
@@ -4573,22 +4700,17 @@ def accept_request(
         if result.rowcount == 0:
             raise HTTPException(status_code=409, detail="request status changed concurrently; refresh and try again")
 
-        requester = conn.execute(
-            text("SELECT name FROM facilities WHERE id = :id"), {"id": req["requesting_facility_id"]}
-        ).mappings().first()
         supplier = conn.execute(
             text("SELECT name FROM facilities WHERE id = :id"), {"id": req["supplying_facility_id"]}
         ).mappings().first()
         _create_notification(
             conn, req["requesting_facility_id"], "request_accepted",
-            f"{supplier['name']} accepted your {req['blood_type']} request",
+            f"{supplier['name']} accepted your {_request_phrase(req)}",
             f"requests:{request_id}",
         )
-        _create_notification(
-            conn, req["supplying_facility_id"], "transfer_confirmation_needed",
-            f"Confirm release for {requester['name']}'s {req['blood_type']} request",
-            f"requests:{request_id}",
-        )
+        # The supplier's own next step (confirm release) is not announced to the supplier: they just clicked Accept, and the
+        # request is in their "in progress" list with the button. What it does do is settle the "new request" prompt.
+        _resolve_notifications(conn, req["supplying_facility_id"], "incoming_request", f"requests:{request_id}")
     return {"id": request_id, "status": "accepted"}
 
 
@@ -4620,9 +4742,10 @@ def decline_request(
         ).mappings().first()
         _create_notification(
             conn, req["requesting_facility_id"], "request_declined",
-            f"{supplier['name']} declined your {req['blood_type']} request",
+            f"{supplier['name']} declined your {_request_phrase(req)}",
             f"requests:{request_id}",
         )
+        _resolve_notifications(conn, req["supplying_facility_id"], "incoming_request", f"requests:{request_id}")
     return {"id": request_id, "status": "declined"}
 
 
@@ -4659,9 +4782,11 @@ def cancel_request(
         ).mappings().first()
         _create_notification(
             conn, req["supplying_facility_id"], "request_cancelled",
-            f"{requester['name']} cancelled their {req['blood_type']} request",
+            f"{requester['name']} cancelled their {_request_phrase(req)}",
             f"requests:{request_id}",
         )
+        # the "new request" prompt for a request nobody can accept any more
+        _resolve_notifications(conn, req["supplying_facility_id"], "incoming_request", f"requests:{request_id}")
     return {"id": request_id, "status": "cancelled"}
 
 
@@ -4782,11 +4907,14 @@ def confirm_release(
         supplier = conn.execute(
             text("SELECT name FROM facilities WHERE id = :id"), {"id": req["supplying_facility_id"]}
         ).mappings().first()
+        # One meaning per type: this prompt is the requester's, to confirm receipt (the supplier's release prompt is no more).
         _create_notification(
-            conn, req["requesting_facility_id"], "transfer_confirmation_needed",
-            f"{supplier['name']} released your {req['blood_type']} order — confirm receipt",
+            conn, req["requesting_facility_id"], "receipt_needed",
+            f"{supplier['name']} released your {_request_phrase(req)}. Confirm receipt when it arrives.",
             f"requests:{request_id}",
         )
+        # a release prompt written under the old shared type is settled by the release it asked for
+        _resolve_notifications(conn, req["supplying_facility_id"], "transfer_confirmation_needed", f"requests:{request_id}")
 
     return {"id": request_id, "reserved_unit_ids": [u["id"] for u in selected]}
 
@@ -4906,23 +5034,27 @@ def confirm_receipt(
         ).all())
         requester_name, supplier_name = names[req["requesting_facility_id"]], names[req["supplying_facility_id"]]
         link = f"requests:{request_id}"
+        # The prompt to confirm receipt has been answered (the old shared type too, for a row written before the split).
+        for prompt in ("receipt_needed", "transfer_confirmation_needed"):
+            _resolve_notifications(conn, req["requesting_facility_id"], prompt, link)
         if not expired:
             _create_notification(
                 conn, req["supplying_facility_id"], "transfer_completed",
-                f"{requester_name} confirmed receipt — your {req['blood_type']} transfer is complete",
+                f"{requester_name} confirmed receipt of your {_request_phrase(req)}. The transfer is complete.",
                 link,
             )
         else:
-            failed_text = ", ".join(f"{u['din']} (expired {u['expires_date'].isoformat()})" for u in expired)
-            got = f"{len(received_ids)} of {req['quantity']} {req['blood_type']} units"
+            failed_text = _failed_units_text(expired)
+            component = f" {req['component']}" if req["component"] else ""
+            got = f"{len(received_ids)} of {req['quantity']} {req['blood_type']}{component} units"
             _create_notification(
                 conn, req["requesting_facility_id"], "transfer_units_failed",
-                f"Received {got} from {supplier_name}. Not received — expired before receipt: {failed_text}",
+                f"Received {got} from {supplier_name}. Not received, expired before receipt: {failed_text}",
                 link,
             )
             _create_notification(
                 conn, req["supplying_facility_id"], "transfer_units_failed",
-                f"{requester_name} received {got}. Not transferred — expired before receipt, archived at your "
+                f"{requester_name} received {got}. Not transferred, expired before receipt and archived at your "
                 f"facility: {failed_text}",
                 link,
             )

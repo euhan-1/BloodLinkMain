@@ -143,16 +143,15 @@ class ExpiringGroupsTests(BankDashboardBase):
         add(self.bank, self.din(1), 30)
         self.assertEqual(self.groups(), {"window_days": 7, "total_units": 0, "groups": []})
 
-    def test_the_once_per_tier_expiry_notification_still_fires_from_here(self):
+    def test_reading_the_expiring_units_writes_no_notification(self):
+        # Expiring units live on the Dashboard, grouped and with an action; the once-per-tier unit_expiry notification is gone
         add(self.bank, self.din("CRIT"), 2)
         add(self.bank, self.din("NEAR"), 6)
         add(self.bank, self.din("OK"), 20)
         self.groups()
-        self.groups()  # idempotent: a second load does not notify again
-        sent = [m for (m,) in q("SELECT message FROM notifications WHERE facility_id = :f AND type = 'unit_expiry' ORDER BY id", f=self.bank)]
-        self.assertEqual(len(sent), 2)
-        self.assertTrue(any("critical" in m for m in sent) and any("near expiry" in m for m in sent))
-        self.assertEqual(q("SELECT count(*) FROM blood_units WHERE facility_id = :f AND last_notified_expiry_status IS NOT NULL", f=self.bank)[0][0], 2)
+        self.groups()
+        self.assertEqual(q("SELECT count(*) FROM notifications WHERE facility_id = :f", f=self.bank)[0][0], 0)
+        self.assertEqual(q("SELECT count(*) FROM blood_units WHERE facility_id = :f AND last_notified_expiry_status IS NOT NULL", f=self.bank)[0][0], 0)
 
 
 class NotifyGroupTests(BankDashboardBase):

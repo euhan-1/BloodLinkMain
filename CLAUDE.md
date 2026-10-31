@@ -114,8 +114,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
   plus "Not from your records yet" for the stand-in; no model names, settings or "optimized"-style claims there. The technical
   layer (SARIMAX, grid-searched / AI-recommended / default order, the full order label) is `technicalBasisFor` in
   **Forecast details**, per blood type, worded as the API names it. A hospital has no forecast and no such tag. And "Order 90 by 4 Nov" opens Source supply with type, quantity and Packed RBC
-  prefilled. `/inventory/expiring` still runs the once-per-tier expiry notification that `GET /inventory` runs, since the
-  Dashboard no longer loads every unit.
+  prefilled. `/inventory/expiring` writes no notification: expiring units are not one (see **Notifications**).
 - **"At risk"** is a third Dashboard outlook, between On track and an order: the central projection holds at or above the minimum at
   every checkpoint, but the lower bound of the 95% interval is below it at one (`_compute_downside_risk`; `/forecast` returns
   `downside_risks`, and per-type `type_bounds` with lower/upper). Display only: it never makes a recommendation, never changes
@@ -131,12 +130,35 @@ requests, SARIMAX demand forecasting, donor broadcast.
   (22 of 22), because that interval is wider than the stock itself, which is why the gate exists. With `MIN_DAYS_REQUIRED = 3` the
   system still recommends an order on three days of history, and the soundness guard can flip a type's method overnight: both are
   recorded in the selector JSON's `limitations` (and in `train_sarimax_selector.py`, which generates it: edit both).
+- **Notifications** exist because something needs the facility or something changed in a transfer it is part of; when that stops being
+  true the row **resolves itself**: the system marks it `read_at`, never deletes it. Types written today: `incoming_request`
+  (resolves when the request is accepted, declined or cancelled), `request_accepted`, `request_declined`, `request_cancelled`,
+  `receipt_needed` (the requester's prompt after release; resolves when receipt is confirmed), `transfer_completed`,
+  `transfer_units_failed`, `forecast_shortage`, and the two actions' own `expiring_unit_alert` (a bank offering near-expiry units
+  to hospitals; it resolves once the units it names have expired, a date the sweep reads from the offer's own text and creation
+  day: `tests/test_notifications.py` builds it through both notify endpoints so the two cannot drift) and `blast_complete`. A row
+  linked to a request that no longer exists resolves too. The old shared `transfer_confirmation_needed` is split (the supplier's
+  "confirm release" notice at accept is dropped, the receipt prompt is `receipt_needed`) and `unit_expiry` is retired: nothing
+  writes either, rows written before remain, and the sweep resolves the old prompts by request state. Resolution happens at the
+  event (`_resolve_notifications`) and again from the request's state on every `GET /notifications` and `/notifications/unread-count`
+  (`_resolve_stale_notifications`), **but only for rows created at or after `NOTIFICATIONS_AUTORESOLVE_SINCE` (2026-11-01 Manila)**:
+  rows older than that are left to a separate decision, because they are a production write: `server/resolve_existing_notifications.py`
+  (behind the production guard, `--dry-run` available) saves every unread id to `server/tmp/`, resolves the retired `unit_expiry`
+  rows and everything the sweep's rules resolve with no date limit, leaves events whose request still exists unread, prints counts
+  per type and records the exact undo SQL. Set the constant to `None` once it has been run. Not built yet: a release reminder for the
+  supplier (`docs/BACKLOG.md`). `forecast_shortage` is written only for a type with at least `SARIMAX_MIN_DAYS_REQUIRED` recorded days
+  and never from the synthetic stand-in, in the Dashboard's sentence ("O+: projected below its minimum around 4 Nov; ordering 90
+  units brings it back to its maximum."). Every request notification names its quantity and component, dates are written out
+  ("28 Oct 2026"), and the text says "request", "kilometers" and "near-expiry". The bell (`NotificationBell`, logic in
+  `lib/notifications.ts`, asserted by `check_notifications.ts`) shows the **server's count of every unread row** (exact to 99, then
+  "99+"; the list's header gives the exact number), polls `GET /notifications/unread-count` every 20 s **only while the browser tab
+  is visible** (and at once when it becomes visible), loads the list when opened, 50 a page, and pages older rows with
+  `GET /notifications?before_id=`. Expiring units are on the Dashboard, not in the list.
 - **The blood bank Inventory** (`BankInventory.tsx`, logic in `lib/bankInventory.ts`): the expired backlog is the headline (one
   button archives exactly the units the server will archive, never the expired ones still reserved for a request, after a
   confirmation), then a search across every type (DIN prefix or substring, case and spaces ignored), then a table of the eight
   types that each open to their units, 50 a page, in release order (live units soonest expiry first, expired last). `GET
-  /inventory` still returns every non-archived unit with no paging or filters, so the once-per-tier expiry notification it fires
-  keeps reading all rows, and each row now carries `reserved_for_request_id`. A unit's Note says "Reserved for request N" or "Not
+  /inventory` still returns every non-archived unit with no paging or filters, and each row now carries `reserved_for_request_id`. A unit's Note says "Reserved for request N" or "Not
   released: inside the margin"; the margin is mirrored in `RELEASE_MARGIN_DAYS` and `check_bank_inventory.ts` fails if it drifts
   from `MIN_DAYS_TO_EXPIRY_AT_RELEASE`.
 - **The transfer ledger** (`request_units`): `confirm_release` writes one row per reserved unit, copied from the unit at
@@ -177,8 +199,8 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (518 tests plus
-  155 subtests; use `server/.venv`, system Python lacks pytest). Never run
+  local scratch Postgres: `python -m pytest server/tests -q` (558 tests plus
+  160 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
   refuses to run without it or against a non-local host, overrides
@@ -193,7 +215,8 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `node scripts/check_request_timeline.ts` (status-event wording and the chat thread) and
   `node scripts/check_transfers.ts` (transfer-history filters, date presets and wording) and
   `node scripts/check_bank_dashboard.ts` (the blood bank Dashboard's sentence, outlook, basis and order prefill) and
-  `node scripts/check_bank_inventory.ts` (the blood bank Inventory's notes, filters, search, paging and backlog), each printing `ok`, plus
+  `node scripts/check_bank_inventory.ts` (the blood bank Inventory's notes, filters, search, paging and backlog) and
+  `node scripts/check_notifications.ts` (the bell's badge, times, polling and paging), each printing `ok`, plus
   `npm run typecheck`. The frontend has no component test runner.
   A red suite is a finding, not a footnote — "known failure" is how a real
   bug hides.

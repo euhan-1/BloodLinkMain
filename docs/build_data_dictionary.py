@@ -19,10 +19,12 @@ OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("docs/DATA_DICTIONARY.md"
 # Every value server/main.py passes to _create_notification. Checked against the code in main(), so a new
 # notification type fails the run until it is listed here.
 NOTIFICATION_TYPES = [
-    "blast_complete", "expiring_unit_alert", "forecast_shortage", "incoming_request", "request_accepted",
-    "request_cancelled", "request_declined", "transfer_completed", "transfer_confirmation_needed",
-    "transfer_units_failed", "unit_expiry",
+    "blast_complete", "expiring_unit_alert", "forecast_shortage", "incoming_request", "receipt_needed", "request_accepted",
+    "request_cancelled", "request_declined", "transfer_completed", "transfer_units_failed",
 ]
+# No longer written, but rows written before the change keep them: unit_expiry (expiring units moved to the Dashboard) and
+# transfer_confirmation_needed (split: the release prompt was dropped, the receipt prompt became receipt_needed).
+LEGACY_NOTIFICATION_TYPES = ["transfer_confirmation_needed", "unit_expiry"]
 
 TABLE_DOC = {
     "facilities": "Every organisation on the platform (hospitals and blood banks). It is the tenant root: nearly every other table carries a facility_id pointing here. Operational.",
@@ -190,10 +192,10 @@ D = {
     "notifications": {
         "id": "Unique identifier of the notification.",
         "facility_id": "The facility the notification is shown to.",
-        "type": f"Category, one of {len(NOTIFICATION_TYPES)}: {', '.join(NOTIFICATION_TYPES)}.",
+        "type": f"Category, one of {len(NOTIFICATION_TYPES)} written today: {', '.join(NOTIFICATION_TYPES)}. Rows written earlier may also carry {', '.join(LEGACY_NOTIFICATION_TYPES)}, which nothing writes now.",
         "message": "The text shown to the user.",
         "link": "The in-app page or record the notification opens (for example 'requests:14' or 'inventory').",
-        "read_at": "When the user read it; NULL while unread (currently NULL in every row).",
+        "read_at": "When it was read, by the user or by the system resolving it (the request moved on, the receipt was confirmed, the forecast cleared, the request no longer exists); NULL while unread. A resolved row is marked read, never deleted.",
         "created_at": "When the notification was raised.",
     },
     "upload_history": {

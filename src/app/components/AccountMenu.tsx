@@ -4,8 +4,12 @@ import {
   completeFacilityProfile,
   getMyFacilityProfile, updatePassword as apiUpdatePassword,
   requestPasswordReset,
-  listNotifications, markNotificationRead, markAllNotificationsRead, type NotificationItem,
+  listNotifications, getNotificationUnreadCount, markNotificationRead, markAllNotificationsRead, type NotificationItem,
 } from "../lib/api";
+import {
+  agoText, appendOlder, badgeLabel, isArrival, markEveryRead, markOneRead, mayHaveMore, oldestId, shouldPoll, unreadText,
+} from "../lib/notifications";
+import { formatDateTime } from "../lib/dateFormat";
 import { type SessionUser } from "../lib/session";
 import { getStoredTheme, setTheme, type Theme } from "../lib/theme";
 import { Modal } from "./Modal";
@@ -261,80 +265,114 @@ function EditFacilityProfileModal({ facilityName, onClose, onSaved }: {
   );
 }
 
-function formatRelativeTime(iso: string): string {
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return "just now";
-  if (diffMin < 60) return `${diffMin}m ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
-  const diffDay = Math.floor(diffHr / 24);
-  if (diffDay < 7) return `${diffDay}d ago`;
-  return new Date(iso).toLocaleDateString();
-}
-
 const NOTIFICATION_POLL_MS = 20000;
+const NOTIFICATION_PAGE = 50;
 
 // Bell trigger + dropdown for facility accounts (TopNav only — admins have no
 // facility_id, so notifications, which are facility-scoped, never apply to
 // them; AdminDashboardScreen's header renders AccountMenu without this).
+//
+// The badge is the server's count of every unread notification, polled every 20 s while the browser tab is visible (and at
+// once when it becomes visible again), not a count of whatever page happens to be loaded. The list loads when it is opened,
+// 50 at a time, with "Show older" for the rest.
 export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationItem) => void }) {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [unread, setUnread] = useState(0);
   const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [justArrived, setJustArrived] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  // null until the first poll resolves — distinguishes "nothing to compare
-  // against yet" (don't pulse on initial load) from "compared and nothing's
-  // new" (also don't pulse). Only a ID present now that wasn't in the
-  // previous poll's set counts as a real arrival.
-  const knownIdsRef = useRef<Set<number> | null>(null);
-
+  // null until the first answer: nothing to compare against yet, so the first load never pulses.
+  const knownLatestIdRef = useRef<number | null>(null);
+  const openRef = useRef(false);
   const pulseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  openRef.current = open;
 
-  function loadNotifications() {
-    listNotifications()
-      .then((data) => {
-        setNotifications(data);
-        const ids = new Set(data.map((n) => n.id));
-        if (knownIdsRef.current !== null && data.some((n) => !knownIdsRef.current!.has(n.id))) {
-          setJustArrived(true);
-          if (pulseTimeoutRef.current !== null) clearTimeout(pulseTimeoutRef.current);
-          pulseTimeoutRef.current = setTimeout(() => setJustArrived(false), 450);
-        }
-        knownIdsRef.current = ids;
-      })
-      // A failed poll shouldn't surface an error banner on every screen —
-      // it'll just quietly retry on the next interval tick.
-      .catch(() => {})
-      .finally(() => setLoading(false));
+  async function loadFirstPage() {
+    setLoading(true);
+    try {
+      const page = await listNotifications({ limit: NOTIFICATION_PAGE });
+      setNotifications(page);
+      setHasMore(mayHaveMore(page.length, NOTIFICATION_PAGE));
+      setLoadError(false);
+    } catch {
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadOlder() {
+    const before = oldestId(notifications);
+    if (before === null || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const older = await listNotifications({ limit: NOTIFICATION_PAGE, beforeId: before });
+      setNotifications((prev) => appendOlder(prev, older));
+      setHasMore(mayHaveMore(older.length, NOTIFICATION_PAGE));
+    } catch {
+      setLoadError(true);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  async function poll() {
+    try {
+      const { unread: count, latest_id } = await getNotificationUnreadCount();
+      setUnread(count);
+      if (isArrival(knownLatestIdRef.current, latest_id)) {
+        setJustArrived(true);
+        if (pulseTimeoutRef.current !== null) clearTimeout(pulseTimeoutRef.current);
+        pulseTimeoutRef.current = setTimeout(() => setJustArrived(false), 450);
+        if (openRef.current) loadFirstPage();
+      }
+      knownLatestIdRef.current = latest_id;
+    } catch {
+      // A failed poll shouldn't surface an error banner on every screen — it'll just quietly retry on the next tick.
+    }
   }
 
   useEffect(() => {
-    loadNotifications();
-    const interval = setInterval(loadNotifications, NOTIFICATION_POLL_MS);
+    poll();
+    const interval = setInterval(() => { if (shouldPoll(document.visibilityState)) poll(); }, NOTIFICATION_POLL_MS);
+    const onVisible = () => { if (shouldPoll(document.visibilityState)) poll(); };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
       if (pulseTimeoutRef.current !== null) clearTimeout(pulseTimeoutRef.current);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (!open) return;
+    loadFirstPage();
     function handleClick(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) setOpen(false);
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const unreadCount = notifications.filter((n) => n.read_at === null).length;
-
-  function handleNotificationClick(n: NotificationItem) {
+  async function handleNotificationClick(n: NotificationItem) {
     setOpen(false);
     if (n.read_at === null) {
-      markNotificationRead(n.id).catch(() => {});
-      setNotifications((prev) => prev.map((x) => (x.id === n.id ? { ...x, read_at: new Date().toISOString() } : x)));
+      const at = new Date().toISOString();
+      setNotifications((prev) => markOneRead(prev, n.id, at));
+      setUnread((u) => Math.max(0, u - 1));
+      try {
+        await markNotificationRead(n.id);
+      } catch {
+        // It did not save: put it back as unread rather than let the next poll quietly undo it.
+        setNotifications((prev) => prev.map((x) => (x.id === n.id ? { ...x, read_at: null } : x)));
+        setUnread((u) => u + 1);
+      }
     }
     onNavigate(n);
   }
@@ -342,42 +380,53 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
   async function handleMarkAllRead() {
     try {
       await markAllNotificationsRead();
-      setNotifications((prev) => prev.map((n) => ({ ...n, read_at: n.read_at ?? new Date().toISOString() })));
+      setNotifications((prev) => markEveryRead(prev, new Date().toISOString()));
+      setUnread(0);
     } catch {
-      // best-effort — next poll will reconcile actual state
+      // best-effort — the next poll will reconcile the real count
     }
   }
+
+  const badge = badgeLabel(unread);
 
   return (
     <div className="relative" ref={menuRef}>
       <button
         onClick={() => setOpen((o) => !o)}
+        aria-label={unread > 0 ? `Notifications, ${unread} unread` : "Notifications"}
+        aria-expanded={open}
         className="relative p-1.5 text-muted-foreground hover:text-foreground rounded transition-colors"
       >
         <Bell size={19} className={justArrived ? "animate-bell-pulse" : ""} />
-        {unreadCount > 0 && (
+        {badge !== null && (
           <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 bg-primary text-white text-[11px] font-bold rounded-full flex items-center justify-center leading-none">
-            {unreadCount > 9 ? "9+" : unreadCount}
+            {badge}
           </span>
         )}
       </button>
 
       {open && (
         <div className="absolute right-0 top-full mt-2 w-80 bg-card border border-border rounded-xl shadow-lg z-50 overflow-hidden">
-          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-            <h3 className="font-display font-bold text-[15px] text-foreground">Notifications</h3>
-            {unreadCount > 0 && (
-              <button onClick={handleMarkAllRead} className="text-[12px] font-semibold text-primary hover:underline hover:underline-offset-2">
+          <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
+            <div>
+              <h3 className="font-display font-bold text-[15px] text-foreground">Notifications</h3>
+              <div className="text-[12px] text-foreground" role="status">{unreadText(unread)}</div>
+            </div>
+            {unread > 0 && (
+              <button onClick={handleMarkAllRead} className="text-[12px] font-semibold text-primary hover:underline hover:underline-offset-2 shrink-0">
                 Mark all as read
               </button>
             )}
           </div>
           <div className="max-h-96 overflow-y-auto">
-            {loading && <div className="px-4 py-8 text-center text-[14px] text-muted-foreground">Loading…</div>}
-            {!loading && notifications.length === 0 && (
+            {loading && notifications.length === 0 && <div className="px-4 py-8 text-center text-[14px] text-muted-foreground">Loading…</div>}
+            {loadError && notifications.length === 0 && !loading && (
+              <div className="px-4 py-8 text-center text-[14px] text-status-critical-text">Couldn't load notifications.</div>
+            )}
+            {!loading && !loadError && notifications.length === 0 && (
               <div className="px-4 py-8 text-center text-[14px] text-muted-foreground">No notifications yet.</div>
             )}
-            {!loading && notifications.map((n) => (
+            {notifications.map((n) => (
               <button
                 key={n.id}
                 onClick={() => handleNotificationClick(n)}
@@ -390,12 +439,21 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
                   <div className={`text-[14px] leading-snug ${n.read_at === null ? "font-semibold text-foreground" : "text-muted-foreground"}`}>
                     {n.message}
                   </div>
-                  <div className="text-[12px] text-muted-foreground mt-0.5 font-mono">
-                    {formatRelativeTime(n.created_at)}
-                  </div>
+                  <time dateTime={n.created_at} title={formatDateTime(n.created_at)} className="block text-[12px] text-muted-foreground mt-0.5 tabular-nums">
+                    {agoText(n.created_at)}
+                  </time>
                 </div>
               </button>
             ))}
+            {hasMore && (
+              <button
+                onClick={loadOlder}
+                disabled={loadingMore}
+                className="w-full px-4 py-3 text-[13px] font-semibold text-primary hover:bg-secondary transition-colors disabled:opacity-60"
+              >
+                {loadingMore ? "Loading…" : "Show older notifications"}
+              </button>
+            )}
           </div>
         </div>
       )}

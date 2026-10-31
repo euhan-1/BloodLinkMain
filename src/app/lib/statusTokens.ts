@@ -23,13 +23,10 @@ export const BLOOD_COMPATIBILITY: Record<string, string[]> = {
   "AB-": ["A-", "B-", "O-", "AB-"],
 };
 
-// Mirrors the backend's NOTIFY_EXPIRY_CRITICAL_DAYS / NOTIFY_EXPIRY_NEAR_DAYS
-// (server/main.py) — can't literally share a constant across languages, but
-// the two values must stay in sync: this is what decides "critical"/"near
-// expiry" here, and the backend uses the same cutoffs to decide when an
-// expiry notification actually fires. Named here (not inlined) so the two
-// places in this file that care about "is this expiring soon" both go
-// through one definition instead of each hardcoding 3/7 independently.
+// EXPIRY_NEAR_DAYS mirrors the backend's NOTIFY_EXPIRY_NEAR_DAYS (server/main.py), the window GET /inventory/expiring and the
+// "Notify nearby hospitals" action use — can't literally share a constant across languages, so the two values must stay in
+// sync. (Expiring units no longer produce a notification: the Dashboard lists them.) Named here (not inlined) so the two
+// places in this file that care about "is this expiring soon" both go through one definition instead of each hardcoding 3/7.
 export const EXPIRY_CRITICAL_DAYS = 3;
 export const EXPIRY_NEAR_DAYS = 7;
 
