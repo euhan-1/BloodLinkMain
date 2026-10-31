@@ -474,9 +474,10 @@ def _resolve_notifications(conn, facility_id: int, notif_type: str, link: str) -
     ).rowcount
 
 
-# Notifications written before this instant are left alone by the automatic sweep below: they were written under the old rules,
-# and what to do with them is a separate decision (CLAUDE.md). 2026-11-01 00:00 Manila. None would sweep every row.
-NOTIFICATIONS_AUTORESOLVE_SINCE: Optional[datetime] = datetime(2026, 10, 31, 16, 0, tzinfo=timezone.utc)
+# Notifications written before this instant are left alone by the automatic sweep below; None (the value now) sweeps every row.
+# It was 2026-11-01 00:00 Manila while the rows written under the old rules waited for a decision on them; the one-off cleanup
+# (server/resolve_existing_notifications.py) has since run, so there is nothing left for a date limit to protect.
+NOTIFICATIONS_AUTORESOLVE_SINCE: Optional[datetime] = None
 
 
 def _resolve_stale_notifications(conn, facility_id: Optional[int], since: Optional[datetime], today: Optional[date] = None) -> int:

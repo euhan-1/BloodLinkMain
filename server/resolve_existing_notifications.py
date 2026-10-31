@@ -1,7 +1,8 @@
 """One-off: resolve the notifications left over from before the notification rebuild.
 
-The automatic sweep (main._resolve_stale_notifications) only touches rows created on or after NOTIFICATIONS_AUTORESOLVE_SINCE, so
-the unread rows written under the old rules are left as they were until someone decides. This is that decision, run once:
+The automatic sweep (main._resolve_stale_notifications) was held back by NOTIFICATIONS_AUTORESOLVE_SINCE (a date, now None) so the
+unread rows written under the old rules were left as they were until someone decided. This was that decision, run once (it has
+been; kept as the record of how):
 
   - the retired `unit_expiry` type (nothing writes it now): every unread row;
   - everything the sweep's rules resolve, with NO date limit: a request that no longer exists or is no longer pending, a receipt

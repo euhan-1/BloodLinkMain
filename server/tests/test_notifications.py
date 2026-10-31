@@ -6,7 +6,7 @@ stops being true the system marks the row read (never deletes it). These tests p
     receipt is confirmed; a row whose request no longer exists resolves; nothing is ever deleted;
   - the old shared transfer_confirmation_needed type is no longer written, the supplier is not told to "confirm release" at
     accept, and the requester's prompt is receipt_needed;
-  - the sweep that derives the same from a request's state leaves rows older than NOTIFICATIONS_AUTORESOLVE_SINCE alone;
+  - the sweep that derives the same from a request's state covers every row, whatever its age;
   - forecast_shortage is not written below SARIMAX_MIN_DAYS_REQUIRED recorded days, nor from the synthetic stand-in, and above
     it reads as the Dashboard does;
   - GET /notifications/unread-count is every unread row, and GET /notifications pages past 50;
@@ -32,7 +32,7 @@ from tests.test_expired_transfer import TODAY, make_pair, q
 from tests.test_request_component import add
 from tests.test_request_transitions import TransitionBase
 
-CUTOFF = app.NOTIFICATIONS_AUTORESOLVE_SINCE
+WRITTEN = datetime(2026, 10, 15, 9, 0, tzinfo=timezone.utc)  # a fixed creation time for rows built by hand
 
 
 def name_of(facility_id):
@@ -174,19 +174,25 @@ class SweepTests(FlowBase):
         return app.list_notifications(facility_id=facility)
 
     def test_a_row_whose_request_no_longer_exists_resolves(self):
-        nid = self.row(self.bank, "incoming_request", "requests:2000000000", created_at=CUTOFF + timedelta(minutes=1))
+        nid = self.row(self.bank, "incoming_request", "requests:2000000000", created_at=WRITTEN)
         self.list_for(self.bank)
         self.assertTrue(self.read(nid))
 
-    def test_rows_older_than_the_cutover_are_left_alone_until_someone_decides(self):
-        old = self.row(self.bank, "incoming_request", "requests:2000000000", created_at=CUTOFF - timedelta(days=1))
-        new = self.row(self.bank, "incoming_request", "requests:2000000001", created_at=CUTOFF + timedelta(minutes=1))
-        self.list_for(self.bank)
+    def test_the_sweep_covers_every_row_whatever_its_age(self):
+        # NOTIFICATIONS_AUTORESOLVE_SINCE is None: there is no date limit, so a row from before the notification rebuild resolves like any other
+        self.assertIsNone(app.NOTIFICATIONS_AUTORESOLVE_SINCE)
+        ancient = self.row(self.bank, "incoming_request", "requests:2000000000", created_at=datetime(2026, 8, 21, 9, 0, tzinfo=timezone.utc))
+        recent = self.row(self.bank, "incoming_request", "requests:2000000001", created_at=WRITTEN)
         app.notifications_unread_count(facility_id=self.bank)
+        self.assertEqual((self.read(ancient), self.read(recent)), (True, True))
+
+    def test_a_date_limit_still_protects_older_rows_when_one_is_given(self):
+        # the parameter outlives the constant: a caller can still ask the sweep to leave rows older than an instant alone
+        old = self.row(self.bank, "incoming_request", "requests:2000000000", created_at=WRITTEN - timedelta(days=1))
+        new = self.row(self.bank, "incoming_request", "requests:2000000001", created_at=WRITTEN + timedelta(minutes=1))
+        with engine.begin() as c:
+            self.assertEqual(app._resolve_stale_notifications(c, self.bank, WRITTEN), 1)
         self.assertEqual((self.read(old), self.read(new)), (False, True))
-        with engine.begin() as c:  # the one-off a separate decision may run: the same rule, every row
-            self.assertEqual(app._resolve_stale_notifications(c, self.bank, None), 1)
-        self.assertTrue(self.read(old))
 
     def test_the_sweep_derives_each_rule_from_the_requests_state(self):
         pending = self.new_request()
@@ -199,7 +205,7 @@ class SweepTests(FlowBase):
         self.accept(done)
         self.release(done)
         app.confirm_receipt(done, facility_id=self.hospital, user_id=self.hospital_user)
-        new = CUTOFF + timedelta(minutes=5)
+        new = WRITTEN
         # rows as if the events had not resolved them (a missed event, or a row restored from a dump)
         with engine.begin() as c:
             c.execute(text("UPDATE notifications SET read_at = NULL WHERE facility_id IN (:b, :h)"), {"b": self.bank, "h": self.hospital})
@@ -219,7 +225,7 @@ class SweepTests(FlowBase):
     def test_the_old_shared_type_resolves_per_party(self):
         rid = self.new_request()
         self.accept(rid)
-        new = CUTOFF + timedelta(minutes=5)
+        new = WRITTEN
         sup = self.row(self.bank, "transfer_confirmation_needed", f"requests:{rid}", created_at=new)
         req = self.row(self.hospital, "transfer_confirmation_needed", f"requests:{rid}", created_at=new)
         self.list_for(self.bank)
@@ -231,7 +237,7 @@ class SweepTests(FlowBase):
         self.assertEqual((self.read(sup), self.read(req)), (True, True))
 
     def test_other_links_and_types_are_never_touched(self):
-        new = CUTOFF + timedelta(minutes=5)
+        new = WRITTEN
         ids = [self.row(self.bank, "forecast_shortage", "dashboard", created_at=new),
                self.row(self.bank, "expiring_unit_alert", "sourcing:O+", created_at=new),
                self.row(self.bank, "blast_complete", "chat", created_at=new)]
@@ -456,7 +462,7 @@ class OfferResolutionTests(unittest.TestCase):
         with engine.begin() as c:
             nid = c.execute(text("INSERT INTO notifications (facility_id, type, message, link, created_at) VALUES "
                                  "(:h, 'expiring_unit_alert', 'X has 2 near-expiry O+ Packed RBC units that expire in 1 day, 2 kilometers away', 'sourcing:O+', "
-                                 ":at) RETURNING id"), {"h": self.hospital, "at": CUTOFF + timedelta(hours=1)}).scalar()
+                                 ":at) RETURNING id"), {"h": self.hospital, "at": WRITTEN}).scalar()
         manila_day = q("SELECT (created_at AT TIME ZONE 'Asia/Manila')::date FROM notifications WHERE id = :i", i=nid)[0][0]
         with mock.patch.object(app, "business_today", return_value=manila_day + timedelta(days=1)):
             app.list_notifications(facility_id=self.hospital)

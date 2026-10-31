@@ -141,12 +141,13 @@ requests, SARIMAX demand forecasting, donor broadcast.
   "confirm release" notice at accept is dropped, the receipt prompt is `receipt_needed`) and `unit_expiry` is retired: nothing
   writes either, rows written before remain, and the sweep resolves the old prompts by request state. Resolution happens at the
   event (`_resolve_notifications`) and again from the request's state on every `GET /notifications` and `/notifications/unread-count`
-  (`_resolve_stale_notifications`), **but only for rows created at or after `NOTIFICATIONS_AUTORESOLVE_SINCE` (2026-11-01 Manila)**:
-  rows older than that are left to a separate decision, because they are a production write: `server/resolve_existing_notifications.py`
-  (behind the production guard, `--dry-run` available) saves every unread id to `server/tmp/`, resolves the retired `unit_expiry`
-  rows and everything the sweep's rules resolve with no date limit, leaves events whose request still exists unread, prints counts
-  per type and records the exact undo SQL. Set the constant to `None` once it has been run. Not built yet: a release reminder for the
-  supplier (`docs/BACKLOG.md`). `forecast_shortage` is written only for a type with at least `SARIMAX_MIN_DAYS_REQUIRED` recorded days
+  (`_resolve_stale_notifications`), for every row: `NOTIFICATIONS_AUTORESOLVE_SINCE` is `None`. It was a date (2026-11-01 Manila) that kept
+  the sweep off the rows written under the old rules until they had been dealt with, which was a production write of its own:
+  `server/resolve_existing_notifications.py` (behind the production guard, `--dry-run` available) saved every unread id to
+  `server/tmp/`, resolved the retired `unit_expiry` rows and everything the sweep's rules resolve, left events whose request
+  still exists unread, and recorded the exact undo SQL. It has run (392 rows resolved, 14 events left unread); it stays as the
+  record of how, and the constant as a way to protect older rows if that is ever wanted again. Not built yet: a release reminder
+  for the supplier (`docs/BACKLOG.md`). `forecast_shortage` is written only for a type with at least `SARIMAX_MIN_DAYS_REQUIRED` recorded days
   and never from the synthetic stand-in, in the Dashboard's sentence ("O+: projected below its minimum around 4 Nov; ordering 90
   units brings it back to its maximum."). Every request notification names its quantity and component, dates are written out
   ("28 Oct 2026"), and the text says "request", "kilometers" and "near-expiry". The bell (`NotificationBell`, logic in

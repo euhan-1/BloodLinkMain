@@ -27,7 +27,7 @@ from database import engine
 from tests.test_expired_transfer import TODAY, make_pair, q
 from tests.test_request_transitions import TransitionBase
 
-OLD = "2026-09-25T10:00:00Z"  # before NOTIFICATIONS_AUTORESOLVE_SINCE: the live sweep would leave these alone
+OLD = "2026-09-25T10:00:00Z"  # rows as the old code left them, from before the notification rebuild
 
 
 class ResolveExistingTests(TransitionBase):
