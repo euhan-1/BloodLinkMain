@@ -12,7 +12,7 @@ import { BloodDropLogo } from "../components/BloodTypeBadge";
 // fields' own 30%-ring is too faint against a charcoal border that already
 // sits close to oxblood in darkness, so every control here uses this instead.
 const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary";
-const FIELD = `w-full h-10 px-3 text-sm border border-border rounded-md bg-card placeholder:text-muted-foreground/70 focus:border-primary transition-colors ${FOCUS}`;
+const FIELD = `w-full h-10 px-3 text-sm border border-border rounded-md bg-card placeholder:text-secondary-foreground/60 focus:border-primary transition-colors ${FOCUS}`;
 const BTN = `w-full h-10 bg-primary text-white text-sm font-semibold rounded-md hover:bg-primary-hover transition-colors disabled:opacity-60 flex items-center justify-center gap-2 ${FOCUS}`;
 const LINK_BTN = `text-[13px] text-muted-foreground hover:text-foreground transition-colors rounded-sm ${FOCUS}`;
 
@@ -134,24 +134,24 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
       {/* Rows 1fr / auto / 1fr: the content block sits at the panel's own vertical centre, which is where the form
           centres on the right, so the two halves share a centre line. The logo lives in the top row. */}
       <div className="hidden lg:grid grid-rows-[1fr_auto_1fr] w-2/5 shrink-0 bg-primary text-white px-10 xl:px-14 py-12 animate-panel-slide-left">
-        <div className="flex items-start gap-3">
+        <div className="flex items-start gap-4">
           {/* The drop is a fixed oxblood fill, the same colour as this panel. */}
-          <span className="grid place-items-center w-10 h-10 rounded-lg bg-white">
-            <BloodDropLogo size={28} />
+          <span className="grid place-items-center w-14 h-14 rounded-xl bg-white">
+            <BloodDropLogo size={40} />
           </span>
-          <span className="text-xl font-bold tracking-tight">BloodLink</span>
+          <span className="text-3xl font-bold tracking-tight leading-[3.5rem]">BloodLink</span>
         </div>
 
         <div>
-          <h1 className="font-login-serif text-[clamp(2.5rem,3.6vw,3.75rem)] font-bold leading-[1.05] tracking-[-0.01em] text-balance mb-6">
-            AI-assisted blood supply coordination
+          <h1 className="font-login-serif text-[clamp(1.75rem,2.4vw,2.5rem)] font-bold leading-[1.1] tracking-[-0.02em] text-balance mb-8">
+            An AI-Powered Blood Supply Management and Emergency Response System
           </h1>
           <div className="max-w-[34ch]">
-            <p className="text-white/80 text-[16px] font-[500] leading-relaxed">
+            <p className="text-white/80 text-[16px] font-[500] leading-[1.7]">
               Real-time inventory management, demand forecasting and emergency sourcing — unified for blood banks and hospitals across the network.
             </p>
             <div
-              className="mt-8 flex items-start gap-3 pt-5 border-t border-white/25 text-white/80 text-sm font-[500] leading-relaxed animate-bullet-rise-in"
+              className="mt-10 flex items-start gap-3 pt-6 border-t border-white/25 text-white/80 text-sm font-[500] leading-relaxed animate-bullet-rise-in"
               style={{ animationDelay: "360ms" }}
             >
               <ShieldCheck size={16} className="shrink-0 mt-0.5" />
@@ -321,7 +321,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
           ) : (
             <>
               <h2 className="font-display text-2xl font-bold text-foreground mb-1">Sign in</h2>
-              <p className="text-muted-foreground text-sm font-[500] mb-6">
+              <p className="text-muted-foreground text-sm font-[500] mb-8">
                 Access your facility's blood management dashboard.
               </p>
 
@@ -382,8 +382,8 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                 </button>
               </form>
 
-              <p className="mt-8 pt-5 border-t border-gray-300 text-[13px] font-[500] text-gray-700 leading-relaxed">
-                <strong className="font-semibold">Verified facilities only.</strong> New registrations are reviewed by a BloodLink administrator before access is approved.
+              <p className="mt-10 pt-5 border-t border-gray-300 text-[11px] uppercase tracking-wider font-[400] text-secondary-foreground/75">
+                Verified facilities only.
               </p>
 
               <p className="mt-5 text-[13px] font-[500] text-muted-foreground">
