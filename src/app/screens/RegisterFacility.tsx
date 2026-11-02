@@ -27,7 +27,6 @@ export function RegisterFacilityScreen() {
   const [confirmPassword, setConfirmPassword] = useState("");
 
   const [address, setAddress] = useState("");
-  const [dohLicense, setDohLicense] = useState("");
   const [position, setPosition] = useState<[number, number] | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
@@ -58,7 +57,6 @@ export function RegisterFacilityScreen() {
         address,
         latitude: position[0],
         longitude: position[1],
-        doh_license_number: dohLicense,
         contact_person: contactPerson,
         email,
         phone,
@@ -165,7 +163,7 @@ export function RegisterFacilityScreen() {
           <>
             <h2 className="font-display text-2xl font-bold text-foreground mb-1">Register your facility</h2>
             <p className="text-muted-foreground text-sm mb-6">
-              Submit your facility's details for review. An administrator verifies your DOH license before approving access.
+              Submit your facility's details for review. An administrator reviews every registration before approving access.
             </p>
 
             <form onSubmit={handleSubmit} className="space-y-5">
@@ -201,7 +199,6 @@ export function RegisterFacilityScreen() {
               <FacilityLocationFields
                 address={address} onAddressChange={setAddress}
                 position={position} onPositionChange={setPosition}
-                dohLicense={dohLicense} onDohLicenseChange={setDohLicense}
                 lookupAddress={geocodeAddress}
                 showDepartment={false}
               />

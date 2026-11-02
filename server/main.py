@@ -3696,7 +3696,7 @@ def get_my_facility(facility_id: int = Depends(get_acting_facility_id)):
             text(
                 """
                 SELECT id, name, facility_type, address, latitude, longitude,
-                       department, doh_license_number, profile_completed
+                       department, profile_completed
                 FROM facilities WHERE id = :id
                 """
             ),
@@ -3712,9 +3712,8 @@ class CompleteProfileBody(BaseModel):
     latitude: float
     longitude: float
     department: str
-    doh_license_number: str
 
-    @field_validator("address", "department", "doh_license_number")
+    @field_validator("address", "department")
     @classmethod
     def _not_blank(cls, v: str) -> str:
         if not v.strip():
@@ -3739,7 +3738,7 @@ class CompleteProfileBody(BaseModel):
 @app.post("/facilities/profile")
 def complete_facility_profile(body: CompleteProfileBody, facility_id: int = Depends(get_acting_facility_id)):
     """The other half of admin onboarding (see POST /admin/facilities):
-    fills in the location/department/DOH license an admin-created facility
+    fills in the location/department an admin-created facility
     doesn't have yet, and flips profile_completed so the frontend stops
     gating this facility into the complete-profile screen. The map-confirmed
     latitude/longitude are what Emergency Sourcing's distance ranking
@@ -3747,19 +3746,19 @@ def complete_facility_profile(body: CompleteProfileBody, facility_id: int = Depe
 
     Also doubles as the Edit Facility Profile endpoint (Account menu) —
     there's nothing first-time-only about this UPDATE, so a facility that's
-    already complete can call it again to correct its address/pin/department/
-    DOH license later. GET /facilities/me is what the edit form prefills from."""
+    already complete can call it again to correct its address/pin/department
+    later. GET /facilities/me is what the edit form prefills from."""
     with engine.begin() as conn:
         row = conn.execute(
             text(
                 """
                 UPDATE facilities SET
                     address = :address, latitude = :latitude, longitude = :longitude,
-                    department = :department, doh_license_number = :doh_license_number,
+                    department = :department,
                     profile_completed = true
                 WHERE id = :facility_id
                 RETURNING id, name, facility_type, address, latitude, longitude,
-                          department, doh_license_number, profile_completed
+                          department, profile_completed
                 """
             ),
             {
@@ -3767,7 +3766,6 @@ def complete_facility_profile(body: CompleteProfileBody, facility_id: int = Depe
                 "latitude": body.latitude,
                 "longitude": body.longitude,
                 "department": body.department,
-                "doh_license_number": body.doh_license_number,
                 "facility_id": facility_id,
             },
         ).mappings().first()
@@ -3800,13 +3798,12 @@ class RegisterFacilityBody(BaseModel):
     address: str
     latitude: float
     longitude: float
-    doh_license_number: str
     contact_person: str
     email: EmailStr
     phone: str
     password: str
 
-    @field_validator("facility_name", "address", "doh_license_number", "contact_person", "phone")
+    @field_validator("facility_name", "address", "contact_person", "phone")
     @classmethod
     def _not_blank(cls, v: str) -> str:
         if not v.strip():
@@ -3917,7 +3914,6 @@ def register_facility(body: RegisterFacilityBody, request: Request):
             "address": body.address,
             "latitude": body.latitude,
             "longitude": body.longitude,
-            "doh_license_number": body.doh_license_number,
             "contact_person": body.contact_person,
             "email": body.email,
             "phone": body.phone,
@@ -3935,7 +3931,7 @@ def register_facility(body: RegisterFacilityBody, request: Request):
                     """
                     UPDATE facility_registration_requests SET
                         facility_name = :facility_name, facility_type = :facility_type, address = :address,
-                        latitude = :latitude, longitude = :longitude, doh_license_number = :doh_license_number,
+                        latitude = :latitude, longitude = :longitude,
                         contact_person = :contact_person, phone = :phone, password_hash = :password_hash,
                         status = 'submitted'
                     WHERE id = :id
@@ -3949,10 +3945,10 @@ def register_facility(body: RegisterFacilityBody, request: Request):
                 text(
                     """
                     INSERT INTO facility_registration_requests
-                        (facility_name, facility_type, address, latitude, longitude, doh_license_number,
+                        (facility_name, facility_type, address, latitude, longitude,
                          contact_person, email, phone, password_hash)
                     VALUES
-                        (:facility_name, :facility_type, :address, :latitude, :longitude, :doh_license_number,
+                        (:facility_name, :facility_type, :address, :latitude, :longitude,
                          :contact_person, :email, :phone, :password_hash)
                     RETURNING id
                     """
@@ -5265,7 +5261,7 @@ def list_transfers(
         facility_ids = sorted({r[k] for r in rows for k in ("requesting_facility_id", "supplying_facility_id")} | set(dealt_with))
         facilities = {
             f["id"]: dict(f) for f in conn.execute(
-                text("SELECT id, name, facility_type, address, doh_license_number FROM facilities WHERE id = ANY(:ids)"),
+                text("SELECT id, name, facility_type, address FROM facilities WHERE id = ANY(:ids)"),
                 {"ids": facility_ids},
             ).mappings().all()
         } if facility_ids else {}
@@ -5340,7 +5336,7 @@ def get_request_detail(request_id: int, facility_id: int = Depends(get_acting_fa
         req = _require_request_participant(conn, request_id, facility_id)
         facilities = {
             r["id"]: dict(r) for r in conn.execute(
-                text("SELECT id, name, facility_type, address, doh_license_number FROM facilities WHERE id IN (:a, :b)"),
+                text("SELECT id, name, facility_type, address FROM facilities WHERE id IN (:a, :b)"),
                 {"a": req["requesting_facility_id"], "b": req["supplying_facility_id"]},
             ).mappings().all()
         }
@@ -6132,10 +6128,10 @@ def admin_list_facilities():
 @app.post("/admin/facilities", dependencies=[Depends(require_admin_role)])
 def admin_create_facility_account(body: CreateFacilityAccountBody):
     """Replaces public self-service registration (Step 9A). Creates a minimal
-    facility row — name/type only, no location/department/DOH license yet —
+    facility row — name/type only, no location/department yet —
     plus a single staff login for it, with a random temporary password and
     must_change_password=true. The facility fills in its own address, map
-    location, department, and DOH license via POST /facilities/profile the
+    location and department via POST /facilities/profile the
     first time it logs in with a real password (see /auth/change-password
     and the frontend's complete-profile flow).
 
@@ -6301,7 +6297,7 @@ def admin_list_registrations():
         rows = conn.execute(
             text(
                 """
-                SELECT id, facility_name, facility_type, address, latitude, longitude, doh_license_number,
+                SELECT id, facility_name, facility_type, address, latitude, longitude,
                        contact_person, email, phone, created_at
                 FROM facility_registration_requests
                 WHERE status = 'email_verified' AND archived_at IS NULL
@@ -6341,11 +6337,11 @@ def admin_approve_registration(registration_id: int, admin: dict = Depends(requi
     registration. must_change_password is false here, unlike every
     admin-provisioned account (POST /admin/facilities): the applicant chose
     this password themselves, proved they own the email it's tied to, and
-    an administrator has now reviewed the DOH license — there's no
+    an administrator has now reviewed the application — there's no
     temporary-password handoff to complete.
 
-    profile_completed is set true immediately: address/coordinates/DOH
-    license were already collected (and just reviewed) at registration, so
+    profile_completed is set true immediately: address/coordinates
+    were already collected (and just reviewed) at registration, so
     routing this facility through the post-login CompleteProfile screen
     would only ask it to re-type what it already gave. department is left
     null — the one field registration doesn't collect — editable any time
@@ -6370,8 +6366,8 @@ def admin_approve_registration(registration_id: int, admin: dict = Depends(requi
         facility = conn.execute(
             text(
                 """
-                INSERT INTO facilities (name, facility_type, address, latitude, longitude, doh_license_number, profile_completed)
-                VALUES (:name, :facility_type, :address, :latitude, :longitude, :doh_license_number, true)
+                INSERT INTO facilities (name, facility_type, address, latitude, longitude, profile_completed)
+                VALUES (:name, :facility_type, :address, :latitude, :longitude, true)
                 RETURNING id, name, facility_type, profile_completed, is_active
                 """
             ),
@@ -6381,7 +6377,6 @@ def admin_approve_registration(registration_id: int, admin: dict = Depends(requi
                 "address": registration["address"],
                 "latitude": registration["latitude"],
                 "longitude": registration["longitude"],
-                "doh_license_number": registration["doh_license_number"],
             },
         ).mappings().first()
 

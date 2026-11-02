@@ -273,7 +273,6 @@ export type RegisterFacilityBody = {
   address: string;
   latitude: number;
   longitude: number;
-  doh_license_number: string;
   contact_person: string;
   email: string;
   phone: string;
@@ -318,7 +317,6 @@ export type CompleteProfileBody = {
   latitude: number;
   longitude: number;
   department: string;
-  doh_license_number: string;
 };
 
 export async function completeFacilityProfile(body: CompleteProfileBody): Promise<void> {
@@ -334,7 +332,6 @@ export type FacilityProfile = {
   latitude: number | null;
   longitude: number | null;
   department: string | null;
-  doh_license_number: string | null;
   profile_completed: boolean;
 };
 
@@ -419,7 +416,6 @@ export type AdminRegistration = {
   address: string;
   latitude: number;
   longitude: number;
-  doh_license_number: string;
   contact_person: string;
   email: string;
   phone: string;

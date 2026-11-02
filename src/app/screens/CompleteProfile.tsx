@@ -8,7 +8,6 @@ import { FacilityLocationFields } from "../components/FacilityLocationPicker";
 export function CompleteProfileScreen({ user, onComplete }: { user: SessionUser; onComplete: () => void }) {
   const [address, setAddress] = useState("");
   const [department, setDepartment] = useState("");
-  const [dohLicense, setDohLicense] = useState("");
   const [position, setPosition] = useState<[number, number] | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
@@ -28,7 +27,6 @@ export function CompleteProfileScreen({ user, onComplete }: { user: SessionUser;
         latitude: position[0],
         longitude: position[1],
         department,
-        doh_license_number: dohLicense,
       });
       onComplete();
     } catch (err) {
@@ -55,7 +53,6 @@ export function CompleteProfileScreen({ user, onComplete }: { user: SessionUser;
             address={address} onAddressChange={setAddress}
             position={position} onPositionChange={setPosition}
             department={department} onDepartmentChange={setDepartment}
-            dohLicense={dohLicense} onDohLicenseChange={setDohLicense}
           />
 
           {submitError && (

@@ -12,7 +12,7 @@ import { BloodDropLogo } from "../components/BloodTypeBadge";
 // fields' own 30%-ring is too faint against a charcoal border that already
 // sits close to oxblood in darkness, so every control here uses this instead.
 const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary";
-const FIELD = `w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:border-primary transition-colors ${FOCUS}`;
+const FIELD = `w-full h-10 px-3 text-sm border border-border rounded-md bg-card placeholder:text-muted-foreground/70 focus:border-primary transition-colors ${FOCUS}`;
 const BTN = `w-full h-10 bg-primary text-white text-sm font-semibold rounded-md hover:bg-primary-hover transition-colors disabled:opacity-60 flex items-center justify-center gap-2 ${FOCUS}`;
 const LINK_BTN = `text-[13px] text-muted-foreground hover:text-foreground transition-colors rounded-sm ${FOCUS}`;
 
@@ -148,14 +148,14 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
           </h1>
           <div className="max-w-[34ch]">
             <p className="text-white/80 text-[16px] font-[500] leading-relaxed">
-              Real-time inventory management, emergency sourcing and response, and donor coordination — unified for blood banks and hospitals across the network.
+              Real-time inventory management, demand forecasting and emergency sourcing — unified for blood banks and hospitals across the network.
             </p>
             <div
               className="mt-8 flex items-start gap-3 pt-5 border-t border-white/25 text-white/80 text-sm font-[500] leading-relaxed animate-bullet-rise-in"
               style={{ animationDelay: "360ms" }}
             >
               <ShieldCheck size={16} className="shrink-0 mt-0.5" />
-              Every facility's DOH license is checked before access is approved.
+              Every facility is reviewed and approved by an administrator before access is granted.
             </div>
           </div>
         </div>
@@ -335,6 +335,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                     type="email"
                     required
                     autoComplete="email"
+                    placeholder="name@facility.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     className={FIELD}
@@ -382,7 +383,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
               </form>
 
               <p className="mt-8 pt-5 border-t border-gray-300 text-[13px] font-[500] text-gray-700 leading-relaxed">
-                <strong className="font-semibold">Verified facilities only.</strong> New registrations are reviewed by a BloodLink administrator, who checks your DOH license before approving access.
+                <strong className="font-semibold">Verified facilities only.</strong> New registrations are reviewed by a BloodLink administrator before access is approved.
               </p>
 
               <p className="mt-5 text-[13px] font-[500] text-muted-foreground">

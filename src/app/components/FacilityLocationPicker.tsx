@@ -61,7 +61,7 @@ async function lookUpAddressViaNominatim(address: string): Promise<[number, numb
 
 // Shared by CompleteProfileScreen (first-time onboarding), EditFacilityProfileModal
 // (Account menu, after the fact), and RegisterFacility (self-registration) —
-// the exact same address/geocode/map/department/DOH-license fields, just
+// the exact same address/geocode/map/department fields, just
 // wrapped in different layouts with different submit handling. All state is
 // controlled from the parent so callers can prefill it differently.
 //
@@ -74,7 +74,6 @@ export function FacilityLocationFields({
   address, onAddressChange,
   position, onPositionChange,
   department, onDepartmentChange,
-  dohLicense, onDohLicenseChange,
   lookupAddress = lookUpAddressViaNominatim,
   showDepartment = true,
 }: {
@@ -84,8 +83,6 @@ export function FacilityLocationFields({
   onPositionChange: (p: [number, number]) => void;
   department?: string;
   onDepartmentChange?: (v: string) => void;
-  dohLicense: string;
-  onDohLicenseChange: (v: string) => void;
   lookupAddress?: (address: string) => Promise<[number, number] | null>;
   // false for RegisterFacility: self-registration doesn't collect department
   // (see facility_registration_requests' column list) — an approved facility
@@ -179,32 +176,19 @@ export function FacilityLocationFields({
         )}
       </div>
 
-      <div className={showDepartment ? "grid sm:grid-cols-2 gap-4" : ""}>
-        {showDepartment && (
-          <div>
-            <label className="text-[14px] font-semibold text-foreground block mb-1.5">Department / Branch</label>
-            <input
-              type="text"
-              required
-              value={department}
-              onChange={(e) => onDepartmentChange?.(e.target.value)}
-              placeholder="e.g. Blood Services Unit"
-              className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
-            />
-          </div>
-        )}
+      {showDepartment && (
         <div>
-          <label className="text-[14px] font-semibold text-foreground block mb-1.5">DOH license number</label>
+          <label className="text-[14px] font-semibold text-foreground block mb-1.5">Department / Branch</label>
           <input
             type="text"
             required
-            value={dohLicense}
-            onChange={(e) => onDohLicenseChange(e.target.value)}
-            placeholder="e.g. DOH-BSU-00123"
+            value={department}
+            onChange={(e) => onDepartmentChange?.(e.target.value)}
+            placeholder="e.g. Blood Services Unit"
             className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
           />
         </div>
-      </div>
+      )}
     </>
   );
 }

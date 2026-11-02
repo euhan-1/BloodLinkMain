@@ -75,7 +75,7 @@ class RegisterFacilityBody:
     def __init__(self, **kwargs):
         defaults = dict(
             facility_name="Test Facility", facility_type="hospital", address="123 Test St",
-            latitude=14.5, longitude=121.0, doh_license_number="DOH-TEST-001",
+            latitude=14.5, longitude=121.0,
             contact_person="Juan Dela Cruz", email="", phone="09170000000",
             password="Sup3rSecret!",
         )
@@ -101,7 +101,7 @@ class RegisterFacilityBodyValidationTests(unittest.TestCase):
     def _valid_kwargs(self, **overrides):
         kwargs = dict(
             facility_name="Test Facility", facility_type="hospital", address="123 Test St",
-            latitude=14.5, longitude=121.0, doh_license_number="DOH-TEST-001",
+            latitude=14.5, longitude=121.0,
             contact_person="Juan Dela Cruz", email="test@example.com", phone="09170000000",
             password="Sup3rSecret!",
         )

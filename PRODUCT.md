@@ -8,7 +8,7 @@ web
 
 ## Users
 
-Hospital staff, blood bank staff, and BloodLink administrators. Hospital and blood bank accounts are facility-level (one login represents a facility, e.g. "Riverside General Hospital"); admin accounts have no facility and manage the network itself. A facility account comes into existence in one of two ways: an admin provisions it (a temporary password is issued and the account is forced to set a real password on first login), or the facility registers itself — the contact person proves ownership of their email with a one-time code, then an admin reviews and approves the registration before any account exists. Admin accounts are created only by a seed script, never through the app. The data model (facility addresses, a DOH license field) points to a Philippine healthcare operating context.
+Hospital staff, blood bank staff, and BloodLink administrators. Hospital and blood bank accounts are facility-level (one login represents a facility, e.g. "Riverside General Hospital"); admin accounts have no facility and manage the network itself. A facility account comes into existence in one of two ways: an admin provisions it (a temporary password is issued and the account is forced to set a real password on first login), or the facility registers itself — the contact person proves ownership of their email with a one-time code, then an admin reviews and approves the registration before any account exists. Admin accounts are created only by a seed script, never through the app. The data model (facility addresses, DOH-sourced dengue data) points to a Philippine healthcare operating context.
 
 ## Product Purpose
 

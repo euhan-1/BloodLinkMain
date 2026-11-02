@@ -108,8 +108,8 @@ class OtpDbTests(unittest.TestCase):
                 text(
                     """
                     INSERT INTO facility_registration_requests
-                        (facility_name, facility_type, address, doh_license_number, contact_person, email, phone, password_hash)
-                    VALUES ('Test Facility', 'hospital', '123 Test St', 'DOH-TEST', 'Test Person', :email, '09170000000', 'x')
+                        (facility_name, facility_type, address, contact_person, email, phone, password_hash)
+                    VALUES ('Test Facility', 'hospital', '123 Test St', 'Test Person', :email, '09170000000', 'x')
                     RETURNING id
                     """
                 ),

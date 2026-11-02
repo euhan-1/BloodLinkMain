@@ -12,8 +12,8 @@ const iso = (h: number) => new Date(T0 + h * 3600e3).toISOString();
 const request: RequestDetail["request"] = {
   id: 7, status: "completed", blood_type: "O+", component: "Packed RBC", quantity: 3, emergency_type: "trauma", created_at: iso(0),
   supplier_confirmed_at: iso(2), requester_confirmed_at: iso(3),
-  requesting_facility: { id: 1, name: "Riverside", facility_type: "hospital", address: null, doh_license_number: null },
-  supplying_facility: { id: 2, name: "Northside", facility_type: "bloodbank", address: null, doh_license_number: null },
+  requesting_facility: { id: 1, name: "Riverside", facility_type: "hospital", address: null },
+  supplying_facility: { id: 2, name: "Northside", facility_type: "bloodbank", address: null },
 };
 const ev = (kind: TimelineEvent["kind"], h: number | null, over: Partial<TimelineEvent> = {}): TimelineEvent => ({
   kind, at: h === null ? null : iso(h), order_at: iso(h ?? 0), facility_id: 2, facility_name: "Northside", account_email: "desk@northside.example", ...over,

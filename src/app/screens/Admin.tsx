@@ -15,7 +15,7 @@ import { AccountMenu } from "../components/AccountMenu";
 // ─── Pending Registrations ──────────────────────────────────────────────────
 // Self-registration review queue (Step 6) — every row here has already
 // passed email verification (see server/main.py's admin_list_registrations),
-// so this is purely "check the DOH license and decide," not "is this even
+// so this is purely "review the application and decide," not "is this even
 // a reachable applicant."
 
 function RegistrationsQueue({
@@ -38,9 +38,6 @@ function RegistrationsQueue({
             </div>
             <div className="text-[13px] text-muted-foreground flex items-center gap-1">
               <MapPin size={12} className="shrink-0" /> {r.address}
-            </div>
-            <div className="text-[13px] text-muted-foreground">
-              DOH license <span className="font-mono text-foreground">{r.doh_license_number}</span>
             </div>
             <div className="text-[13px] text-muted-foreground">
               {r.contact_person} — <span className="font-mono">{r.email}</span> — {r.phone}

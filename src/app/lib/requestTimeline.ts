@@ -22,7 +22,7 @@ export type TimelineEvent = {
   outcome?: { arrived: number; failed: { din: string; reason: string }[]; from_ledger: boolean }; // received
 };
 
-export type RequestFacility = { id: number; name: string; facility_type: string; address: string | null; doh_license_number: string | null };
+export type RequestFacility = { id: number; name: string; facility_type: string; address: string | null };
 
 export type LedgerUnit = {
   din: string;

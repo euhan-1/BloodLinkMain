@@ -74,8 +74,8 @@ const row = (direction: "sent" | "received"): TransferRow => ({
   request: {
     id: 1, status: "completed", blood_type: "O+", component: "Packed RBC", quantity: 3, emergency_type: "trauma", created_at: "2026-10-01T00:00:00Z",
     supplier_confirmed_at: null, requester_confirmed_at: null,
-    requesting_facility: { id: 1, name: "Riverside", facility_type: "hospital", address: null, doh_license_number: null },
-    supplying_facility: { id: 2, name: "Northside", facility_type: "bloodbank", address: null, doh_license_number: null },
+    requesting_facility: { id: 1, name: "Riverside", facility_type: "hospital", address: null },
+    supplying_facility: { id: 2, name: "Northside", facility_type: "bloodbank", address: null },
   },
   direction, other_facility_id: 0, transfer_at: "2026-10-02T00:00:00Z", outcome: "received_in_full", summary: { asked: 3, received: 3, failed: 0 },
 });

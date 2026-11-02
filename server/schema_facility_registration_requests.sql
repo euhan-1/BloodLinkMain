@@ -22,7 +22,6 @@ CREATE TABLE IF NOT EXISTS facility_registration_requests (
     address text NOT NULL,
     latitude double precision,
     longitude double precision,
-    doh_license_number text NOT NULL,
     contact_person text NOT NULL,
     email text NOT NULL,
     phone text NOT NULL,

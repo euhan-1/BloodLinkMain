@@ -210,7 +210,6 @@ CREATE TABLE public.facilities (
     latitude double precision,
     longitude double precision,
     department text,
-    doh_license_number text,
     profile_completed boolean DEFAULT false NOT NULL,
     is_active boolean DEFAULT true NOT NULL
 );
@@ -280,7 +279,6 @@ CREATE TABLE public.facility_registration_requests (
     address text NOT NULL,
     latitude double precision,
     longitude double precision,
-    doh_license_number text NOT NULL,
     contact_person text NOT NULL,
     email text NOT NULL,
     phone text NOT NULL,
@@ -1557,3 +1555,8 @@ ALTER TABLE ONLY public.users
 
 \unrestrict 7qlQiybfj0dN2mbTk1prtVufy1USyF7uPcC6DieySNPgZfXqQPBPccRZWdk3XDD
 
+--
+-- HAND-EDITED (DOH licence removal): doh_license_number was removed from public.facilities and public.facility_registration_requests
+-- above, by hand, ahead of the production DROP COLUMN. Until that has run, production still has the columns. Regenerate this file
+-- after the production change (see the header of tests/conftest.py); the hand edit then disappears.
+--

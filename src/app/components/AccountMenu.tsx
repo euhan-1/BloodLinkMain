@@ -167,7 +167,6 @@ function EditFacilityProfileModal({ facilityName, onClose, onSaved }: {
 
   const [address, setAddress] = useState("");
   const [department, setDepartment] = useState("");
-  const [dohLicense, setDohLicense] = useState("");
   const [position, setPosition] = useState<[number, number] | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
@@ -179,7 +178,6 @@ function EditFacilityProfileModal({ facilityName, onClose, onSaved }: {
       .then((profile) => {
         setAddress(profile.address ?? "");
         setDepartment(profile.department ?? "");
-        setDohLicense(profile.doh_license_number ?? "");
         if (profile.latitude !== null && profile.longitude !== null) {
           setPosition([profile.latitude, profile.longitude]);
         }
@@ -199,7 +197,7 @@ function EditFacilityProfileModal({ facilityName, onClose, onSaved }: {
     try {
       await completeFacilityProfile({
         address, latitude: position[0], longitude: position[1],
-        department, doh_license_number: dohLicense,
+        department,
       });
       setSuccess(true);
       onSaved();
@@ -239,7 +237,6 @@ function EditFacilityProfileModal({ facilityName, onClose, onSaved }: {
             address={address} onAddressChange={setAddress}
             position={position} onPositionChange={setPosition}
             department={department} onDepartmentChange={setDepartment}
-            dohLicense={dohLicense} onDohLicenseChange={setDohLicense}
           />
 
           {submitError && (

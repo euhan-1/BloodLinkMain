@@ -48,8 +48,8 @@ def main():
     tag = uuid.uuid4().hex[:6]
     email, password = f"zz.measure.{tag}@example.com", "MeasureTmp1!"
     with engine.begin() as c:
-        fid = c.execute(text("INSERT INTO facilities (name, facility_type, is_active, profile_completed, address, department, doh_license_number) "
-                             "VALUES (:n, 'bloodbank', true, true, 'x', 'x', 'x') RETURNING id"), {"n": f"ZZ-MEASURE-{tag}"}).scalar()
+        fid = c.execute(text("INSERT INTO facilities (name, facility_type, is_active, profile_completed, address, department) "
+                             "VALUES (:n, 'bloodbank', true, true, 'x', 'x') RETURNING id"), {"n": f"ZZ-MEASURE-{tag}"}).scalar()
         c.execute(text("INSERT INTO users (email, password_hash, facility_id, role, must_change_password) VALUES (:e, :h, :f, 'staff', false)"),
                   {"e": email, "h": auth.hash_password(password), "f": fid})
     try:

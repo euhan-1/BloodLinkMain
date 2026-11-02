@@ -33,7 +33,6 @@ function Party({ role, f }: { role: string; f: RequestDetail["request"]["request
       <h3 className="text-[13px] font-semibold text-gray-600">{role}</h3>
       <p className="mt-0.5 text-[16px] font-semibold text-foreground print:text-black">{f.name}</p>
       <p className="text-[14px] text-foreground print:text-black">{f.address || NOT_RECORDED}</p>
-      <p className="text-[14px] text-foreground print:text-black">DOH licence {f.doh_license_number || "not on file"}</p>
     </div>
   );
 }

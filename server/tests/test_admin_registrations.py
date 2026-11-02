@@ -71,10 +71,10 @@ class AdminRegistrationsTests(unittest.TestCase):
                 text(
                     """
                     INSERT INTO facility_registration_requests
-                        (facility_name, facility_type, address, latitude, longitude, doh_license_number,
+                        (facility_name, facility_type, address, latitude, longitude,
                          contact_person, email, phone, password_hash, status)
                     VALUES
-                        (:name, 'hospital', '123 Test St', 14.5, 121.0, 'DOH-TEST', 'Test Person',
+                        (:name, 'hospital', '123 Test St', 14.5, 121.0, 'Test Person',
                          :email, '09170000000', :password_hash, :status)
                     RETURNING id
                     """
@@ -171,7 +171,7 @@ class AdminRegistrationsTests(unittest.TestCase):
     def test_reject_archives_with_reason_and_notifies_applicant(self, mock_send):
         registration_id = self._make_registration()
         result = main.admin_reject_registration(
-            registration_id, RejectRegistrationBody(reason="DOH license could not be verified"), admin=self.admin
+            registration_id, RejectRegistrationBody(reason="The facility could not be verified"), admin=self.admin
         )
         self.assertEqual(result, {"message": "registration rejected"})
 
@@ -181,7 +181,7 @@ class AdminRegistrationsTests(unittest.TestCase):
                 {"id": registration_id},
             ).mappings().first()
         self.assertEqual(row["status"], "rejected")
-        self.assertEqual(row["rejection_reason"], "DOH license could not be verified")
+        self.assertEqual(row["rejection_reason"], "The facility could not be verified")
         self.assertIsNotNone(row["archived_at"])
 
         mock_send.assert_called_once()
