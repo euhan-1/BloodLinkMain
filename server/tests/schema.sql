@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 7qlQiybfj0dN2mbTk1prtVufy1USyF7uPcC6DieySNPgZfXqQPBPccRZWdk3XDD
+\restrict CF9HgnSGDSkUdKkASL8JWeOPONGpib6Q42Jf7uwwgrzCZUcZyPr4rtOec0SVjMJ
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.11
@@ -1553,10 +1553,5 @@ ALTER TABLE ONLY public.users
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 7qlQiybfj0dN2mbTk1prtVufy1USyF7uPcC6DieySNPgZfXqQPBPccRZWdk3XDD
+\unrestrict CF9HgnSGDSkUdKkASL8JWeOPONGpib6Q42Jf7uwwgrzCZUcZyPr4rtOec0SVjMJ
 
---
--- HAND-EDITED (DOH licence removal): doh_license_number was removed from public.facilities and public.facility_registration_requests
--- above, by hand, ahead of the production DROP COLUMN. Until that has run, production still has the columns. Regenerate this file
--- after the production change (see the header of tests/conftest.py); the hand edit then disappears.
---
