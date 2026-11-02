@@ -61,7 +61,6 @@ D = {
         "latitude": "Map latitude of the facility, used for distance between facilities.",
         "longitude": "Map longitude of the facility.",
         "department": "The department or unit the profile was completed for (onboarding profile field).",
-        "doh_license_number": "The facility's Department of Health licence number (onboarding profile field); not validated.",
         "profile_completed": "Whether the facility has finished its onboarding profile. False forces the onboarding step.",
         "is_active": "Whether the facility is active on the platform; inactive facilities are hidden from listings.",
     },
@@ -81,7 +80,6 @@ D = {
         "address": "Street address entered or picked on the map.",
         "latitude": "Map latitude of the facility; may be missing if no location was picked.",
         "longitude": "Map longitude of the facility.",
-        "doh_license_number": "The Department of Health licence number given on the form; not validated.",
         "contact_person": "Name of the person applying. Personal data.",
         "email": "The applicant's email address, which the one-time code is sent to and which becomes the login on approval. Personal data. Unique among live (not archived) requests.",
         "phone": "The applicant's phone number. Personal data.",
@@ -485,7 +483,7 @@ deployed; example values are real values from actual rows, with the exceptions d
 * **Donor outreach tables:** `blasts` (the campaign), `blast_messages` (one row per donor messaged) and `blast_replies` (donor yes/no
   answers). Full column lists below.
 * **`facilities` carries more than name, type, address, coordinates and `is_active`.** The onboarding migration also added
-  `department`, `doh_license_number` and `profile_completed`, so the table has 10 columns.
+  `department` and `profile_completed`, so the table has 9 columns.
 * **Referential integrity:** every foreign key is `NO ACTION` on delete (a parent row cannot be deleted while children exist), except {cascade_text}, which `CASCADE` because those rows have no meaning without their parent (a pure log and derived selection results).{setnull_note}
   {n_checks} CHECK constraints exist, on {check_text}; each is shown under its table. Enumerations such as `users.role`, `requests.status`
   and `facilities.facility_type` are free text validated in application code only.

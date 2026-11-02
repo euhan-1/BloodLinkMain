@@ -222,7 +222,7 @@ function EditFacilityProfileModal({ facilityName, onClose, onSaved }: {
             <CheckCircle size={22} className="text-status-safe" />
           </div>
           <div className="font-display font-bold text-foreground mb-1">Profile updated</div>
-          <p className="text-[14px] text-muted-foreground mb-4">{facilityName}'s address, location, and license are saved.</p>
+          <p className="text-[14px] text-muted-foreground mb-4">{facilityName}'s address, location, and department are saved.</p>
           <button
             onClick={onClose}
             className="w-full h-10 bg-primary text-white text-sm font-bold rounded-md hover:bg-primary-hover transition-colors"

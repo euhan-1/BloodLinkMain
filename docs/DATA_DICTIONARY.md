@@ -1,12 +1,12 @@
 # BloodLink Data Dictionary and Schema Reference
 
-Generated 2026-11-01 by `docs/build_data_dictionary.py` from the **live PostgreSQL (Supabase) database** via
+Generated 2026-11-02 by `docs/build_data_dictionary.py` from the **live PostgreSQL (Supabase) database** via
 `information_schema` and `pg_constraint`, not from the `schema_*.sql` files. Data types, lengths, keys and constraints are what is
 deployed; example values are real values from actual rows, with the exceptions described below.
 
 ## Summary
 
-* **24 tables** in the `public` schema, 223 columns in all, 39 foreign keys. Views: none.
+* **24 tables** in the `public` schema, 221 columns in all, 39 foreign keys. Views: none.
 * **No unexpected tables.** Every table maps to a feature: identity (`facilities`, `users`, `password_reset_requests`, `facility_registration_requests`, `otp_codes`), inventory
   (`blood_units`, `blood_type_thresholds`, `upload_history`, `inventory_snapshot_write_log`), transfers (`requests`, `request_messages`, `request_units`, `request_unit_failures`), notification
   (`notifications`), donor outreach (`donors`, `blasts`, `blast_messages`, `blast_replies`) and forecasting (`inventory_snapshots`,
@@ -16,7 +16,7 @@ deployed; example values are real values from actual rows, with the exceptions d
 * **Donor outreach tables:** `blasts` (the campaign), `blast_messages` (one row per donor messaged) and `blast_replies` (donor yes/no
   answers). Full column lists below.
 * **`facilities` carries more than name, type, address, coordinates and `is_active`.** The onboarding migration also added
-  `department`, `doh_license_number` and `profile_completed`, so the table has 10 columns.
+  `department` and `profile_completed`, so the table has 9 columns.
 * **Referential integrity:** every foreign key is `NO ACTION` on delete (a parent row cannot be deleted while children exist), except `facility_sarimax_order.facility_id`, `inventory_snapshot_write_log.facility_id` and `inventory_snapshot_write_log.upload_history_id`, which `CASCADE` because those rows have no meaning without their parent (a pure log and derived selection results). `request_units.blood_unit_id` is `SET NULL`: the row outlives the parent, which is the point of a ledger.
   9 CHECK constraints exist, on `facility_registration_requests`, `otp_codes`, `request_unit_failures`, `request_units`, `upload_history`; each is shown under its table. Enumerations such as `users.role`, `requests.status`
   and `facilities.facility_type` are free text validated in application code only.
@@ -130,7 +130,7 @@ Composite unique key (facility_id, phone); `UK*` marks a column that is part of 
 
 ## facilities
 
-Every organisation on the platform (hospitals and blood banks). It is the tenant root: nearly every other table carries a facility_id pointing here. Operational. (8 rows, 10 columns in the live database.)
+Every organisation on the platform (hospitals and blood banks). It is the tenant root: nearly every other table carries a facility_id pointing here. Operational. (8 rows, 9 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
@@ -141,7 +141,6 @@ Every organisation on the platform (hospitals and blood banks). It is the tenant
 | latitude | double precision | 53-bit |  | Map latitude of the facility, used for distance between facilities. Nullable. | 14.5958 |
 | longitude | double precision | 53-bit |  | Map longitude of the facility. Nullable. | 120.9822 |
 | department | text | — |  | The department or unit the profile was completed for (onboarding profile field). Nullable. | ss |
-| doh_license_number | text | — |  | The facility's Department of Health licence number (onboarding profile field); not validated. Nullable. | ss |
 | profile_completed | boolean | — |  | Whether the facility has finished its onboarding profile. False forces the onboarding step. | True |
 | is_active | boolean | — |  | Whether the facility is active on the platform; inactive facilities are hidden from listings. | True |
 
@@ -151,22 +150,22 @@ Cached per-facility SARIMAX forecast checkpoints, refit at most once a day per f
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
-| id | bigint | 64-bit | PK | Unique identifier of the cached point. | 5553 |
+| id | bigint | 64-bit | PK | Unique identifier of the cached point. | 5560 |
 | facility_id | bigint | 64-bit | FK + UK* | The facility the forecast is for (FK to facilities.id). | 5 |
-| blood_type | text | — | UK* | Blood type forecast. | O+ |
-| forecast_date | date | — | UK* | The future date this forecast point is for (checkpoints at 0, 5, 10, 15, 20, 25 and 30 days ahead). | 2026-11-30 |
-| forecast_units | numeric | — |  | Predicted stock on that date. | 101 |
-| lower_units | numeric | — |  | Lower end of the 95% prediction interval. | 90 |
-| upper_units | numeric | — |  | Upper end of the 95% prediction interval. | 112 |
-| trained_through_date | date | — |  | The last day of history the model was fitted on; the cache is reused only while this equals today. | 2026-10-31 |
-| model_order | text | — |  | Label of the model that produced it: the SARIMAX order plus the dengue regressor, then in brackets how the order was obtained: [grid-searched] (a facility_sarimax_order row), [ai-recommended] (the decision-tree selector) or [default-order] (the fixed default). The bracket names the mechanism only. Rows written before the brackets existed have no suffix (a grid-searched order) or ' [fallback]' (the default order); the API reports those in today's spelling. | SARIMAX(1,0,2)x(1,0,1,7)+dengue [grid-searched] |
-| generated_at | timestamp with time zone | — |  | When it was computed. | 2026-10-31 09:10:37.877702+00:00 |
+| blood_type | text | — | UK* | Blood type forecast. | AB- |
+| forecast_date | date | — | UK* | The future date this forecast point is for (checkpoints at 0, 5, 10, 15, 20, 25 and 30 days ahead). | 2026-12-01 |
+| forecast_units | numeric | — |  | Predicted stock on that date. | 8 |
+| lower_units | numeric | — |  | Lower end of the 95% prediction interval. | 6 |
+| upper_units | numeric | — |  | Upper end of the 95% prediction interval. | 10 |
+| trained_through_date | date | — |  | The last day of history the model was fitted on; the cache is reused only while this equals today. | 2026-11-01 |
+| model_order | text | — |  | Label of the model that produced it: the SARIMAX order plus the dengue regressor, then in brackets how the order was obtained: [grid-searched] (a facility_sarimax_order row), [ai-recommended] (the decision-tree selector) or [default-order] (the fixed default). The bracket names the mechanism only. Rows written before the brackets existed have no suffix (a grid-searched order) or ' [fallback]' (the default order); the API reports those in today's spelling. | SARIMAX(1,1,1)x(1,0,1,7)+dengue [grid-searched] |
+| generated_at | timestamp with time zone | — |  | When it was computed. | 2026-10-31 19:11:47.471423+00:00 |
 
 Composite unique key (facility_id, blood_type, forecast_date); `UK*` marks a column that is part of one.
 
 ## facility_registration_requests
 
-A facility's self-service application to join the platform: organisation details, a contact person and the password they chose (hashed), held until an administrator approves or rejects it. Status runs submitted, then email_verified once the contact confirms a one-time code (see otp_codes), then approved or rejected. Approval creates the facility, its default stock thresholds and its first staff account; either decision archives the request. Contains personal data. Operational (identity). (3 rows, 17 columns in the live database.)
+A facility's self-service application to join the platform: organisation details, a contact person and the password they chose (hashed), held until an administrator approves or rejects it. Status runs submitted, then email_verified once the contact confirms a one-time code (see otp_codes), then approved or rejected. Approval creates the facility, its default stock thresholds and its first staff account; either decision archives the request. Contains personal data. Operational (identity). (4 rows, 16 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
@@ -176,7 +175,6 @@ A facility's self-service application to join the platform: organisation details
 | address | text | — |  | Street address entered or picked on the map. | Malvar |
 | latitude | double precision | 53-bit |  | Map latitude of the facility; may be missing if no location was picked. Nullable. | 14.05 |
 | longitude | double precision | 53-bit |  | Map longitude of the facility. Nullable. | 121.15 |
-| doh_license_number | text | — |  | The Department of Health licence number given on the form; not validated. | DOH-E2E-004 |
 | contact_person | text | — |  | Name of the person applying. Personal data. | (personal data; not shown) |
 | email | text | — |  | The applicant's email address, which the one-time code is sent to and which becomes the login on approval. Personal data. Unique among live (not archived) requests. | (personal data; not shown) |
 | phone | text | — |  | The applicant's phone number. Personal data. | +1 5*****01 |
@@ -255,7 +253,7 @@ Append-only log of every value a historical-stock upload wrote into inventory_sn
 
 ## inventory_snapshots
 
-The daily count of usable units (not past their expiry date) per facility and blood type, one row per day per type. Written when a blood bank loads its forecast, nightly for every active facility including hospitals (POST /internal/daily-snapshot at 23:30 Manila, first run 2026-10-27), and by historical-stock CSV uploads. All eight blood types are written each time and a type with none in stock is an explicit 0, so a missing day means nobody recorded it, not that stock was zero. It is the time series the per-facility forecast is fitted on, and the forecast carries the last value forward over a day with no rows. Operational data that also serves as forecasting input. (5,008 rows, 7 columns in the live database.)
+The daily count of usable units (not past their expiry date) per facility and blood type, one row per day per type. Written when a blood bank loads its forecast, nightly for every active facility including hospitals (POST /internal/daily-snapshot at 23:30 Manila, first run 2026-10-27), and by historical-stock CSV uploads. All eight blood types are written each time and a type with none in stock is an explicit 0, so a missing day means nobody recorded it, not that stock was zero. It is the time series the per-facility forecast is fitted on, and the forecast carries the last value forward over a day with no rows. Operational data that also serves as forecasting input. (5,064 rows, 7 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
@@ -285,7 +283,7 @@ In-app notifications shown to a facility (incoming requests, expiring units, for
 
 ## otp_codes
 
-One-time codes emailed to a person: either to prove a registrant owns the email on a facility_registration_requests row, or to reset a password. Only a hash of each code is stored, with a count of wrong guesses and an expiry; each row is bound to exactly one registration request or one user. Operational (security). (6 rows, 10 columns in the live database.)
+One-time codes emailed to a person: either to prove a registrant owns the email on a facility_registration_requests row, or to reset a password. Only a hash of each code is stored, with a count of wrong guesses and an expiry; each row is bound to exactly one registration request or one user. Operational (security). (7 rows, 10 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
@@ -304,7 +302,7 @@ CHECK: `CHECK ((purpose = ANY (ARRAY['registration_email_verify'::text, 'passwor
 
 ## password_reset_requests
 
-One row per emailed password-reset link, storing only a hash of the token so a database leak cannot be used to reset accounts. Operational (security). (1 rows, 6 columns in the live database.)
+One row per emailed password-reset link, storing only a hash of the token so a database leak cannot be used to reset accounts. Operational (security). (2 rows, 6 columns in the live database.)
 
 | Field_Name | Data_Type | Length | Key | Description | Example |
 |---|---|---|---|---|---|
@@ -514,7 +512,7 @@ Which tables exist to support the forecasting research rather than day-to-day bl
 | facility_forecast_cache | Derived (forecasting) | Cache of per-facility SARIMAX output. Reproducible from `inventory_snapshots`; safe to truncate. |
 | facility_sarimax_order | Derived (forecasting) | The SARIMAX order chosen offline for each facility and blood type, with its selection diagnostics. Reproducible by re-running `server/select_orders.py` on `inventory_snapshots`; with no row the live fitter uses the AI-recommended or default order. |
 | forecast_alert_state | Derived (forecasting) | De-duplication flag for forecast-shortage notifications. It has an operational effect (raises a notification) but exists only because of the forecast. |
-| inventory_snapshots | Mixed | Operational counts, but also the series the forecast is fitted on. At the time of generation, 4,560 of its 5,008 rows came from historical-stock CSV uploads and 448 were written by the app itself (a forecast load, or the nightly job for every active facility). Uploaded files in this deployment have included generated demonstration data, so the table should not be described as a record of real supply. A day with no row is unobserved, not zero. |
+| inventory_snapshots | Mixed | Operational counts, but also the series the forecast is fitted on. At the time of generation, 4,560 of its 5,064 rows came from historical-stock CSV uploads and 504 were written by the app itself (a forecast load, or the nightly job for every active facility). Uploaded files in this deployment have included generated demonstration data, so the table should not be described as a record of real supply. A day with no row is unobserved, not zero. |
 
 Every other table (`blast_messages`, `blast_replies`, `blasts`, `blood_type_thresholds`, `blood_units`, `donors`, `facilities`, `facility_registration_requests`, `inventory_snapshot_write_log`, `notifications`, `otp_codes`, `password_reset_requests`, `request_messages`, `request_unit_failures`, `request_units`, `requests`, `upload_history`, `users`) is operational. In the
 paper, `blood_units` is the system's record of physical inventory; the `synthetic_*` tables are a research and demonstration
