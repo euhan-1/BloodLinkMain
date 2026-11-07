@@ -1,0 +1,2 @@
+/* Sink for CSS the shadcn CLI writes (components.json "css"). Deliberately not imported anywhere:
+   theme.css owns the BloodLink tokens. */

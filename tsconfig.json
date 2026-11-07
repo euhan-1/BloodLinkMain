@@ -22,5 +22,5 @@
     }
   },
   "include": ["src/**/*"],
-  "exclude": ["src/app/components/**"]
+  "exclude": ["src/app/components/**", "src/components/ui/**"]
 }
