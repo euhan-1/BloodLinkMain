@@ -75,8 +75,9 @@ export function BankDashboardView(p: BankDashboardProps) {
 
       {/* Phone: "Waiting for you" above the table. From lg the table is the wide left column and the requests sit beside it. */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-x-8 gap-y-8">
-        <div className="order-2 lg:order-none lg:col-span-2 min-w-0">
+        <div className="order-2 lg:order-none lg:col-span-2 min-w-0 space-y-8">
           <StockAndOutlook {...p} />
+          <WhatToDoNext {...p} />
         </div>
         <div className="order-1 lg:order-none lg:col-span-1 self-start">
           <WaitingForYou requests={waiting} failed={p.requestsFailed} onViewRequests={p.onViewRequests} />
@@ -109,6 +110,10 @@ function SupplyLine(p: BankDashboardProps & { waiting: RequestRow[] | null; expi
 
 // ─── Stock and outlook (raised) ─────────────────────────────────────────────
 
+// null while the forecast has not answered yet.
+const typeOutlook = (p: BankDashboardProps, r: InventorySummaryRow): Outlook | null =>
+  p.forecastLoading && p.forecast === null ? null : outlookFor(r.blood_type, p.forecast, r.minimum_units);
+
 function StockAndOutlook(p: BankDashboardProps) {
   const rows = BLOOD_TYPE_ORDER.flatMap((t) => p.summary.filter((r) => r.blood_type === t));
   const today = manilaToday();
@@ -134,7 +139,7 @@ function StockAndOutlook(p: BankDashboardProps) {
             <TypeCard
               key={r.blood_type}
               row={r}
-              outlook={p.forecastLoading && p.forecast === null ? null : outlookFor(r.blood_type, p.forecast, r.minimum_units)}
+              outlook={typeOutlook(p, r)}
               today={today}
               onOrder={p.onOrder}
             />
@@ -388,6 +393,165 @@ function ExpiringGroupRow({ group }: { group: ExpiringGroup }) {
   );
 }
 
+// ─── What to do next (flat) ─────────────────────────────────────────────────
+
+// What the dials cannot say by themselves: the types with an order to place, a risk to watch, or too little history to say. The
+// wording is the outlook's own; the basis phrase says in plain words what the line rests on.
+function basisPhrase(f: ForecastView | null, bloodType: string): string | null {
+  const basis = technicalBasisFor(f, bloodType);
+  if (basis === null) return null;
+  if (basis.text === "Linear trend") return "from a straight-line trend";
+  if (basis.text.startsWith("SARIMAX")) return "from this type's own recorded history";
+  return null; // the reference model is neither, and is disclosed on its own
+}
+
+function WhatToDoNext(p: BankDashboardProps) {
+  if (p.summaryError) return null; // the stock card says why
+  const today = manilaToday();
+  const lines = BLOOD_TYPE_ORDER.flatMap((t) => p.summary.filter((r) => r.blood_type === t)).map((r) => ({ r, outlook: typeOutlook(p, r) }));
+  const waiting = lines.some((l) => l.outlook === null);
+  const actionable = lines.filter((l) => l.outlook?.kind === "order" || l.outlook?.kind === "at_risk" || l.outlook?.kind === "thin_history");
+  // "Nothing needs restocking" is only said when every type was actually projected and none needs anything.
+  const allClear = lines.length > 0 && lines.every((l) => l.outlook?.kind === "on_track");
+  const totalMinimum = p.summary.reduce((a, b) => a + b.minimum_units, 0);
+  return (
+    <section aria-labelledby="next-heading">
+      <h2 id="next-heading" className="font-display font-bold text-xl tracking-tight text-foreground">What to do next</h2>
+      <div className="mt-3">
+        {(p.summaryLoading || waiting) && <Skeleton className="h-9 w-full max-w-[28rem]" />}
+        {!p.summaryLoading && !waiting && actionable.length > 0 && (
+          <ul className="divide-y divide-gray-200">
+            {actionable.map(({ r, outlook }) => {
+              const basis = outlook!.kind === "thin_history" ? null : basisPhrase(p.forecast, r.blood_type);
+              return (
+                <li key={r.blood_type} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 first:pt-0 text-[15px] text-foreground">
+                  <BloodTypeBadge type={r.blood_type} size="sm" />
+                  <span>
+                    {outlook!.kind === "order" && <span className="font-semibold">{orderLabel(outlook!, today)}</span>}
+                    {outlook!.kind === "at_risk" && (
+                      <span className="font-semibold">Could fall below {outlook!.minimum ?? "its minimum"} by {formatDayMonth(outlook!.byDate)}</span>
+                    )}
+                    {outlook!.kind === "thin_history" && (
+                      <span className="font-semibold">Not enough history <span className="tabular-nums">({outlook!.have} of {outlook!.need} days)</span></span>
+                    )}
+                    {basis && `, ${basis}`}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        {!p.summaryLoading && !waiting && actionable.length === 0 && allClear && (
+          <p className="text-[15px] text-foreground">Nothing needs restocking in the next 30 days.</p>
+        )}
+      </div>
+      {p.forecast && (
+        <div className="mt-6">
+          <TotalStockChart f={p.forecast} totalMinimum={totalMinimum} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+// The total across every blood type, recorded and projected. null when there is nothing to draw.
+function TotalStockChart({ f, totalMinimum }: { f: ForecastView; totalMinimum: number }) {
+  const [showInterval, setShowInterval] = useState(false);
+  if (!(f.series.length > 0 || (f.history?.length ?? 0) > 0)) return null;
+  const hasInterval = typeof f.interval_confidence === "number";
+  const isStandIn = f.forecast_source === "synthetic_model_stand_in";
+  const chart = buildTrendChart({ history: f.history, series: f.series, standIn: isStandIn });
+  const forecastColor = isStandIn ? "var(--synthetic)" : "var(--role-accent)";
+  const historyColor = chart.historyTone === "neutral" ? "var(--gray-500)" : "var(--role-accent)";
+  const dotsOnly = chart.mode === "dots";
+  const widestRun = chart.filledRuns.reduce<{ from: number; to: number } | null>((best, r) => (best === null || r.to - r.from > best.to - best.from ? r : best), null);
+  return (
+    <div>
+      <h3 className="text-[15px] font-semibold text-foreground mb-1 flex items-center gap-1.5"><TrendingUp size={15} aria-hidden="true" /> Total stock, recorded and projected</h3>
+      <p className="text-[14px] text-foreground mb-2 max-w-[75ch]">
+        Total units across every blood type combined. A steady total doesn't mean every type is steady; see the cards above.
+      </p>
+      {!chart.hasForecast && <p className="text-[14px] font-semibold text-foreground mb-2">The forecast is still calculating. Recorded stock so far is shown.</p>}
+      <ResponsiveContainer width="100%" height={220}>
+        <ComposedChart data={chart.points} margin={{ top: 8, right: chart.hasForecast ? 8 : 22, left: 0, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.35} vertical={false} />
+          <XAxis
+            type="number" dataKey="t" domain={chart.domain} ticks={chart.ticks} interval={0}
+            tickFormatter={(t: number) => tickLabel(t, chart.todayISO)}
+            tick={{ fontSize: 12, fill: "var(--foreground)", fontFamily: "var(--font-body)", fontWeight: 700 }} axisLine={false} tickLine={false}
+          />
+          <YAxis tick={{ fontSize: 11, fill: "var(--foreground)", fontFamily: "var(--font-body)", fontWeight: 700 }} axisLine={false} tickLine={false} width={34} />
+          <Tooltip content={<TrendTooltip todayISO={chart.todayISO} />} cursor={{ stroke: "var(--border)", strokeDasharray: "3 3" }} />
+          {chart.filledRuns.map((r) => (
+            <ReferenceArea
+              key={r.from} x1={r.from} x2={r.to} fill="var(--gray-400)" fillOpacity={0.18} stroke="none" ifOverflow="hidden"
+              label={r === widestRun ? { value: "Not recorded", position: "insideBottom", fontSize: 11, fontWeight: 700, fill: "var(--foreground)" } : undefined}
+            />
+          ))}
+          {chart.minimumSegment && totalMinimum > 0 && (
+            <ReferenceLine
+              segment={[{ x: chart.minimumSegment[0], y: totalMinimum }, { x: chart.minimumSegment[1], y: totalMinimum }]}
+              stroke="var(--gray-400)" strokeWidth={1.5} strokeDasharray="4 4"
+            />
+          )}
+          {hasInterval && chart.hasForecast && (
+            <>
+              <Area dataKey="lower" stackId="ci" stroke="none" fill="transparent" isAnimationActive={false} />
+              <Area dataKey="band" stackId="ci" stroke={forecastColor} strokeWidth={1} strokeOpacity={0.35} fill={forecastColor} fillOpacity={0.3} isAnimationActive={false} />
+            </>
+          )}
+          {!dotsOnly && (
+            <Line type="linear" dataKey="filledUnits" stroke="var(--gray-500)" strokeWidth={2} strokeDasharray="5 4" dot={false} activeDot={false} connectNulls={false} isAnimationActive={false} />
+          )}
+          <Line
+            type="linear" dataKey="observedUnits" stroke={dotsOnly ? "none" : historyColor} strokeWidth={2.5}
+            dot={{ r: dotsOnly ? 4 : 0, strokeWidth: 0, fill: historyColor }} activeDot={{ r: 4.5, fill: historyColor }} connectNulls={false} isAnimationActive={false}
+          />
+          <Line type="monotone" dataKey="forecastUnits" stroke={forecastColor} strokeWidth={3} dot={{ r: 3.5, strokeWidth: 0, fill: forecastColor }} activeDot={{ r: 5 }} isAnimationActive={false} />
+        </ComposedChart>
+      </ResponsiveContainer>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] font-semibold text-foreground mt-1 mb-1">
+        {chart.observedCount > 0 && <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 rounded-full inline-block" style={{ backgroundColor: historyColor }} /> Recorded</span>}
+        {chart.filledRuns.length > 0 && (
+          <span className="flex items-center gap-1.5">
+            <span className="w-3 h-3 inline-block rounded-sm border border-dashed border-gray-500" style={{ backgroundColor: "color-mix(in srgb, var(--gray-400) 18%, transparent)" }} /> Not recorded, carried forward
+          </span>
+        )}
+        {chart.hasForecast && <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 rounded-full inline-block" style={{ backgroundColor: forecastColor }} /> Projected total</span>}
+        {chart.hasForecast && totalMinimum > 0 && (
+          <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 rounded-full inline-block border-t-2 border-dashed border-gray-400" /> Combined minimum ({totalMinimum})</span>
+        )}
+      </div>
+      {dotsOnly && chart.observedCount > 0 && (
+        <p className="text-[13px] text-foreground leading-snug mb-1">
+          Only {chart.observedCount} {plural(chart.observedCount, "day", "days")} of stock {plural(chart.observedCount, "has", "have")} been recorded so far, so just{" "}
+          {chart.observedCount === 1 ? "that day is" : "those days are"} shown. No line is drawn through the days nobody recorded.
+        </p>
+      )}
+      {chart.hasForecast && (
+        <p className="text-[13px] text-foreground leading-snug flex items-start gap-1.5">
+          <span>{hasInterval ? "The shaded band after Today shows the range this could realistically fall in." : "Line shows the projected trend for total units on file."}</span>
+          {hasInterval && (
+            <button
+              type="button" onClick={() => setShowInterval((v) => !v)} aria-expanded={showInterval}
+              aria-label="What does the shaded band mean, technically?" title="What does the shaded band mean, technically?"
+              className="shrink-0 w-4 h-4 rounded-full border border-border text-[10px] font-bold text-muted-foreground hover:text-foreground hover:border-foreground flex items-center justify-center leading-none"
+            >
+              ?
+            </button>
+          )}
+        </p>
+      )}
+      {hasInterval && chart.hasForecast && showInterval && (
+        <p className="text-[12.5px] text-muted-foreground leading-snug mt-1">
+          Technically, this is a {Math.round((f.interval_confidence as number) * 100)}% prediction interval: wider with less history on file or further into the
+          future, narrowing as more real days accumulate.
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ─── Forecast details (a disclosure) ────────────────────────────────────────
 
 // The technical layer behind the plain tag in each row: which method, and for a model fit which settings, exactly as named in
@@ -396,16 +560,30 @@ function MethodByType({ f }: { f: ForecastView }) {
   const rows = BLOOD_TYPE_ORDER.map((type) => ({ type, basis: technicalBasisFor(f, type), label: f.sarimax_orders?.[type] }))
     .filter((r) => r.basis !== null);
   if (rows.length === 0) return null;
+  // The linear-trend types share one line: their row would only repeat the same method with no settings.
+  const isLinear = (r: (typeof rows)[number]) => r.basis!.text === "Linear trend";
+  const fitted = rows.filter((r) => !isLinear(r));
+  const linear = rows.filter(isLinear);
   return (
-    <ul aria-label="Forecast method by blood type" className="mt-2 divide-y divide-gray-200 border-y border-gray-200 text-[14px]">
-      {rows.map((r) => (
-        <li key={r.type} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5">
-          <span className="w-10 shrink-0"><BloodTypeBadge type={r.type} size="sm" /></span>
-          <span title={r.basis!.title} className="w-48 shrink-0 font-semibold">{r.basis!.text}</span>
-          <span className="text-gray-700 break-words flex-1 min-w-[14rem]">{r.label ?? r.basis!.title}</span>
-        </li>
-      ))}
-    </ul>
+    <>
+      {fitted.length > 0 && (
+        <ul aria-label="Forecast method by blood type" className="mt-2 divide-y divide-gray-200 border-y border-gray-200 text-[14px]">
+          {fitted.map((r) => (
+            <li key={r.type} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5">
+              <span className="w-10 shrink-0"><BloodTypeBadge type={r.type} size="sm" /></span>
+              <span title={r.basis!.title} className="w-48 shrink-0 font-semibold">{r.basis!.text}</span>
+              <span className="text-gray-700 break-words flex-1 min-w-[14rem]">{r.label ?? r.basis!.title}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {linear.length > 0 && (
+        <p className="mt-2 text-[14px]">
+          <span className="font-semibold">Linear trend</span> — a straight-line projection used where no SARIMAX fit was selected:{" "}
+          {linear.map((r) => r.type).join(", ")}
+        </p>
+      )}
+    </>
   );
 }
 
@@ -429,8 +607,8 @@ function TrendTooltip({ active, payload, todayISO }: { active?: boolean; payload
   );
 }
 
-// Everything that is not a daily decision: the trend chart, what the forecast rests on, and the one-time upload of past stock
-// records with its undo. Closed by default.
+// Everything that is not a daily decision: what the forecast rests on, and the one-time upload of past stock records with its
+// undo. Closed by default.
 function ForecastDetails(p: BankDashboardProps) {
   const [open, setOpen] = useState(false);
   return (
@@ -453,7 +631,6 @@ function ForecastDetails(p: BankDashboardProps) {
 
 function ForecastDetailsBody(p: BankDashboardProps) {
   const f = p.forecast;
-  const [showInterval, setShowInterval] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<HistoricalUploadResult | null>(null);
@@ -479,8 +656,6 @@ function ForecastDetailsBody(p: BankDashboardProps) {
   }
 
   const real = f !== null && isRealForecastSource(f.forecast_source);
-  const hasTrend = f !== null && (f.series.length > 0 || (f.history?.length ?? 0) > 0);
-  const totalMinimum = p.summary.reduce((a, b) => a + b.minimum_units, 0);
   const summaryLine = basisSummary(f);
 
   return (
@@ -506,101 +681,6 @@ function ForecastDetailsBody(p: BankDashboardProps) {
           )}
         </div>
       )}
-
-      {f !== null && hasTrend && (() => {
-        const hasInterval = typeof f.interval_confidence === "number";
-        const isStandIn = f.forecast_source === "synthetic_model_stand_in";
-        const chart = buildTrendChart({ history: f.history, series: f.series, standIn: isStandIn });
-        const forecastColor = isStandIn ? "var(--synthetic)" : "var(--role-accent)";
-        const historyColor = chart.historyTone === "neutral" ? "var(--gray-500)" : "var(--role-accent)";
-        const dotsOnly = chart.mode === "dots";
-        const widestRun = chart.filledRuns.reduce<{ from: number; to: number } | null>((best, r) => (best === null || r.to - r.from > best.to - best.from ? r : best), null);
-        return (
-          <div>
-            <h3 className="text-[15px] font-semibold text-foreground mb-1 flex items-center gap-1.5"><TrendingUp size={15} aria-hidden="true" /> Total stock, recorded and projected</h3>
-            <p className="text-[14px] text-foreground mb-2 max-w-[75ch]">
-              Total units across every blood type combined. A steady total doesn't mean every type is steady; see the cards above.
-            </p>
-            {!chart.hasForecast && <p className="text-[14px] font-semibold text-foreground mb-2">The forecast is still calculating. Recorded stock so far is shown.</p>}
-            <ResponsiveContainer width="100%" height={220}>
-              <ComposedChart data={chart.points} margin={{ top: 8, right: chart.hasForecast ? 8 : 22, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.35} vertical={false} />
-                <XAxis
-                  type="number" dataKey="t" domain={chart.domain} ticks={chart.ticks} interval={0}
-                  tickFormatter={(t: number) => tickLabel(t, chart.todayISO)}
-                  tick={{ fontSize: 12, fill: "var(--foreground)", fontFamily: "var(--font-body)", fontWeight: 700 }} axisLine={false} tickLine={false}
-                />
-                <YAxis tick={{ fontSize: 11, fill: "var(--foreground)", fontFamily: "var(--font-body)", fontWeight: 700 }} axisLine={false} tickLine={false} width={34} />
-                <Tooltip content={<TrendTooltip todayISO={chart.todayISO} />} cursor={{ stroke: "var(--border)", strokeDasharray: "3 3" }} />
-                {chart.filledRuns.map((r) => (
-                  <ReferenceArea
-                    key={r.from} x1={r.from} x2={r.to} fill="var(--gray-400)" fillOpacity={0.18} stroke="none" ifOverflow="hidden"
-                    label={r === widestRun ? { value: "Not recorded", position: "insideBottom", fontSize: 11, fontWeight: 700, fill: "var(--foreground)" } : undefined}
-                  />
-                ))}
-                {chart.minimumSegment && totalMinimum > 0 && (
-                  <ReferenceLine
-                    segment={[{ x: chart.minimumSegment[0], y: totalMinimum }, { x: chart.minimumSegment[1], y: totalMinimum }]}
-                    stroke="var(--gray-400)" strokeWidth={1.5} strokeDasharray="4 4"
-                  />
-                )}
-                {hasInterval && chart.hasForecast && (
-                  <>
-                    <Area dataKey="lower" stackId="ci" stroke="none" fill="transparent" isAnimationActive={false} />
-                    <Area dataKey="band" stackId="ci" stroke={forecastColor} strokeWidth={1} strokeOpacity={0.35} fill={forecastColor} fillOpacity={0.3} isAnimationActive={false} />
-                  </>
-                )}
-                {!dotsOnly && (
-                  <Line type="linear" dataKey="filledUnits" stroke="var(--gray-500)" strokeWidth={2} strokeDasharray="5 4" dot={false} activeDot={false} connectNulls={false} isAnimationActive={false} />
-                )}
-                <Line
-                  type="linear" dataKey="observedUnits" stroke={dotsOnly ? "none" : historyColor} strokeWidth={2.5}
-                  dot={{ r: dotsOnly ? 4 : 0, strokeWidth: 0, fill: historyColor }} activeDot={{ r: 4.5, fill: historyColor }} connectNulls={false} isAnimationActive={false}
-                />
-                <Line type="monotone" dataKey="forecastUnits" stroke={forecastColor} strokeWidth={3} dot={{ r: 3.5, strokeWidth: 0, fill: forecastColor }} activeDot={{ r: 5 }} isAnimationActive={false} />
-              </ComposedChart>
-            </ResponsiveContainer>
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] font-semibold text-foreground mt-1 mb-1">
-              {chart.observedCount > 0 && <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 rounded-full inline-block" style={{ backgroundColor: historyColor }} /> Recorded</span>}
-              {chart.filledRuns.length > 0 && (
-                <span className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 inline-block rounded-sm border border-dashed border-gray-500" style={{ backgroundColor: "color-mix(in srgb, var(--gray-400) 18%, transparent)" }} /> Not recorded, carried forward
-                </span>
-              )}
-              {chart.hasForecast && <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 rounded-full inline-block" style={{ backgroundColor: forecastColor }} /> Projected total</span>}
-              {chart.hasForecast && totalMinimum > 0 && (
-                <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 rounded-full inline-block border-t-2 border-dashed border-gray-400" /> Combined minimum ({totalMinimum})</span>
-              )}
-            </div>
-            {dotsOnly && chart.observedCount > 0 && (
-              <p className="text-[13px] text-foreground leading-snug mb-1">
-                Only {chart.observedCount} {plural(chart.observedCount, "day", "days")} of stock {plural(chart.observedCount, "has", "have")} been recorded so far, so just{" "}
-                {chart.observedCount === 1 ? "that day is" : "those days are"} shown. No line is drawn through the days nobody recorded.
-              </p>
-            )}
-            {chart.hasForecast && (
-              <p className="text-[13px] text-foreground leading-snug flex items-start gap-1.5">
-                <span>{hasInterval ? "The shaded band after Today shows the range this could realistically fall in." : "Line shows the projected trend for total units on file."}</span>
-                {hasInterval && (
-                  <button
-                    type="button" onClick={() => setShowInterval((v) => !v)} aria-expanded={showInterval}
-                    aria-label="What does the shaded band mean, technically?" title="What does the shaded band mean, technically?"
-                    className="shrink-0 w-4 h-4 rounded-full border border-border text-[10px] font-bold text-muted-foreground hover:text-foreground hover:border-foreground flex items-center justify-center leading-none"
-                  >
-                    ?
-                  </button>
-                )}
-              </p>
-            )}
-            {hasInterval && chart.hasForecast && showInterval && (
-              <p className="text-[12.5px] text-muted-foreground leading-snug mt-1">
-                Technically, this is a {Math.round((f.interval_confidence as number) * 100)}% prediction interval: wider with less history on file or further into the
-                future, narrowing as more real days accumulate.
-              </p>
-            )}
-          </div>
-        );
-      })()}
 
       {/* The one-time setup: past stock records bring the real forecast forward. Not a daily decision, so it lives here. */}
       <div className="border-t border-gray-200 pt-6 max-w-[75ch]">

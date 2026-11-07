@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Archive, ChevronDown, Search, SlidersHorizontal, Trash2 } from "lucide-react";
 import { BloodTypeBadge, StatusDot } from "../components/BloodTypeBadge";
 import { Skeleton } from "../components/Skeleton";
-import { StockBar } from "../components/StockBar";
 import { formatCalendarDate } from "../lib/dateFormat";
 import { type InventorySummaryRow, type InventoryUnit } from "../lib/inventoryTypes";
 import { BLOOD_TYPE_ORDER, EXPIRY_NEAR_DAYS, STATUS_STYLES, STOCK_LABELS, getExpiryStatus } from "../lib/statusTokens";
@@ -12,7 +11,7 @@ import {
 } from "../lib/bankInventory";
 
 // What a blood bank came to Inventory for: where every unit it holds is, and which ones need it to act. It holds hundreds of
-// units, so the page is a table of its eight types (stock against minimum, how many expire soon, how many have expired), each
+// units, so the page is a table of its eight types (units held and status, how many expire soon, how many have expired), each
 // of which opens to its units, soonest expiry first (the order release picks them in), fifty to a page. Search sits at the top
 // and covers every type, because a bank looks a unit up by its DIN far more often than it browses for one.
 //
@@ -23,7 +22,7 @@ import {
 // expiry tones for time left.
 
 const HAIRLINE = "border-gray-200";
-const TYPE_COLUMNS = "lg:grid-cols-[4.75rem_minmax(8rem,1.5fr)_5rem_9.5rem_5.5rem_5.5rem_9rem]";
+const TYPE_COLUMNS = "lg:grid-cols-[4.75rem_5rem_minmax(9.5rem,1fr)_5.5rem_5.5rem_9rem]";
 const UNIT_COLUMNS = "lg:grid-cols-[10.5rem_7rem_6.5rem_5rem_7.5rem_8.5rem_minmax(10rem,1fr)_2.5rem]";
 const SEARCH_COLUMNS = "lg:grid-cols-[10.5rem_3.5rem_7rem_6.5rem_5rem_7.5rem_8.5rem_minmax(9rem,1fr)_2.5rem]";
 const FIELD = "h-9 px-2.5 text-[14px] text-foreground border border-border rounded-md bg-card";
@@ -166,7 +165,6 @@ function TypeTable(p: BankInventoryProps) {
     <div role="table" aria-label="Stock by blood type">
       <div role="row" className={`hidden lg:grid ${TYPE_COLUMNS} items-end gap-x-4 pb-2 border-b border-gray-300 text-[13px] font-semibold text-gray-600`}>
         <div role="columnheader">Type</div>
-        <div role="columnheader">Stock against minimum</div>
         <div role="columnheader" className="text-right">Units</div>
         <div role="columnheader">Status</div>
         <div role="columnheader" className="text-right" title={`Units that expire within ${EXPIRY_NEAR_DAYS} days, not counting any reserved for a request`}>Expiring</div>
@@ -204,10 +202,7 @@ function TypeRow({
           </button>
           <BloodTypeBadge type={r.type} size="sm" />
         </div>
-        <div role="cell" className="order-2 lg:order-none flex-1 min-w-[6rem]">
-          {r.minimum !== null && r.maximum !== null ? <StockBar units={r.units} minimum={r.minimum} maximum={r.maximum} /> : <span className="text-[13px] text-gray-600">No thresholds set</span>}
-        </div>
-        <div role="cell" className={`order-3 lg:order-none text-right text-[16px] font-bold tabular-nums ${r.level && r.level !== "safe" ? STATUS_STYLES[r.level].text : "text-foreground"}`}>
+        <div role="cell" className={`order-3 lg:order-none ml-auto lg:ml-0 text-right text-[16px] font-bold tabular-nums ${r.level && r.level !== "safe" ? STATUS_STYLES[r.level].text : "text-foreground"}`}>
           {r.units}<span className="sr-only"> {plural(r.units, "unit", "units")} usable</span>
         </div>
         <div aria-hidden="true" className="order-4 basis-full h-0 lg:hidden" />
