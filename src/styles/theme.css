@@ -36,7 +36,7 @@
   --secondary: #F0EEEB;
   --secondary-foreground: #443E39;
   --muted: #F0EEEB;
-  --muted-foreground: #1C1917;
+  --muted-foreground: #6B645D;
   --accent: var(--role-accent-tint);
   --accent-foreground: var(--role-accent);
   /* Dark gray rather than a pale hairline — cards, table rows, tabs, and
@@ -63,8 +63,8 @@
   --gray-700: #443E39;
   --gray-800: #2B2724;
   --gray-900: #1C1917;
-  --font-weight-medium: 700;
-  --font-weight-normal: 600;
+  --font-weight-medium: 600;
+  --font-weight-normal: 400;
   --ring: var(--role-accent);
   --radius: 0.5rem;
 
@@ -202,7 +202,7 @@
   --secondary: #241E19;
   --secondary-foreground: #E8E0D6;
   --muted: #241E19;
-  --muted-foreground: #F3ECE3;
+  --muted-foreground: #9A9082;
   --border: #473C33;
   --input-background: #1C1712;
 
@@ -382,16 +382,8 @@
 
   body {
     @apply bg-background text-foreground;
-    /* Baseline body weight, bumped a third time now: regular->medium->
-       semibold->bold (400->500->600->700) for the same legibility reason —
-       IBM Plex Sans tops out at 700 (fonts.css loads 400/500/600/700), so
-       700 is the last real step available, not an arbitrary value. Text that already asks for font-bold explicitly (most headers,
-       all buttons, most emphasized labels) now matches this floor exactly
-       rather than exceeding it — the "important vs. plain" distinction that
-       used to be carried by font-semibold/font-bold utility classes is
-       accordingly flatter than before, which is the intended effect of
-       raising the floor this far. */
-    font-weight: 700;
+    /* Body text is regular weight; emphasis comes from the font-semibold / font-bold utilities. */
+    font-weight: 400;
   }
 
   /**
