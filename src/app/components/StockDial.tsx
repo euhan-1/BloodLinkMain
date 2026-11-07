@@ -1,5 +1,5 @@
 import { BloodTypeBadge } from "./BloodTypeBadge";
-import { STATUS_STYLES, isNotStocked, stockStatus, type StatusLevel } from "../lib/statusTokens";
+import { STATUS_STYLES, STOCK_LABELS, isNotStocked, stockStatus, type StatusLevel } from "../lib/statusTokens";
 
 // A speedometer-style gauge for one blood type's stock: a 270-degree arc (gap at the bottom) filled from 0 to the units held,
 // drawn against the type's own maximum, with a tick where the minimum sits. The colour is stockStatus, the one rule used
@@ -40,7 +40,7 @@ export function StockDial({ units, minimum, maximum, bloodType }: { units: numbe
 
   const count = `${units} ${plural(units, "unit", "units")}`;
   const scale = notStocked ? "not stocked" : `minimum ${minimum}${hasScale ? `, maximum ${maximum}` : ""}`;
-  const label = `${bloodType}: ${count}, ${scale}`;
+  const label = `${bloodType}: ${count}, ${scale}${notStocked ? "" : `, status ${STOCK_LABELS[level]}`}`; // the status word is the one the card shows
 
   const circle = { cx: CENTRE, cy: CENTRE, r: RADIUS, fill: "none", strokeWidth: STROKE, strokeLinecap: "round" as const, transform: `rotate(${START_DEG} ${CENTRE} ${CENTRE})` };
   return (
@@ -56,6 +56,7 @@ export function StockDial({ units, minimum, maximum, bloodType }: { units: numbe
         <span className={`font-display font-bold text-[26px] leading-none tabular-nums ${level === "safe" ? "text-foreground" : STATUS_STYLES[level].text}`}>
           {units}
         </span>
+        {!notStocked && minimum > 0 && <span className="text-[11px] leading-none tabular-nums text-muted-foreground">min {minimum}</span>}
       </div>
     </div>
   );

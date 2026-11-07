@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { CheckCircle } from "lucide-react";
-import { BloodTypeBadge } from "../components/BloodTypeBadge";
+import { BloodTypeBadge, StatusDot } from "../components/BloodTypeBadge";
 import { ExpiryWarningRow } from "../components/ExpiryWarningRow";
 import { Skeleton } from "../components/Skeleton";
-import { StockBar } from "../components/StockBar";
+import { StockDial } from "../components/StockDial";
 import { BLOOD_TYPE_ORDER, EXPIRY_NEAR_DAYS, STATUS_STYLES, STOCK_LABELS, isNotStocked, stockStatus, type StatusLevel } from "../lib/statusTokens";
 import { type InventorySummaryRow, type InventoryUnit } from "../lib/inventoryTypes";
 import {
@@ -203,9 +203,6 @@ function ActionRequired(p: HospitalDashboardProps) {
                     <div className={`text-[17px] font-semibold ${STATUS_STYLES[level].text}`}>
                       {level === "critical" ? "Critically low, short by" : "Below minimum, short by"} {prompt.deficit} {plural(prompt.deficit, "unit", "units")}
                     </div>
-                    <div className="text-[14px] text-foreground">
-                      {prompt.units} on hand, minimum {prompt.minimum_units}.
-                    </div>
                   </div>
                 </div>
                 <button
@@ -298,11 +295,9 @@ function YourRequests({ requests, failed, onViewRequests }: { requests: RequestR
 
 // ─── Stock against minimum (flat) ───────────────────────────────────────────
 
-// One bar per type for current stock, sitting against a track that runs from that type's minimum to its
-// maximum. A bar that ends before the track starts is below minimum; the bar and the track answer the only
-// question this chart is for. Each row is drawn to its own maximum (StockBar, the same bar the blood bank's Dashboard and
-// Inventory draw), so the band sits in the same place on every line and "inside or short of the band" reads identically
-// for AB- (3 of 10) and O+ (52 of 40); the numbers on the right give absolute volume.
+// One dial per type, the same StockDial and card the blood bank's Dashboard draws: the arc is the stock held against that type's
+// own maximum, the tick is its minimum, and a status word appears only when the type is not at the healthy level. There is no
+// forecast on this screen, so a card is the dial and its status word and nothing else.
 function StockAgainstMinimum({ summary, loading, error }: { summary: InventorySummaryRow[]; loading: boolean; error: string | null }) {
   const rows = [...summary].sort((a, b) => BLOOD_TYPE_ORDER.indexOf(a.blood_type) - BLOOD_TYPE_ORDER.indexOf(b.blood_type));
 
@@ -311,48 +306,37 @@ function StockAgainstMinimum({ summary, loading, error }: { summary: InventorySu
       <h2 id="stock-heading" className="font-display font-bold text-xl tracking-tight text-foreground">
         Stock against minimum
       </h2>
-      <p className="text-[14px] text-foreground mt-1 max-w-[62ch]">
-        Each bar is the stock you hold now. The outlined track runs from the minimum to the maximum you set for that type.
-        {" Every row is drawn to its own maximum, so a bar reads the same way for every type; the numbers give the volume."}
-        {" "}A bar is critical when it is under 60% of the minimum.
-      </p>
-      <div className="flex flex-wrap gap-x-5 gap-y-1.5 mt-3 mb-5 text-[13px] text-foreground">
-        <span className="flex items-center gap-2"><span className="w-3 h-2.5 rounded-sm bg-status-safe" /> Adequate</span>
-        <span className="flex items-center gap-2"><span className="w-3 h-2.5 rounded-sm bg-status-watch" /> Below minimum</span>
-        <span className="flex items-center gap-2"><span className="w-3 h-2.5 rounded-sm bg-status-critical" /> Critical</span>
-        <span className="flex items-center gap-2"><span className="w-5 h-3 rounded-sm border border-gray-500" /> Minimum to maximum</span>
-      </div>
 
       {loading && (
-        <div className="space-y-3" aria-busy="true">
-          {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-9 w-full" />)}
+        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3" aria-busy="true">
+          {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-44 w-full" />)}
         </div>
       )}
-      {!loading && error && <p role="alert" className="text-[15px] text-status-critical-text">Failed to load inventory summary: {error}</p>}
+      {!loading && error && <p role="alert" className="mt-4 text-[15px] text-status-critical-text">Failed to load inventory summary: {error}</p>}
       {!loading && !error && (
-        <>
-          <ul className="space-y-3">
-            {rows.map((r) => {
-              const level = levelOf(r);
-              const notStocked = isNotStocked(r.units, r.minimum_units);
-              return (
-                <li key={r.blood_type} className="grid grid-cols-[38px_1fr_6.5rem] items-center gap-3 sm:gap-4">
-                  <BloodTypeBadge type={r.blood_type} size="sm" />
-                  <StockBar units={r.units} minimum={r.minimum_units} maximum={r.maximum_units} />
-                  <div className="text-right leading-tight">
-                    <div className={`text-[15px] font-bold tabular-nums ${level === "safe" ? "text-foreground" : STATUS_STYLES[level].text}`}>
-                      {notStocked ? "Not stocked" : r.units}
-                    </div>
-                    {!notStocked && <div className="text-[12.5px] text-foreground tabular-nums">minimum {r.minimum_units}</div>}
-                    <span className="sr-only">
-                      {r.blood_type}: {r.units} {plural(r.units, "unit", "units")}, minimum {r.minimum_units}, maximum {r.maximum_units}, {STOCK_LABELS[level].toLowerCase()}
-                    </span>
+        <ul aria-labelledby="stock-heading" className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+          {rows.map((r) => {
+            const level = levelOf(r);
+            const notStocked = isNotStocked(r.units, r.minimum_units);
+            return (
+              <li key={r.blood_type} className="flex flex-col gap-2 rounded-xl border border-gray-200 p-3">
+                <StockDial units={r.units} minimum={r.minimum_units} maximum={r.maximum_units} bloodType={r.blood_type} />
+                {(level !== "safe" || notStocked) && (
+                  <div className="flex items-center justify-center gap-2 text-[14px] font-semibold">
+                    {notStocked ? (
+                      <span className="text-foreground">Not stocked</span>
+                    ) : (
+                      <>
+                        <StatusDot status={level} />
+                        <span className={STATUS_STYLES[level].text}>{STOCK_LABELS[level]}</span>
+                      </>
+                    )}
                   </div>
-                </li>
-              );
-            })}
-          </ul>
-        </>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       )}
     </section>
   );
