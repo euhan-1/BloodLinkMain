@@ -10,7 +10,7 @@ import {
 import { BloodTypeBadge, StatusDot } from "../components/BloodTypeBadge";
 import { ReasonTag } from "../components/ReasonTag";
 import { Skeleton } from "../components/Skeleton";
-import { StockBar } from "../components/StockBar";
+import { StockDial } from "../components/StockDial";
 import { UploadHistoryPanel } from "../components/UploadHistoryPanel";
 import { type InventorySummaryRow } from "../lib/inventoryTypes";
 import { isRealForecastSource, type ForecastView } from "../lib/forecastTypes";
@@ -20,7 +20,7 @@ import { manilaToday } from "../lib/transfers";
 import { formatDayMonth } from "../lib/dateFormat";
 import { requestUnitsText, type RequestRow } from "../lib/requestTypes";
 import {
-  basisFor, basisSummary, basisSummaryPlain, canGiveText, expiryLine, forecastExplainer, limitedHistoryNote, orderLabel, orderPrefill, outlookFor, sortedRows, statusWord, supplySentence, technicalBasisFor,
+  basisSummary, canGiveText, expiryLine, limitedHistoryNote, orderLabel, orderPrefill, outlookFor, statusWord, supplySentence, technicalBasisFor,
   waitingRequests, type Outlook,
 } from "../lib/bankDashboard";
 
@@ -36,7 +36,6 @@ const RAISED = "shadow-[var(--shadow-raised)]";
 const VISIBLE_WAITING = 5;
 const VISIBLE_EXPIRING = 5;
 const EXPIRY_POLL_MS = 25000;
-const COLUMNS = "lg:grid-cols-[3.25rem_minmax(7.5rem,1.2fr)_4rem_8.5rem_6.5rem_minmax(11.5rem,1.6fr)]";
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
 export type BankDashboardProps = {
@@ -111,10 +110,9 @@ function SupplyLine(p: BankDashboardProps & { waiting: RequestRow[] | null; expi
 // ─── Stock and outlook (raised) ─────────────────────────────────────────────
 
 function StockAndOutlook(p: BankDashboardProps) {
-  const rows = sortedRows(p.summary, p.forecast);
+  const rows = BLOOD_TYPE_ORDER.flatMap((t) => p.summary.filter((r) => r.blood_type === t));
   const today = manilaToday();
   const pending = p.forecast?.pending_types ?? [];
-  const summaryLine = basisSummaryPlain(p.forecast);
   const anyOrder = (p.forecast?.restock_recommendations.length ?? 0) > 0;
 
   return (
@@ -122,49 +120,32 @@ function StockAndOutlook(p: BankDashboardProps) {
       <h2 id="stock-outlook-heading" className="font-display font-bold text-xl tracking-tight text-foreground">
         Stock and outlook by blood type
       </h2>
-      <p className="text-[14px] text-foreground mt-1 max-w-[70ch]">
-        What you hold, and what you can give another facility: the units above each type's minimum that a search would find
-        available.
-      </p>
-      <p className="text-[14px] text-foreground mt-1 max-w-[70ch]">
-        {forecastExplainer(p.forecast)}
-      </p>
 
       {p.summaryLoading && (
-        <div className="mt-5 space-y-2" aria-busy="true">
-          {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-11 w-full" />)}
+        <div className="mt-5 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3" aria-busy="true">
+          {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-52 w-full" />)}
         </div>
       )}
       {!p.summaryLoading && p.summaryError && <p role="alert" className="mt-5 text-[15px] text-status-critical-text">Failed to load inventory summary: {p.summaryError}</p>}
 
       {!p.summaryLoading && !p.summaryError && (
-        <div role="table" aria-label="Stock and outlook by blood type" className="mt-4">
-          <div role="row" className={`hidden lg:grid ${COLUMNS} items-end gap-x-4 pb-1.5 border-b border-gray-300 text-[13px] font-semibold text-gray-600`}>
-            <div role="columnheader">Type</div>
-            <div role="columnheader">Stock against minimum</div>
-            <div role="columnheader" className="text-right">Units</div>
-            <div role="columnheader">Status</div>
-            <div role="columnheader" className="text-right">Can give</div>
-            <div role="columnheader" className="pl-4">Outlook, next 30 days (estimate)</div>
-          </div>
+        <ul aria-labelledby="stock-outlook-heading" className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
           {rows.map((r) => (
-            <TypeRow
+            <TypeCard
               key={r.blood_type}
               row={r}
               outlook={p.forecastLoading && p.forecast === null ? null : outlookFor(r.blood_type, p.forecast, r.minimum_units)}
-              basis={basisFor(p.forecast, r.blood_type)}
               today={today}
               onOrder={p.onOrder}
-              forecast={p.forecast}
             />
           ))}
-        </div>
+        </ul>
       )}
 
       {/* What the outlook column rests on, and anything that is not final yet. */}
       {!p.summaryLoading && !p.summaryError && (
         <div className="mt-4 space-y-1.5 text-[14px] text-foreground">
-          {p.forecastError && !p.forecast && (
+          {!p.forecast && !p.forecastLoading && (
             <p role="alert" className="text-status-critical-text">
               The outlook didn't load. Your stock above is unaffected.{" "}
               <button onClick={p.onRetryForecast} className="font-semibold underline underline-offset-2">Retry</button>
@@ -175,7 +156,6 @@ function StockAndOutlook(p: BankDashboardProps) {
               Still calculating {pending.length} of {p.forecast.types_total} blood types ({pending.join(", ")}). This updates by itself.
             </p>
           )}
-          {summaryLine && <p>Outlook basis: {summaryLine} The technical details are under Forecast details.</p>}
           {p.forecast?.forecast_source === "synthetic_model_stand_in" && (
             <p className="text-synthetic-text font-semibold">
               This outlook comes from a reference model, not this facility's own history yet. See Forecast details.
@@ -196,60 +176,51 @@ function StockAndOutlook(p: BankDashboardProps) {
   );
 }
 
-// One blood type. From lg the cells are grid columns in DOM order (type, bar, units, status, can give, outlook); below it they
-// wrap into two lines by `order-N`: type, bar, units and what can be given; then the status and the outlook.
-function TypeRow({
-  row, outlook, basis, today, onOrder, forecast,
+// One blood type: its dial, what it can give, a status word when the stock is not healthy, and an outlook line only where there
+// is something to do (an order) or watch (at risk); a type with nothing to say shows nothing.
+function TypeCard({
+  row, outlook, today, onOrder,
 }: {
   row: InventorySummaryRow;
   outlook: Outlook | null; // null: the forecast has not answered yet
-  basis: { text: string; title: string } | null;
   today: string;
   onOrder: BankDashboardProps["onOrder"];
-  forecast: ForecastView | null;
 }) {
   const level = stockStatus(row.units, row.minimum_units);
   const notStocked = isNotStocked(row.units, row.minimum_units);
   const give = canGiveText(row);
   return (
-    <div
-      role="row"
-      className={`flex flex-wrap items-center gap-x-4 gap-y-1.5 py-3 lg:py-2 lg:min-h-[3.25rem] lg:grid ${COLUMNS} lg:gap-x-4 border-b border-gray-200 last:border-b-0`}
-    >
-      <div role="cell" className="order-1 lg:order-none"><BloodTypeBadge type={row.blood_type} size="md" /></div>
-      <div role="cell" className="order-2 lg:order-none flex-1 min-w-[6rem]"><StockBar units={row.units} minimum={row.minimum_units} maximum={row.maximum_units} /></div>
-      <div role="cell" className={`order-3 lg:order-none text-right text-[16px] font-bold tabular-nums ${level === "safe" ? "text-foreground" : STATUS_STYLES[level].text}`}>
-        {row.units}
-        <span className="sr-only"> {plural(row.units, "unit", "units")}, minimum {row.minimum_units}</span>
+    <li className="flex flex-col gap-2 rounded-xl border border-gray-200 p-3">
+      <StockDial units={row.units} minimum={row.minimum_units} maximum={row.maximum_units} bloodType={row.blood_type} />
+      <div className="text-center text-[14px] text-foreground tabular-nums">
+        {give === null ? "—" : <span className="font-semibold">{give.main} to give</span>}
+        {give?.extra && <div className="text-[12.5px]">{give.extra}</div>}
       </div>
-      <div aria-hidden="true" className="order-5 basis-full h-0 lg:hidden" />
-      <div role="cell" className="order-6 lg:order-none shrink-0 flex items-center gap-2 text-[14px] font-semibold">
-        {notStocked ? (
-          <span className="text-foreground">Not stocked</span>
-        ) : (
-          <>
-            <StatusDot status={level} />
-            <span className={STATUS_STYLES[level].text}>{statusWord(row, STOCK_LABELS)}</span>
-          </>
-        )}
-      </div>
-      <div role="cell" className="order-4 lg:order-none lg:text-right text-[14px] text-foreground tabular-nums whitespace-nowrap">
-        <span className="lg:hidden text-gray-600">Can give </span>
-        {give === null ? "—" : <span className="font-semibold">{give.main}</span>}
-        {give?.extra && <div className="text-[12.5px] text-foreground lg:text-right">{give.extra}</div>}
-      </div>
-      <div role="cell" className="order-7 flex-1 min-w-[9rem] lg:flex-none lg:min-w-0 lg:order-none lg:pl-4 lg:border-l lg:border-gray-200">
-        <OutlookCell blood_type={row.blood_type} outlook={outlook} basis={basis} today={today} onOrder={onOrder} forecast={forecast} />
-      </div>
-    </div>
+      {(level !== "safe" || notStocked) && (
+        <div className="flex items-center justify-center gap-2 text-[14px] font-semibold">
+          {notStocked ? (
+            <span className="text-foreground">Not stocked</span>
+          ) : (
+            <>
+              <StatusDot status={level} />
+              <span className={STATUS_STYLES[level].text}>{statusWord(row, STOCK_LABELS)}</span>
+            </>
+          )}
+        </div>
+      )}
+      {(outlook === null || outlook.kind === "order" || outlook.kind === "at_risk" || outlook.kind === "thin_history") && (
+        <div className="mt-auto border-t border-gray-200 pt-2">
+          <OutlookCell blood_type={row.blood_type} outlook={outlook} today={today} onOrder={onOrder} />
+        </div>
+      )}
+    </li>
   );
 }
 
 function OutlookCell({
-  blood_type, outlook, basis, today, onOrder, forecast,
+  blood_type, outlook, today, onOrder,
 }: {
-  blood_type: string; outlook: Outlook | null; basis: { text: string; title: string } | null; today: string;
-  onOrder: BankDashboardProps["onOrder"]; forecast: ForecastView | null;
+  blood_type: string; outlook: Outlook | null; today: string; onOrder: BankDashboardProps["onOrder"];
 }) {
   if (outlook === null) return <Skeleton className="h-9 w-40" />;
   return (
@@ -273,7 +244,6 @@ function OutlookCell({
           )}
         </>
       )}
-      {outlook.kind === "on_track" && <span className="font-semibold text-status-safe-text">On track</span>}
       {outlook.kind === "at_risk" && (
         <>
           <span title={outlook.sentence} className={`font-semibold ${STATUS_STYLES.watch.text}`}>At risk</span>
@@ -298,11 +268,6 @@ function OutlookCell({
         </span>
       )}
       {outlook.kind === "unavailable" && <span className="text-gray-600">Not available</span>}
-      {basis && forecast && (
-        <span title={basis.title} className="mt-1 block w-fit max-w-full rounded-full border border-border bg-secondary px-2 py-px text-[12px] font-semibold text-foreground">
-          {basis.text}
-        </span>
-      )}
     </div>
   );
 }
@@ -554,7 +519,7 @@ function ForecastDetailsBody(p: BankDashboardProps) {
           <div>
             <h3 className="text-[15px] font-semibold text-foreground mb-1 flex items-center gap-1.5"><TrendingUp size={15} aria-hidden="true" /> Total stock, recorded and projected</h3>
             <p className="text-[14px] text-foreground mb-2 max-w-[75ch]">
-              Total units across every blood type combined. A steady total doesn't mean every type is steady; see the table above.
+              Total units across every blood type combined. A steady total doesn't mean every type is steady; see the cards above.
             </p>
             {!chart.hasForecast && <p className="text-[14px] font-semibold text-foreground mb-2">The forecast is still calculating. Recorded stock so far is shown.</p>}
             <ResponsiveContainer width="100%" height={220}>
