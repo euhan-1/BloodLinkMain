@@ -1,18 +1,17 @@
 import { useState, useRef, useEffect } from "react";
-import { Clock, MessageSquare, Send } from "lucide-react";
+import { ArrowLeft, MessageSquare, Send } from "lucide-react";
 import { apiGet, apiPost, getMyFacilityProfile } from "../lib/api";
 import { getCurrentUser } from "../lib/session";
 import { getDevFacilityId, isDevModeEnabled } from "../lib/devMode";
-import { BloodTypeBadge } from "../components/BloodTypeBadge";
 import { Modal } from "../components/Modal";
 import { type Facility } from "../components/FacilityNetworkMap";
 import { HospitalSourcingView } from "./HospitalSourcing";
 import { RequestThread } from "../components/RequestThread";
 import { listIsBehind, mergeThread, type RequestDetail } from "../lib/requestTimeline";
 import { BLOOD_COMPONENTS, type BloodComponent } from "../lib/bloodComponents";
-import { useFlashOnChange } from "../lib/motion";
-import { groupIncomingRequests, requestUnitsText, type EmergencyType, type RequestRow } from "../lib/requestTypes";
-import { ReasonTag } from "../components/ReasonTag";
+import { type EmergencyType, type RequestRow } from "../lib/requestTypes";
+import { RequestInboxRow } from "../components/RequestInboxRow";
+import { buildInbox, inboxCounts, loadSeen, requestPhase, saveSeen, seedSeen, unreadKind, type SeenMap } from "../lib/requestInbox";
 import { TransferHistory } from "./TransferHistory";
 
 // Chat messages poll faster than notifications (App.tsx's NOTIFICATION_POLL_MS)
@@ -44,200 +43,6 @@ type RequestMessage = {
 
 const FINISHED_STATUSES = ["completed", "failed", "declined", "cancelled"];
 
-
-// `position` is given only for a request that is waiting for a decision: its place in the order the supplier should
-// work in. Every card shows the reason as the same tag.
-function IncomingRequestCard({
-  req, busy, onAction, isChatSelected, onOpenChat, position,
-}: {
-  req: RequestRow;
-  busy: boolean;
-  onAction: (id: number, action: RequestAction) => void;
-  isChatSelected: boolean;
-  onOpenChat: (id: number) => void;
-  position?: number;
-}) {
-  // Flashes once when this request's actual phase changes (pending ->
-  // accepted -> released -> completed) — not on every poll/re-render, only
-  // when the thing the card is reporting has genuinely moved forward.
-  const phase = `${req.status}:${req.supplier_confirmed_at ?? ""}:${req.requester_confirmed_at ?? ""}`;
-  const flash = useFlashOnChange(phase);
-  return (
-    <div
-      onClick={() => onOpenChat(req.id)}
-      title={isChatSelected ? "Viewing chat" : "Open chat"}
-      className={`rounded-lg border-2 p-3 cursor-pointer transition-colors ${
-        isChatSelected ? "border-primary bg-primary-tint" : "border-info-border bg-card hover:bg-info-tint"
-      } ${flash ? "animate-value-flash-bg" : ""}`}
-    >
-      <div className="flex items-center justify-between gap-2 mb-1.5">
-        <div className="flex items-center gap-2 min-w-0">
-          {position !== undefined && (
-            <span
-              aria-label={`Position ${position}`}
-              className="w-6 h-6 rounded-full bg-primary-tint text-primary text-[12px] font-bold flex items-center justify-center shrink-0"
-            >
-              {position}
-            </span>
-          )}
-          <div className="text-[14px] font-semibold text-foreground">
-            {req.requesting_facility_name ?? "Unknown facility"}
-          </div>
-        </div>
-        <BloodTypeBadge type={req.blood_type} size="md" />
-      </div>
-      <div className="flex items-center gap-2 mb-2 text-[13px] text-foreground">
-        {position === undefined && <MessageSquare size={12} className="text-info shrink-0" />}
-        <span>{requestUnitsText(req)}</span>
-        <ReasonTag reason={req.emergency_type} />
-      </div>
-
-      {req.status === "pending" && (
-        <div className="flex gap-1.5">
-          <button
-            onClick={(e) => { e.stopPropagation(); onAction(req.id, "accept"); }}
-            disabled={busy}
-            className="h-7 px-3 bg-primary text-white text-[12px] font-semibold rounded-lg hover:bg-primary-hover transition-colors disabled:opacity-60"
-          >
-            {busy ? "…" : "Accept"}
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); onAction(req.id, "decline"); }}
-            disabled={busy}
-            className="h-7 px-3 bg-card border border-border text-[12px] font-semibold text-foreground rounded-lg hover:bg-secondary transition-colors disabled:opacity-60"
-          >
-            Decline
-          </button>
-        </div>
-      )}
-
-      {req.status === "accepted" && !req.supplier_confirmed_at && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onAction(req.id, "confirm-release"); }}
-          disabled={busy}
-          className="w-full h-7 bg-primary text-white text-[12px] font-semibold rounded-lg hover:bg-primary-hover transition-colors disabled:opacity-60"
-        >
-          {busy ? "Confirming…" : "Confirm release"}
-        </button>
-      )}
-
-      {req.status === "accepted" && req.supplier_confirmed_at && !req.requester_confirmed_at && (
-        <span className="inline-block animate-success-pop text-[12px] font-semibold text-status-watch-text">Released — awaiting requester confirmation</span>
-      )}
-    </div>
-  );
-}
-
-// A blood bank's incoming requests in two sections: waiting for a decision, and in progress. Finished requests (completed,
-// failed, declined, cancelled) are not work in flight, so they are not here: they are in Transfer history. The server lists
-// pending requests in priority order but leaves every other row where its creation time puts it, so in one flat list
-// the order could not be seen. Split like this, "waiting" reads top to bottom as the order to work in: immediate use
-// first (trauma and scheduled surgery), then restock, oldest first in each, numbered 1, 2, 3.
-function IncomingSections({
-  rows, busyId, onAction, selectedRequestId, onOpenChat,
-}: {
-  rows: RequestRow[];
-  busyId: number | null;
-  onAction: (id: number, action: RequestAction) => void;
-  selectedRequestId: number | null;
-  onOpenChat: (id: number) => void;
-}) {
-  const g = groupIncomingRequests(rows);
-  const card = (req: RequestRow, position?: number) => (
-    <IncomingRequestCard
-      key={req.id}
-      req={req}
-      busy={busyId === req.id}
-      onAction={onAction}
-      isChatSelected={selectedRequestId === req.id}
-      onOpenChat={onOpenChat}
-      position={position}
-    />
-  );
-  const tier = (label: string, list: RequestRow[], firstPosition: number) =>
-    list.length === 0 ? null : (
-      <div>
-        <div className="text-[13px] font-semibold text-foreground mb-1.5">{label}</div>
-        <div className="space-y-2">{list.map((req, i) => card(req, firstPosition + i))}</div>
-      </div>
-    );
-
-  return (
-    <div className="space-y-5">
-      <section aria-labelledby="incoming-waiting">
-        <h4 id="incoming-waiting" className="text-[14px] font-semibold text-foreground">Waiting for a decision ({g.waiting.length})</h4>
-        {g.waiting.length === 0 ? (
-          <p className="text-[13px] text-muted-foreground mt-1.5">Nothing is waiting for a decision.</p>
-        ) : (
-          <>
-            <p className="text-[13px] text-muted-foreground mt-0.5 mb-3">
-              In the order to work in: trauma and scheduled surgery first, then restock, oldest first within each.
-            </p>
-            <div className="space-y-4">
-              {tier("Immediate use", g.immediate, 1)}
-              {tier("Restock", g.restock, g.immediate.length + 1)}
-            </div>
-          </>
-        )}
-      </section>
-
-      {g.inProgress.length > 0 && (
-        <section aria-labelledby="incoming-progress">
-          <h4 id="incoming-progress" className="text-[14px] font-semibold text-foreground mb-2">In progress ({g.inProgress.length})</h4>
-          <div className="space-y-2">{g.inProgress.map((req) => card(req))}</div>
-        </section>
-      )}
-
-    </div>
-  );
-}
-
-function AcceptedRequestCard({
-  req, canConfirmReceipt, busy, isChatSelected, onOpenChat, onConfirmReceipt,
-}: {
-  req: RequestRow;
-  canConfirmReceipt: boolean;
-  busy: boolean;
-  isChatSelected: boolean;
-  onOpenChat: () => void;
-  onConfirmReceipt: () => void;
-}) {
-  const phase = `${req.status}:${req.supplier_confirmed_at ?? ""}`;
-  const flash = useFlashOnChange(phase);
-  return (
-    <div
-      onClick={onOpenChat}
-      title={isChatSelected ? "Viewing chat" : "Open chat"}
-      className={`rounded-lg border-2 p-3 cursor-pointer transition-colors ${
-        isChatSelected ? "border-primary bg-primary-tint" : "border-info-border bg-card hover:bg-info-tint"
-      } ${flash ? "animate-value-flash-bg" : ""}`}
-    >
-      <div className="flex items-center justify-between mb-2.5">
-        <div className="text-[16px] font-semibold text-foreground">{req.supplying_facility_name}</div>
-        <BloodTypeBadge type={req.blood_type} size="lg" />
-      </div>
-      <div className="flex items-center gap-2 mb-2 text-[13px] text-foreground">
-        <MessageSquare size={13} className="text-info shrink-0" />
-        <span>{requestUnitsText(req)}</span>
-        <ReasonTag reason={req.emergency_type} />
-      </div>
-
-      {!req.supplier_confirmed_at ? (
-        <span className="text-[13px] text-muted-foreground">Waiting for supplier to confirm release</span>
-      ) : canConfirmReceipt ? (
-        <button
-          onClick={(e) => { e.stopPropagation(); onConfirmReceipt(); }}
-          disabled={busy}
-          className="w-full h-7 bg-primary text-white text-[13px] font-semibold rounded-lg hover:bg-primary-hover transition-colors disabled:opacity-60"
-        >
-          {busy ? "Confirming…" : "Confirm receipt"}
-        </button>
-      ) : (
-        <span className="text-[13px] text-muted-foreground">Switch to the requesting facility above to confirm receipt</span>
-      )}
-    </div>
-  );
-}
 
 export function RequestsScreen({
   initialSearchType, initialQuantity, initialComponent, onConsumedSourcingPrefill,
@@ -391,7 +196,7 @@ export function RequestsScreen({
   // "cancelled on unmount" flag wouldn't stop a slower earlier response from
   // landing after a faster later one and silently reverting the list.
   const requestsRequestIdRef = useRef(0);
-  // silent = a background refresh, as for fetchIncoming below. The tab badge counts come from this list, so they refresh with it.
+  // silent = a background refresh, as for fetchIncoming below. The tab badge's outgoing part (receipts to confirm) comes from this list, so it refreshes with it.
   function fetchRequests(silent = false) {
     const requestId = ++requestsRequestIdRef.current;
     if (!silent) {
@@ -430,9 +235,9 @@ export function RequestsScreen({
   }, [actingFacilityId]);
 
   // Keep both lists fresh while the browser tab is visible, and catch up at once when it becomes visible again (a hidden tab
-  // does not poll, so it can be a long way behind). The requester's own list (and the badge counts built from it) is polled
-  // on every tab, since the badge is on every tab; the supplier's inbox only on the tab that shows it, and only blood banks
-  // have one.
+  // does not poll, so it can be a long way behind). The requester's own list is polled on every tab, since the badge is on
+  // every tab; the supplier's inbox only on the tab that shows it, and only blood banks have one. So the badge's incoming part
+  // (decisions and releases) is as fresh as the last visit to this tab, or the load when the screen mounted.
   useEffect(() => {
     const refresh = () => {
       if (document.visibilityState !== "visible") return;
@@ -456,6 +261,7 @@ export function RequestsScreen({
       refreshThreadRef.current?.();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Action failed");
+      actedRef.current.delete(requestId); // it did not happen, so the next change to this request is not this facility's own
     } finally {
       setActionPendingId(null);
     }
@@ -600,7 +406,37 @@ export function RequestsScreen({
   }
 
   listsRef.current = { requests, incoming: incomingRequests };
-  const pendingOnly = requests.filter((r) => r.status === "pending");
+
+  // The inbox, and which of its rows have moved since this browser last had them open (see lib/requestInbox.ts).
+  // `counts.action` is the tab's badge and the first figure above the list: one number, so they cannot disagree.
+  const inbox = buildInbox(requests, incomingRequests, selectedRequestId);
+  const counts = inboxCounts(inbox);
+  const inboxLoading = requestsLoading || (isBloodBankRequester && incomingLoading);
+  const [seen, setSeen] = useState<SeenMap | null>(() => loadSeen(actingFacilityId));
+  // Requests this facility just acted on from a row, with the phase they were in, so its own Accept is not flagged "Updated".
+  const actedRef = useRef<Map<number, string>>(new Map());
+  // First load in this browser: what is on screen counts as seen. Not after a failed load, which would seed an empty list.
+  useEffect(() => {
+    if (seen === null && !inboxLoading && !requestsError && !incomingError) setSeen(seedSeen([...requests, ...incomingRequests]));
+  }, [seen, inboxLoading, requestsError, incomingError, requests, incomingRequests]);
+  // The open request counts as seen, and stays seen as it moves while it is open.
+  const openRow = inbox.find((r) => r.req.id === selectedRequestId);
+  const openPhase = openRow ? requestPhase(openRow.req) : null;
+  useEffect(() => {
+    if (seen === null || selectedRequestId === null || openPhase === null) return;
+    if (seen[selectedRequestId] !== openPhase) setSeen({ ...seen, [selectedRequestId]: openPhase });
+  }, [seen, selectedRequestId, openPhase]);
+  useEffect(() => {
+    if (seen === null || actedRef.current.size === 0) return;
+    const next = { ...seen };
+    let changed = false;
+    for (const [id, before] of actedRef.current) {
+      const row = [...requests, ...incomingRequests].find((r) => r.id === id);
+      if (row && requestPhase(row) !== before) { next[id] = requestPhase(row); actedRef.current.delete(id); changed = true; }
+    }
+    if (changed) setSeen(next);
+  }, [seen, requests, incomingRequests]);
+  useEffect(() => { if (seen) saveSeen(actingFacilityId, seen); }, [seen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="max-w-screen-2xl mx-auto px-6 py-6">
@@ -617,9 +453,9 @@ export function RequestsScreen({
             }`}
           >
             {t === "sourcing" ? (isBloodBankRequester ? "Source supply" : "Emergency sourcing") : t === "transfer" ? "Request and chats" : "Transfer history"}
-            {t === "transfer" && pendingOnly.length > 0 && (
+            {t === "transfer" && counts.action > 0 && (
               <span className="absolute -top-1 -right-1 w-4 h-4 bg-primary text-white text-[10px] font-bold rounded-full flex items-center justify-center">
-                {pendingOnly.length}
+                {counts.action}<span className="sr-only"> {counts.action === 1 ? "request needs" : "requests need"} your action</span>
               </span>
             )}
           </button>
@@ -656,109 +492,84 @@ export function RequestsScreen({
       {tab === "transfer" && (
         <>
         <div className="grid lg:grid-cols-5 gap-5">
-          {/* Transfer confirmation flow */}
-          <div className="lg:col-span-2 space-y-4">
-            {actionError && (
-              <div className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-lg px-3 py-2">
-                {actionError}
-              </div>
-            )}
-
-            {/* Incoming requests — supplier-side actions. Only blood banks can
-                ever be a supplying facility (see /requests' bloodbank-only
-                check server-side), so a hospital never has anything to show
-                here — the card is hidden rather than always rendering an
-                empty "No incoming requests" state. */}
-            {isBloodBankRequester && (
-              <div className="bg-card border border-border rounded-xl p-5">
-                <h3 className="font-semibold text-foreground mb-1">
-                  Incoming requests — {
-                    facilities.find((f) => f.id === actingFacilityId)?.name
-                    ?? getCurrentUser()?.facility_name
-                    ?? "…"
-                  }
-                </h3>
-                <p className="text-[13px] text-muted-foreground mb-4">
-                  Requests directed to you as the supplying facility
-                </p>
-
-                {incomingLoading && (
-                  <div className="text-[13px] text-muted-foreground py-4 text-center">Loading…</div>
-                )}
-                {!incomingLoading && incomingError && (
-                  <div className="text-[13px] text-status-critical-text py-4 text-center">Failed to load: {incomingError}</div>
-                )}
-                {!incomingLoading && !incomingError && incomingRequests.length === 0 && (
-                  <div className="text-[13px] text-muted-foreground py-4 text-center">
-                    No incoming requests for this facility.
-                  </div>
-                )}
-                {!incomingLoading && !incomingError && incomingRequests.length > 0 && (
-                  <IncomingSections
-                    rows={incomingRequests}
-                    busyId={actionPendingId}
-                    onAction={performRequestAction}
-                    selectedRequestId={selectedRequestId}
-                    onOpenChat={setSelectedRequestId}
-                  />
-                )}
-              </div>
-            )}
-
-            {/* Outgoing requests — requester-side confirmation */}
-            <div className="bg-card border border-border rounded-xl p-5">
-              <h3 className="font-semibold text-foreground mb-1">Your requests awaiting confirmation</h3>
-              <p className="text-[13px] text-muted-foreground mb-4">Requests you sent that have been accepted and are not yet received. Finished ones are in Transfer history.</p>
-
-              {requestsLoading && (
-                <div className="text-[13px] text-muted-foreground py-4 text-center">Loading…</div>
+          {/* The inbox: every request this facility is a party to, in one list. On a narrow screen the list is the whole screen
+              until a request is opened, then the thread replaces it (with a way back); from lg up the two sit side by side. */}
+          <div className={`lg:col-span-2 bg-card border border-border rounded-xl flex-col lg:h-[600px] ${selectedRequestId !== null ? "hidden lg:flex" : "flex"}`}>
+            <div className="px-5 py-4 border-b border-border">
+              <h3 className="font-semibold text-foreground">Requests</h3>
+              <p className="text-[13px] text-muted-foreground mt-0.5">
+                <span className="font-semibold text-foreground">{counts.action} {counts.action === 1 ? "needs" : "need"} your action · {counts.other} waiting on the other facility</span>
+                <br />
+                Waiting for a decision, then accepted. Immediate-use requests shown first, then by submission time — accepted requests aren't reshuffled
+              </p>
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto p-3">
+              {actionError && (
+                <div role="alert" className="mb-2 text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-lg px-3 py-2">
+                  {actionError}
+                </div>
               )}
-              {!requestsLoading && requestsError && (
-                <div className="text-[13px] text-status-critical-text py-4 text-center">Failed to load: {requestsError}</div>
+              {requestsError && (
+                <div role="alert" className="mb-2 text-[13px] text-status-critical-text">Failed to load your requests: {requestsError}</div>
               )}
-              {!requestsLoading && !requestsError && (() => {
-                // Work in flight only: accepted and awaiting release, or released and awaiting receipt. Once receipt is
-                // confirmed the transfer is finished and moves to Transfer history.
-                const accepted = requests.filter((r) => r.status === "accepted");
-                if (accepted.length === 0) {
-                  return (
-                    <div className="text-[13px] text-muted-foreground py-4 text-center">
-                      Nothing accepted and in progress.
-                    </div>
-                  );
-                }
-                return (
-                  <div className="space-y-2">
-                    {accepted.map((req) => (
-                      <AcceptedRequestCard
-                        key={req.id}
-                        req={req}
-                        canConfirmReceipt={actingFacilityId === req.requesting_facility_id}
-                        busy={actionPendingId === req.id}
-                        isChatSelected={selectedRequestId === req.id}
-                        onOpenChat={() => setSelectedRequestId(req.id)}
-                        onConfirmReceipt={() => performRequestAction(req.id, "confirm-receipt")}
-                      />
-                    ))}
-                  </div>
-                );
-              })()}
+              {isBloodBankRequester && incomingError && (
+                <div role="alert" className="mb-2 text-[13px] text-status-critical-text">Failed to load incoming requests: {incomingError}</div>
+              )}
+              {inbox.length === 0 && inboxLoading && (
+                <div className="text-[13px] text-muted-foreground py-8 text-center">Loading requests…</div>
+              )}
+              {inbox.length === 0 && !inboxLoading && !requestsError && !incomingError && (
+                <div className="text-center px-4 py-10">
+                  <h4 className="text-[14px] font-semibold text-foreground mb-1">No requests in progress</h4>
+                  <p className="text-[13px] text-muted-foreground leading-relaxed">
+                    Send one from {isBloodBankRequester ? "Source supply" : "Emergency sourcing"}. Finished requests are in Transfer history.
+                  </p>
+                </div>
+              )}
+              {inbox.length > 0 && (
+                <ul className="space-y-2">
+                  {inbox.map((row) => (
+                    <RequestInboxRow
+                      key={row.req.id}
+                      row={row}
+                      selected={selectedRequestId === row.req.id}
+                      unread={unreadKind(row, seen)}
+                      busy={actionPendingId === row.req.id}
+                      onOpen={() => setSelectedRequestId(row.req.id)}
+                      onAction={(action) => {
+                        if (action === "cancel") { setCancelConfirmId(row.req.id); return; } // cancel is not undoable: confirm first
+                        actedRef.current.set(row.req.id, requestPhase(row.req));
+                        performRequestAction(row.req.id, action);
+                      }}
+                    />
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
 
           {/* Coordination chat — real, per-request messages (see request_messages table) */}
-          <div className="lg:col-span-3 bg-card border border-border rounded-xl flex flex-col" style={{ height: 600 }}>
+          <div className={`lg:col-span-3 bg-card border border-border rounded-xl flex-col h-[600px] max-h-[85vh] ${selectedRequestId === null ? "hidden lg:flex" : "flex"}`}>
             {(() => {
               const selectedRequest = [...requests, ...incomingRequests].find((r) => r.id === selectedRequestId);
               return (
                 <>
                   <div className="px-5 py-4 border-b border-border flex items-center justify-between">
                     <div>
+                      {selectedRequestId !== null && (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedRequestId(null)}
+                          className="lg:hidden mb-1.5 inline-flex items-center gap-1 text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          <ArrowLeft size={14} aria-hidden="true" /> Requests
+                        </button>
+                      )}
                       <h3 className="font-semibold text-foreground">Coordination chat</h3>
                       <p className="text-[13px] text-muted-foreground">
                         {selectedRequest
                           ? `REQ-${selectedRequest.id} · ${resolveFacilityName(selectedRequest.requesting_facility_id, selectedRequest.requesting_facility_name)} ↔ ${resolveFacilityName(selectedRequest.supplying_facility_id, selectedRequest.supplying_facility_name)} · ${selectedRequest.blood_type}${selectedRequest.component ? ` ${selectedRequest.component}` : ""} · ${selectedRequest.quantity} units`
-                          : "Select a request from the left to view its coordination chat"}
+                          : "Open a request from the list to see its thread"}
                       </p>
                     </div>
                     {selectedRequestId !== null && (
@@ -797,9 +608,9 @@ export function RequestsScreen({
                         <div className="w-14 h-14 rounded-full bg-secondary flex items-center justify-center mb-4">
                           <MessageSquare size={22} className="text-muted-foreground" />
                         </div>
-                        <h3 className="font-semibold text-foreground mb-1">No request selected</h3>
+                        <h3 className="font-semibold text-foreground mb-1">Open a request</h3>
                         <p className="text-[14px] text-muted-foreground max-w-xs leading-relaxed">
-                          Click "Open chat" on a request in either list to the left.
+                          Choose one from the list to see its history and talk to the other facility.
                         </p>
                       </div>
                     )}
@@ -896,95 +707,6 @@ export function RequestsScreen({
               );
             })()}
           </div>
-        </div>
-
-        {/* Outgoing requests still awaiting a response — folded in from the
-            former standalone "Pending Requests" tab so acting on a request
-            (Incoming), watching one you sent (below), and confirming receipt
-            (above) don't require switching tabs. */}
-        <div className="space-y-4 mt-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="font-semibold text-foreground">Outgoing requests</h3>
-              <p className="text-[14px] text-muted-foreground mt-0.5">
-                Immediate-use requests shown first, then by submission time — accepted requests aren't reshuffled
-              </p>
-            </div>
-            <span className="text-[13px] font-semibold text-muted-foreground bg-secondary px-3 py-1 rounded-full border border-border">
-              {pendingOnly.length} pending
-            </span>
-          </div>
-
-          {requestsLoading && (
-            <div className="bg-card border border-border rounded-xl p-10 text-center text-[14px] text-muted-foreground">
-              Loading requests…
-            </div>
-          )}
-          {!requestsLoading && requestsError && (
-            <div className="bg-status-critical-tint border border-status-critical-border rounded-xl p-6 text-center text-[14px] text-status-critical-text">
-              Failed to load requests: {requestsError}
-            </div>
-          )}
-          {!requestsLoading && !requestsError && pendingOnly.length === 0 && (
-            <div className="bg-card border border-border rounded-xl p-10 text-center text-[14px] text-muted-foreground">
-              No pending requests. Send one from the Emergency Sourcing tab.
-            </div>
-          )}
-          {!requestsLoading && !requestsError && pendingOnly.length > 0 && (
-            <div className="bg-card border border-border rounded-xl overflow-hidden">
-              <table className="w-full text-[14px]">
-                <thead>
-                  <tr className="border-b border-border bg-secondary">
-                    {["Request ID", "Supplying facility", "Blood type", "Component", "Qty", "Reason", "Submitted", "Status", ""].map((h) => (
-                      <th key={h} className="text-left py-3 px-4 text-[13px] font-semibold text-gray-600 whitespace-nowrap">
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {pendingOnly
-                    .map((req) => {
-                      const submittedTime = new Date(req.created_at).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      });
-                      return (
-                        <tr key={req.id} className="border-b border-border last:border-0 hover:bg-secondary transition-colors">
-                          <td className="py-3 px-4">
-                            <span className="font-mono text-[13px] text-muted-foreground">REQ-{req.id}</span>
-                          </td>
-                          <td className="py-3 px-4 font-medium text-foreground">{req.supplying_facility_name}</td>
-                          <td className="py-3 px-4">
-                            <BloodTypeBadge type={req.blood_type} size="md" />
-                          </td>
-                          <td className="py-3 px-4 text-[14px] text-foreground whitespace-nowrap">{req.component ?? "Not recorded"}</td>
-                          <td className="py-3 px-4 font-semibold text-foreground tabular-nums">{req.quantity}</td>
-                          <td className="py-3 px-4">
-                            <ReasonTag reason={req.emergency_type} />
-                          </td>
-                          <td className="py-3 px-4 font-mono text-[13px] text-muted-foreground">{submittedTime}</td>
-                          <td className="py-3 px-4">
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[12px] font-semibold bg-status-watch-tint text-status-watch-text border border-status-watch-border">
-                              <Clock size={11} /> Awaiting response
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-right">
-                            <button
-                              onClick={() => setCancelConfirmId(req.id)}
-                              disabled={actionPendingId === req.id}
-                              className="h-7 px-3 bg-card border border-border text-[12px] font-semibold text-status-critical-text rounded-lg hover:bg-status-critical-tint transition-colors disabled:opacity-60"
-                            >
-                              Cancel Request
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                </tbody>
-              </table>
-            </div>
-          )}
         </div>
         </>
       )}

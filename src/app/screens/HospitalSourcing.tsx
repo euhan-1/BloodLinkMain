@@ -425,7 +425,7 @@ function RequestPanel(p: HospitalSourcingProps & { selected: Facility | null }) 
           </h2>
           <p className="mt-2 text-[15px] text-foreground">
             {selected.name} has your request for {units} of {what(p)}. Follow its status and message them in Request and chats.
-            The number on that tab counts requests still waiting for a reply.
+            The number on that tab counts requests that need your action.
           </p>
           <button
             type="button"

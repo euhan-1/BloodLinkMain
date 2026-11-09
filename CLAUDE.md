@@ -183,7 +183,14 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `Depends` object into SQL, as for `uploaded_by`).
 - **A request's timeline is derived, not stored** (`_request_timeline`, served by `GET /requests/{id}`, which the chat
   re-fetches with its messages every 4 s while the browser tab is visible; the Live label is the last poll's result). Both sides' request lists poll every 25 s while the browser tab is visible (silent, and at once on becoming visible); the
-  chat shows a day separator above each run of bubbles once the thread spans more than one day. Request and chats is for work in flight only (awaiting a decision, awaiting release, awaiting receipt): finished
+  chat shows a day separator above each run of bubbles once the thread spans more than one day. The **Request and chats tab badge counts
+  the rows where this facility has an action available** (`needsAction` in `lib/requestInbox.ts`): incoming requests awaiting its decision,
+  accepted incoming requests awaiting its release, accepted outgoing requests awaiting its receipt. Requests waiting on the other
+  facility are not counted. It is the same figure as the first one in the inbox's header line (`inboxCounts().action`; the second
+  is how many more are in flight but waiting on the other side), so the two cannot disagree. It was the count of requests this
+  facility had sent that were still pending, which for a hospital was everything it was waiting for and for a bank left out its
+  whole incoming side. The supplier's incoming list is polled only while that tab is open, so the badge's incoming part is as fresh as
+  the last visit to the tab (or the load at mount); its outgoing part is polled on every tab. Request and chats is for work in flight only (awaiting a decision, awaiting release, awaiting receipt): finished
   transfers are in Transfer history, whose rows open their thread and receipt. Confirm release sits on the accept event and confirm
   receipt on the release event (the cards keep them too); events stay full width, never aligned to a side. An
   event is listed whenever status and timestamps show it happened; a time or account never captured is None and reads
@@ -224,6 +231,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `node scripts/check_components.ts` (request components match the server's) and
   `node scripts/check_request_timeline.ts` (status-event wording and the chat thread) and
   `node scripts/check_transfers.ts` (transfer-history filters, date presets and wording) and
+  `node scripts/check_request_inbox.ts` (the Requests inbox's order, counts, status wording and unread rule) and
   `node scripts/check_bank_dashboard.ts` (the blood bank Dashboard's sentence, outlook, basis and order prefill) and
   `node scripts/check_bank_inventory.ts` (the blood bank Inventory's notes, filters, search, paging and backlog) and
   `node scripts/check_notifications.ts` (the bell's badge, times, polling and paging), each printing `ok`, plus
