@@ -16,8 +16,9 @@ def geocode_address(address: str) -> Optional[tuple[float, float]]:
     required-confirmation gate CompleteProfile.tsx already uses; a geocoding
     hiccup must never block someone from filling out the form.
 
-    countrycodes biases results to the Philippines, where every facility this
-    app serves is located — a relevance hint, not a hard filter.
+    countrycodes limits results to the Philippines, where every facility this
+    app serves is located — Nominatim excludes matches outside the listed
+    countries, so an address that only exists elsewhere returns no match.
 
     Nominatim's usage policy requires a real identifying User-Agent (same
     reasoning as email_service.py's Resend calls, which hit an unrelated but

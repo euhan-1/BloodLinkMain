@@ -2,7 +2,7 @@ import { useId, useState } from "react";
 import { Building2, CheckCircle, FlaskConical, RefreshCw } from "lucide-react";
 import { registerFacility, geocodeAddress, verifyFacilityRegistrationEmail, type RegisterFacilityBody } from "../lib/api";
 import { BloodDropLogo } from "../components/BloodTypeBadge";
-import { FacilityLocationFields } from "../components/FacilityLocationPicker";
+import { FacilityLocationFields, EMPTY_ADDRESS_PARTS, type AddressParts } from "../components/FacilityLocationPicker";
 import { FOCUS } from "../lib/formStyles";
 
 // The same field and focus treatment as the sign-in screen (see lib/formStyles.ts).
@@ -32,6 +32,8 @@ export function RegisterFacilityScreen() {
   const [confirmPassword, setConfirmPassword] = useState("");
 
   const [address, setAddress] = useState("");
+  // The four parts the picker shows; `address` is their joined string. Held here so they survive the form remounting.
+  const [addressParts, setAddressParts] = useState<AddressParts>(EMPTY_ADDRESS_PARTS);
   const [position, setPosition] = useState<[number, number] | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
@@ -209,6 +211,8 @@ export function RegisterFacilityScreen() {
                 position={position} onPositionChange={setPosition}
                 lookupAddress={geocodeAddress}
                 showDepartment={false}
+                splitAddress
+                addressParts={addressParts} onAddressPartsChange={setAddressParts}
               />
 
               <div className="grid sm:grid-cols-2 gap-4">
@@ -236,8 +240,13 @@ export function RegisterFacilityScreen() {
                 <input
                   id={`${uid}-email`}
                   type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                  placeholder="facility@email.com"
+                  aria-describedby={`${uid}-email-hint`}
                   className={FIELD}
                 />
+                <p id={`${uid}-email-hint`} className="text-[12px] text-muted-foreground mt-1.5">
+                  This address is used to sign in, to receive your verification code, and for notices about your registration.
+                </p>
               </div>
 
               <div className="grid sm:grid-cols-2 gap-4">

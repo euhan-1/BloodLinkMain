@@ -52,13 +52,28 @@ function LocationClickHandler({ onPick }: { onPick: (lat: number, lng: number) =
 // the default so both existing callers need zero changes.
 async function lookUpAddressViaNominatim(address: string): Promise<[number, number] | null> {
   const res = await fetch(
-    `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(address)}`
+    `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ph&q=${encodeURIComponent(address)}`
   );
   if (!res.ok) throw new Error("Address lookup failed");
   const results = await res.json();
   if (results.length === 0) return null;
   return [parseFloat(results[0].lat), parseFloat(results[0].lon)];
 }
+
+// The four parts of splitAddress mode, in Philippine order. Street is optional (not every site has one); the rest are required.
+const ADDRESS_PARTS = [
+  { key: "street", label: "Street / House no.", placeholder: "e.g. 12 Rizal Avenue", required: false },
+  { key: "barangay", label: "Barangay", placeholder: "e.g. Poblacion", required: true },
+  { key: "city", label: "City or Municipality", placeholder: "e.g. Batangas City", required: true },
+  { key: "province", label: "Province", placeholder: "e.g. Batangas", required: true },
+] as const;
+type AddressPart = (typeof ADDRESS_PARTS)[number]["key"];
+export type AddressParts = Record<AddressPart, string>;
+export const EMPTY_ADDRESS_PARTS: AddressParts = { street: "", barangay: "", city: "", province: "" };
+
+// The one string the rest of the app sees: parts in order, comma-separated, empty ones skipped.
+const joinAddress = (parts: AddressParts) =>
+  ADDRESS_PARTS.map(({ key }) => parts[key].trim()).filter(Boolean).join(", ");
 
 // Shared by CompleteProfileScreen (first-time onboarding), EditFacilityProfileModal
 // (Account menu, after the fact), and RegisterFacility (self-registration) —
@@ -77,6 +92,8 @@ export function FacilityLocationFields({
   department, onDepartmentChange,
   lookupAddress = lookUpAddressViaNominatim,
   showDepartment = true,
+  addressParts,
+  onAddressPartsChange,
 }: {
   address: string;
   onAddressChange: (v: string) => void;
@@ -90,17 +107,33 @@ export function FacilityLocationFields({
   // fills it in later via the same post-login CompleteProfile flow an
   // admin-onboarded facility already goes through.
   showDepartment?: boolean;
-}) {
+  // true for RegisterFacility only: four fields (street, barangay, city, province) instead of one, still emitted through
+  // onAddressChange as a single joined string. The other callers load an existing address string, which cannot be reliably
+  // split apart, so they keep the single input. The parts are the parent's state (like address and position), so they
+  // survive this component remounting; the joined string is never parsed back apart.
+} & (
+  | { splitAddress: true; addressParts: AddressParts; onAddressPartsChange: (p: AddressParts) => void }
+  | { splitAddress?: false; addressParts?: undefined; onAddressPartsChange?: undefined }
+)) {
   const uid = useId();
   const [geocoding, setGeocoding] = useState(false);
   const [geocodeError, setGeocodeError] = useState<string | null>(null);
+  // What Look up geocodes: the joined parts, or the single field's value.
+  const query = addressParts ? joinAddress(addressParts) : address;
+
+  function changePart(key: AddressPart, value: string) {
+    if (!addressParts) return;
+    const next = { ...addressParts, [key]: value };
+    onAddressPartsChange?.(next);
+    onAddressChange(joinAddress(next));
+  }
 
   async function handleLookUpAddress() {
-    if (!address.trim()) return;
+    if (!query.trim()) return;
     setGeocoding(true);
     setGeocodeError(null);
     try {
-      const result = await lookupAddress(address);
+      const result = await lookupAddress(query);
       if (result === null) {
         setGeocodeError("No match found — try a more specific address, or drop the pin manually on the map.");
         return;
@@ -113,29 +146,58 @@ export function FacilityLocationFields({
     }
   }
 
+  const lookUpButton = (
+    <button
+      type="button"
+      onClick={handleLookUpAddress}
+      disabled={geocoding || !query.trim()}
+      className="h-10 px-4 bg-card border border-border rounded-md text-[14px] font-semibold text-foreground hover:bg-secondary transition-colors disabled:opacity-60 flex items-center gap-1.5 shrink-0"
+    >
+      <Search size={15} /> {geocoding ? "Looking up…" : "Look up"}
+    </button>
+  );
+
   return (
     <>
       <div>
-        <label htmlFor={`${uid}-address`} className="text-[14px] font-semibold text-foreground block mb-1.5">Address</label>
-        <div className="flex gap-2">
-          <input
-            id={`${uid}-address`}
-            type="text"
-            required
-            value={address}
-            onChange={(e) => onAddressChange(e.target.value)}
-            placeholder="Street, barangay, city"
-            className={`flex-1 h-10 px-3 text-sm border border-border rounded-md bg-card focus:border-primary transition-colors ${FOCUS}`}
-          />
-          <button
-            type="button"
-            onClick={handleLookUpAddress}
-            disabled={geocoding || !address.trim()}
-            className="h-10 px-4 bg-card border border-border rounded-md text-[14px] font-semibold text-foreground hover:bg-secondary transition-colors disabled:opacity-60 flex items-center gap-1.5 shrink-0"
-          >
-            <Search size={15} /> {geocoding ? "Looking up…" : "Look up"}
-          </button>
-        </div>
+        {addressParts ? (
+          <div role="group" aria-labelledby={`${uid}-address`}>
+            <p id={`${uid}-address`} className="text-[14px] font-semibold text-foreground mb-1.5">Address</p>
+            <div className="grid sm:grid-cols-2 gap-4">
+              {ADDRESS_PARTS.map(({ key, label, placeholder, required }) => (
+                <div key={key}>
+                  <label htmlFor={`${uid}-${key}`} className="text-[14px] font-semibold text-foreground block mb-1.5">{label}</label>
+                  <input
+                    id={`${uid}-${key}`}
+                    type="text"
+                    required={required}
+                    value={addressParts[key]}
+                    onChange={(e) => changePart(key, e.target.value)}
+                    placeholder={placeholder}
+                    className={`w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:border-primary transition-colors ${FOCUS}`}
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="mt-3">{lookUpButton}</div>
+          </div>
+        ) : (
+          <>
+            <label htmlFor={`${uid}-address`} className="text-[14px] font-semibold text-foreground block mb-1.5">Address</label>
+            <div className="flex gap-2">
+              <input
+                id={`${uid}-address`}
+                type="text"
+                required
+                value={address}
+                onChange={(e) => onAddressChange(e.target.value)}
+                placeholder="Street, barangay, city"
+                className={`flex-1 h-10 px-3 text-sm border border-border rounded-md bg-card focus:border-primary transition-colors ${FOCUS}`}
+              />
+              {lookUpButton}
+            </div>
+          </>
+        )}
         {geocodeError && <p className="text-[13px] text-status-critical-text mt-1.5">{geocodeError}</p>}
       </div>
 

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { MapContainer, TileLayer, Marker, Tooltip as LeafletTooltip, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 // Side-effect import (marker-icon path fix) — belongs here, not App.tsx, so
@@ -24,6 +24,45 @@ function MapReadySizer() {
     return () => cancelAnimationFrame(id);
   }, [map]);
   return null;
+}
+
+// Wheel zoom is off by default so a wheel over the map scrolls the page instead of trapping it. It switches on when the map is
+// clicked or focused and off again when the pointer leaves or focus moves out of the map. Leaflet already makes the container
+// focusable (arrow keys pan, + and - zoom) and its pins and zoom buttons tab stops, so keyboard use is unchanged. The hint
+// shows only while the wheel is off, and not on touch screens, which have no wheel.
+function ScrollZoomOptIn() {
+  const map = useMap();
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    const el = map.getContainer();
+    const set = (v: boolean) => {
+      if (v) map.scrollWheelZoom.enable();
+      else map.scrollWheelZoom.disable();
+      setOn(v);
+    };
+    const enable = () => set(true);
+    const disable = () => set(false);
+    const focusOut = (e: FocusEvent) => { if (!el.contains(e.relatedTarget as Node | null)) disable(); };
+    el.addEventListener("click", enable);
+    el.addEventListener("focusin", enable);
+    el.addEventListener("mouseleave", disable);
+    el.addEventListener("focusout", focusOut);
+    return () => {
+      el.removeEventListener("click", enable);
+      el.removeEventListener("focusin", enable);
+      el.removeEventListener("mouseleave", disable);
+      el.removeEventListener("focusout", focusOut);
+    };
+  }, [map]);
+  if (on) return null;
+  return (
+    <div
+      aria-hidden="true"
+      className="pointer-events-none pointer-coarse:hidden absolute bottom-2 left-2 z-[1000] rounded-md border border-border bg-card px-2 py-1 text-[12px] text-muted-foreground font-[family-name:var(--font-body)]"
+    >
+      Click the map to zoom with the scroll wheel
+    </div>
+  );
 }
 
 // A click on the empty map (not on a pin, and not the end of a drag) clears the selection.
@@ -113,6 +152,7 @@ export function FacilityNetworkMap({
       scrollWheelZoom={false}
     >
       <MapReadySizer />
+      <ScrollZoomOptIn />
       {onClearSelection && <BackgroundClick onClear={onClearSelection} />}
       <TileLayer
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
