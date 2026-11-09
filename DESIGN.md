@@ -11,7 +11,7 @@ colors:
   ink: "#1C1917"
   border-charcoal: "#58514B"
   status-safe: "#0F766E"
-  status-watch: "#B8860B"
+  status-watch: "#996F09"
   status-critical: "#BD4024"
   info-blue: "#1D4ED8"
   synthetic-violet: "#7C3AED"
@@ -119,7 +119,7 @@ Warm, saturated, and decisive — nothing in the palette is a pale wash standing
 ### Status & Semantic
 Reused identically everywhere status appears — expiry, stock thresholds, availability, forecast alerts, facility/account status — and, critically, identical on every account type. Role identity (Oxblood/Navy) never leaks into status color, so a Hospital and a Blood Bank account looking at the same shortage always see the same red.
 - **Safe** (#0F766E, teal): Adequate stock, confirmed, live/active states.
-- **Watch** (#B8860B, gold): "Below minimum" stock (under the minimum, not yet critical), pending confirmation, dev-mode indicator.
+- **Watch** (#996F09, gold): "Below minimum" stock (under the minimum, not yet critical), pending confirmation, dev-mode indicator.
 - **Critical** (#BD4024, red-orange): "Critical" stock (under 60% of the minimum), errors, deactivated state. Its hue sits ~12° from Oxblood's own ~344° specifically so a solid brand button next to a critical badge never blurs into one red blob.
 
 ### Named Rules

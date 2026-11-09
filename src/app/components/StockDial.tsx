@@ -47,9 +47,16 @@ export function StockDial({ units, minimum, maximum, bloodType }: { units: numbe
     <div className="relative mx-auto aspect-square w-full max-w-[9rem]">
       <svg viewBox="0 0 100 100" role="img" aria-label={label} className="absolute inset-0 h-full w-full">
         <title>{count} — {scale}</title>
-        <circle {...circle} stroke="var(--gray-300)" strokeDasharray={`${ARC} ${CIRCUMFERENCE}`} />
+        <circle {...circle} stroke="var(--dial-track)" strokeDasharray={`${ARC} ${CIRCUMFERENCE}`} />
         {showFill && <circle {...circle} stroke={FILL[level]} strokeDasharray={`${ARC * fraction} ${CIRCUMFERENCE}`} />}
-        {showTick && <line x1={inner.x} y1={inner.y} x2={outer.x} y2={outer.y} stroke="var(--foreground)" strokeWidth={2} />}
+        {/* Two layers: no one colour clears 3:1 against both the track and the bright fills, so the tick is a --foreground
+            line on a wider --card one, and it reads against whatever it crosses. */}
+        {showTick && (
+          <>
+            <line x1={inner.x} y1={inner.y} x2={outer.x} y2={outer.y} stroke="var(--card)" strokeWidth={5} />
+            <line x1={inner.x} y1={inner.y} x2={outer.x} y2={outer.y} stroke="var(--foreground)" strokeWidth={2} />
+          </>
+        )}
       </svg>
       <div aria-hidden="true" className="absolute inset-0 flex flex-col items-center justify-center gap-1">
         <BloodTypeBadge type={bloodType} size="sm" />

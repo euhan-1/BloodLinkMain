@@ -132,7 +132,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
       {/* Left panel */}
       {/* Rows 1fr / auto / 1fr: the content block sits at the panel's own vertical centre, which is where the form
           centres on the right, so the two halves share a centre line. The logo lives in the top row. */}
-      <div className="hidden lg:grid grid-rows-[1fr_auto_1fr] w-2/5 shrink-0 bg-primary text-white px-10 xl:px-14 py-12 animate-panel-slide-left">
+      <div className="hidden lg:grid grid-rows-[1fr_auto_1fr] w-2/5 shrink-0 bg-[color:var(--login-panel)] text-white px-10 xl:px-14 py-12 animate-panel-slide-left">
         <div className="flex items-start gap-4">
           {/* The drop is a fixed oxblood fill, the same colour as this panel. */}
           <span className="grid place-items-center w-14 h-14 rounded-xl bg-white">
@@ -146,11 +146,11 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
             An AI-Powered Blood Supply Management and Emergency Response System
           </h1>
           <div className="max-w-[34ch]">
-            <p className="text-white/80 text-[16px] font-[500] leading-[1.7]">
+            <p className="text-white text-[16px] font-[500] leading-[1.7]">
               Real-time inventory management, demand forecasting and emergency sourcing — unified for blood banks and hospitals across the network.
             </p>
             <div
-              className="mt-10 flex items-start gap-3 pt-6 border-t border-white/25 text-white/80 text-sm font-[500] leading-relaxed animate-bullet-rise-in"
+              className="mt-10 flex items-start gap-3 pt-6 border-t border-white/25 text-white text-sm font-[500] leading-relaxed animate-bullet-rise-in"
               style={{ animationDelay: "360ms" }}
             >
               <ShieldCheck size={16} className="shrink-0 mt-0.5" />
