@@ -1,8 +1,10 @@
-import { Ban, CheckCircle, Package, PackageCheck, Send, XCircle, type LucideIcon } from "lucide-react";
+import { useId, useState, type ReactNode } from "react";
+import { Ban, CheckCircle, ChevronDown, Package, PackageCheck, Send, XCircle, type LucideIcon } from "lucide-react";
 import { formatTime } from "../lib/dateFormat";
+import { UnitsTable, type UnitColumn } from "./TransferUnits";
 import {
-  describeEvent, eventAccountText, eventTimeText, withDaySeparators, type DayMarker, type RequestDetail, type ThreadItem, type TimelineEvent,
-  type TimelineKind,
+  describeEvent, eventAccountText, eventTimeText, withDaySeparators, type DayMarker, type LedgerUnit, type RequestDetail, type ThreadItem,
+  type TimelineEvent, type TimelineKind,
 } from "../lib/requestTimeline";
 
 type Message = { id: number; sender_facility_id: number; sender_facility_name: string; message: string; created_at: string };
@@ -17,10 +19,11 @@ const ICONS: Record<TimelineKind, LucideIcon> = {
 // when it is this facility, and a bar on the left edge is the facility's accent colour for its own events and grey for the
 // other's, the same own/other colouring the bubbles' sender names use. When, and which of its accounts, is on the second line,
 // with "not recorded" where the request never captured it. An event is the record, never an action: the step a request is
-// waiting on (confirm release, confirm receipt) is a button in the request's header (RequestHeader).
+// waiting on (confirm release, confirm receipt) is a button in the request's header (RequestHeader). The release and receipt
+// events carry what was moved, from the request's ledger, behind a small "Units" toggle (`extra`).
 function EventRow({
-  event, request, own,
-}: { event: TimelineEvent; request: RequestDetail["request"]; own: boolean }) {
+  event, request, own, extra,
+}: { event: TimelineEvent; request: RequestDetail["request"]; own: boolean; extra?: ReactNode }) {
   const Icon = ICONS[event.kind];
   const who = event.facility_name ?? "A facility";
   const sentence = describeEvent(event, request);
@@ -40,7 +43,33 @@ function EventRow({
           <time dateTime={event.at ?? undefined}>{eventTimeText(event)}</time>
           <span>{eventAccountText(event)}</span>
         </p>
+        {extra}
       </div>
+    </div>
+  );
+}
+
+// The units behind a release or receipt event, from the same ledger the receipt prints (shared UnitsTable). Release shows what
+// was sent; receipt shows how each unit arrived.
+const RELEASED_COLUMNS: UnitColumn[] = ["din", "type", "component", "volume", "expires", "daysRelease", "origin"];
+const RECEIVED_COLUMNS: UnitColumn[] = ["din", "type", "component", "expires", "daysReceipt", "outcome"];
+
+function EventUnits({ units, kind }: { units: LedgerUnit[]; kind: "released" | "received" }) {
+  const id = useId();
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-controls={id}
+        className="inline-flex items-center gap-1 text-[13px] font-semibold text-foreground underline underline-offset-2 hover:no-underline"
+      >
+        {kind === "released" ? "Units released" : "Units and outcome"} ({units.length})
+        <ChevronDown size={14} aria-hidden="true" className={`transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && <div id={id}><UnitsTable units={units} columns={kind === "released" ? RELEASED_COLUMNS : RECEIVED_COLUMNS} /></div>}
     </div>
   );
 }
@@ -76,11 +105,13 @@ function DaySeparator({ label }: { label: string }) {
 
 // The coordination chat and the request's history as one thread, in time order.
 export function RequestThread({
-  items, request, actingFacilityId,
+  items, request, actingFacilityId, units = [], unitsRecorded = false,
 }: {
   items: ThreadItem<Message>[];
   request: RequestDetail["request"];
   actingFacilityId: number | null;
+  units?: LedgerUnit[]; // the request's ledger (RequestDetail.units); shown under the release and receipt events when recorded
+  unitsRecorded?: boolean;
 }) {
   return (
     <>
@@ -88,7 +119,15 @@ export function RequestThread({
         item.type === "day" ? (
           <DaySeparator key={(item as DayMarker).key} label={(item as DayMarker).label} />
         ) : item.type === "event" ? (
-          <EventRow key={item.key} event={item.event} request={request} own={item.event.facility_id === actingFacilityId} />
+          <EventRow
+            key={item.key}
+            event={item.event}
+            request={request}
+            own={item.event.facility_id === actingFacilityId}
+            extra={unitsRecorded && units.length > 0 && (item.event.kind === "released" || item.event.kind === "received")
+              ? <EventUnits units={units} kind={item.event.kind} />
+              : null}
+          />
         ) : (
           <MessageBubble key={item.key} msg={item.message} own={item.message.sender_facility_id === actingFacilityId} />
         ),

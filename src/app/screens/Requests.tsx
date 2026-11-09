@@ -12,6 +12,7 @@ import { BLOOD_COMPONENTS, type BloodComponent } from "../lib/bloodComponents";
 import { type EmergencyType, type RequestRow } from "../lib/requestTypes";
 import { RequestInboxRow } from "../components/RequestInboxRow";
 import { RequestHeader } from "../components/RequestHeader";
+import { ReceiptRecord } from "../components/ReceiptRecord";
 import { buildInbox, inboxCounts, loadSeen, requestPhase, rowFromDetail, saveSeen, seedSeen, unreadKind, type RowAction, type SeenMap } from "../lib/requestInbox";
 import { TransferHistory } from "./TransferHistory";
 
@@ -127,6 +128,9 @@ export function RequestsScreen({
   const refreshThreadRef = useRef<(() => void) | null>(null);
   const [sendingMessage, setSendingMessage] = useState(false);
   const chatRef = useRef<HTMLDivElement>(null);
+  // The thread pane shows the request's receipt in place of the conversation, from the poll's own data (no extra fetch).
+  const [showReceipt, setShowReceipt] = useState(false);
+  useEffect(() => { setShowReceipt(false); }, [selectedRequestId]);
 
   // Consume each one-shot prefill whenever it actually arrives — keyed off
   // the prop itself, not mount, since this screen does NOT remount when a
@@ -298,7 +302,7 @@ export function RequestsScreen({
     if (chatRef.current) {
       chatRef.current.scrollTop = chatRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, showReceipt]);
 
   // The selected request's thread: its messages and its own record (GET /requests/{id}, from which the status events are
   // derived), fetched together every few seconds. Polled rather than pushed, there is no websocket layer in this app.
@@ -575,14 +579,13 @@ export function RequestsScreen({
                     {selectedRequestId !== null && (
                       <div className="flex items-center gap-4">
                         {detail !== null && (detail.request.supplier_confirmed_at || FINISHED_STATUSES.includes(detail.request.status)) && (
-                          <a
-                            href={`/receipt/${detail.request.id}`}
-                            target="_blank"
-                            rel="noopener"
+                          <button
+                            type="button"
+                            onClick={() => setShowReceipt((v) => !v)}
                             className="h-8 px-3 inline-flex items-center rounded-md border border-border bg-card text-[13px] font-semibold text-foreground hover:bg-secondary transition-colors"
                           >
-                            Receipt
-                          </a>
+                            {showReceipt ? "Back to thread" : "Receipt"}
+                          </button>
                         )}
                         <div
                           role="status"
@@ -615,6 +618,22 @@ export function RequestsScreen({
                     />
                   )}
 
+                  {showReceipt && detail !== null ? (
+                    <div className="flex-1 overflow-auto px-5 py-4">
+                      <p className="mb-4 text-[13px] text-muted-foreground">
+                        This is the same record as the printable page.{" "}
+                        <a
+                          href={`/receipt/${detail.request.id}`}
+                          target="_blank"
+                          rel="noopener"
+                          className="font-semibold text-foreground underline underline-offset-2 hover:no-underline"
+                        >
+                          Open it to print
+                        </a>
+                      </p>
+                      <ReceiptRecord data={detail} showPrintedLine={false} showChatLocation={false} headingLevel={4} />
+                    </div>
+                  ) : (
                   <div ref={chatRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
                     {selectedRequestId === null && (
                       <div className="h-full flex flex-col items-center justify-center text-center px-8">
@@ -649,14 +668,17 @@ export function RequestsScreen({
                         items={mergeThread(messages, detail.timeline)}
                         request={detail.request}
                         actingFacilityId={actingFacilityId}
+                        units={detail.units}
+                        unitsRecorded={detail.units_recorded}
                       />
                     )}
                     {detail !== null && messages.length === 0 && (
                       <p className="text-center text-[13px] text-muted-foreground pt-1">No messages yet.</p>
                     )}
                   </div>
+                  )}
 
-                  {(() => {
+                  {!showReceipt && (() => {
                     // Mirrors the backend's send_request_message guard exactly —
                     // sending is only meaningful once the other side can actually
                     // see it (the requester's own chat access only opens up once
