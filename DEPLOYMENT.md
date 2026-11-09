@@ -38,6 +38,7 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 | `CRON_SECRET` | a long random value | Shared secret for the nightly snapshot job (below). While unset, the job's endpoint returns 503. |
 | `ALLOW_DEV_FACILITY_OVERRIDE` | `false` | **Must be false in production.** When true, any request carrying an `X-Dev-Facility-Id` header acts as that facility with no login at all: a full authentication bypass. |
 | `ALLOW_DEV_TEST_TOOLS` | `false` | **Must be false in production** (it is the default). When true it enables two development endpoints for donor outreach: `POST /donors/blasts/{id}/simulate-reply`, which records a donor reply (the only way a reply is ever recorded, since no SMS provider is connected), and `POST /donors/blasts/{id}/dev-force-expire`, which forces a blast's deadline into the past. Both still require a signed-in blood-bank account and act on that facility's own blasts. When false, both return 403 "dev test tools are disabled on this server". |
+| `SERVER_TIMING` | `true` (the default) | Adds a `Server-Timing: app;dur=…, db;dur=…` header to every response, so DevTools' Network panel can tell server time from network time. Durations in milliseconds only: no query text, counts or paths. `db` is statement time only; connection checkout, `BEGIN` and `COMMIT` are in `app` but not `db`. Set `false` to remove it. |
 
 ### Email
 

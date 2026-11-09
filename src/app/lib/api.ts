@@ -1,6 +1,7 @@
 import { getDevFacilityId } from "./devMode";
 import { clearSession, getToken, setSession, updateSessionUser, type SessionUser } from "./session";
 import { type InventoryApiRow } from "./inventoryTypes";
+import { SharedRequests, type SharedOptions } from "./sharedRequests";
 
 // Production always calls same-origin, through Vercel's /api/:path* rewrite
 // (see vercel.json) to the real Render backend — not the Render URL
@@ -59,82 +60,123 @@ export const SESSION_EXPIRED_EVENT = "bloodlink:session-expired";
 async function throwForResponse(res: Response): Promise<never> {
   if (res.status === 401) {
     clearSession();
+    invalidateApiCache();
     window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
     throw new Error("Your session has expired — please log in again.");
   }
   throw new Error(await extractErrorMessage(res));
 }
 
-export async function apiGet<T>(path: string, headers?: HeadersInit): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, { headers: withAuthHeaders(headers) });
-  if (!res.ok) {
-    return throwForResponse(res);
-  }
-  return res.json();
+// Every GET goes through one shared layer (sharedRequests.ts): identical requests made while one is already running share it,
+// and a caller can pass `ttlMs` to reuse a recent answer. Every write below calls invalidateApiCache() when it settles, so nothing
+// read before the user's own change is handed out after it. The key includes the token and the dev-facility header, so one
+// account's answer can never be served to another.
+const shared = new SharedRequests();
+
+export function invalidateApiCache(): void {
+  shared.invalidate();
+}
+
+export function apiGet<T>(path: string, headers?: HeadersInit, options?: SharedOptions<T>): Promise<T> {
+  // Extra headers make it a different request; those calls are never shared.
+  const load = async (): Promise<T> => {
+    const res = await fetch(`${API_BASE_URL}${path}`, { headers: withAuthHeaders(headers) });
+    if (!res.ok) {
+      return throwForResponse(res);
+    }
+    return res.json();
+  };
+  if (headers) return load();
+  return shared.get(`${getToken() ?? ""}|${getDevFacilityId() ?? ""}|${path}`, load, options);
 }
 
 export async function apiPost<T>(path: string, body: unknown, headers?: HeadersInit): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...withAuthHeaders(headers) },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    return throwForResponse(res);
+  invalidateApiCache();
+  try {
+    const res = await fetch(`${API_BASE_URL}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...withAuthHeaders(headers) },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      return throwForResponse(res);
+    }
+    return res.json();
+  } finally {
+    invalidateApiCache(); // a read that started mid-write must not be kept either
   }
-  return res.json();
 }
 
 export async function apiPut<T>(path: string, body: unknown, headers?: HeadersInit): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json", ...withAuthHeaders(headers) },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    return throwForResponse(res);
+  invalidateApiCache();
+  try {
+    const res = await fetch(`${API_BASE_URL}${path}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...withAuthHeaders(headers) },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      return throwForResponse(res);
+    }
+    return res.json();
+  } finally {
+    invalidateApiCache(); // a read that started mid-write must not be kept either
   }
-  return res.json();
 }
 
 export async function apiPatch<T>(path: string, body: unknown, headers?: HeadersInit): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json", ...withAuthHeaders(headers) },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    return throwForResponse(res);
+  invalidateApiCache();
+  try {
+    const res = await fetch(`${API_BASE_URL}${path}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...withAuthHeaders(headers) },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      return throwForResponse(res);
+    }
+    return res.json();
+  } finally {
+    invalidateApiCache(); // a read that started mid-write must not be kept either
   }
-  return res.json();
 }
 
 export async function apiDelete<T>(path: string, body: unknown, headers?: HeadersInit): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json", ...withAuthHeaders(headers) },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    return throwForResponse(res);
+  invalidateApiCache();
+  try {
+    const res = await fetch(`${API_BASE_URL}${path}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json", ...withAuthHeaders(headers) },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      return throwForResponse(res);
+    }
+    return res.json();
+  } finally {
+    invalidateApiCache(); // a read that started mid-write must not be kept either
   }
-  return res.json();
 }
 
 export async function apiUploadFile<T>(path: string, file: File): Promise<T> {
-  const formData = new FormData();
-  formData.append("file", file);
-  // No Content-Type header here — the browser sets the correct multipart
-  // boundary automatically when the body is a FormData instance.
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    method: "POST",
-    headers: withAuthHeaders(),
-    body: formData,
-  });
-  if (!res.ok) {
-    return throwForResponse(res);
+  invalidateApiCache();
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    // No Content-Type header here — the browser sets the correct multipart
+    // boundary automatically when the body is a FormData instance.
+    const res = await fetch(`${API_BASE_URL}${path}`, {
+      method: "POST",
+      headers: withAuthHeaders(),
+      body: formData,
+    });
+    if (!res.ok) {
+      return throwForResponse(res);
+    }
+    return res.json();
+  } finally {
+    invalidateApiCache(); // a read that started mid-write must not be kept either
   }
-  return res.json();
 }
 
 // Fire-and-forget ping to wake a cold Render free-tier backend while someone
@@ -352,13 +394,15 @@ export async function updatePassword(currentPassword: string, newPassword: strin
 // persisted from a previous visit doesn't act on stale profile_completed
 // state (e.g. completed in a different tab, or reset by an admin since).
 export async function refreshCurrentUser(): Promise<SessionUser> {
-  const user = await apiGet<SessionUser>("/auth/me");
+  // Shared and kept for 30 s: whoever asks (the app on load, anything that re-checks the session) gets one request, not one each.
+  const user = await apiGet<SessionUser>("/auth/me", undefined, { ttlMs: 30_000 });
   updateSessionUser(user);
   return user;
 }
 
 export function logout() {
   clearSession();
+  invalidateApiCache();
 }
 
 // ─── Admin (role='admin' only — every call here 403s for anyone else) ──────

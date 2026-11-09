@@ -88,7 +88,12 @@ export function DashboardScreen({
     const requestId = ++forecastRequestIdRef.current;
     if (!silent) setForecastLoading(true);
     setForecastError(null);
-    apiGet<DashboardData>("/forecast")
+    // Shared with any other caller and kept for 30 s, except an answer that still lists pending types: that one is asked for
+    // again (see below) and must never be served from memory. The user's own writes (uploads, undo) clear it.
+    apiGet<DashboardData>("/forecast", undefined, {
+      ttlMs: 30_000,
+      cacheIf: (d) => d.view !== "forecast" || (d.pending_types?.length ?? 0) === 0,
+    })
       .then((data) => { if (requestId === forecastRequestIdRef.current) setDashboardData(data); })
       .catch((err) => { if (requestId === forecastRequestIdRef.current) setForecastError(err instanceof Error ? err.message : "Failed to load"); })
       .finally(() => { if (requestId === forecastRequestIdRef.current) setForecastLoading(false); });

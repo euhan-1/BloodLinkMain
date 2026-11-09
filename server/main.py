@@ -40,6 +40,7 @@ from sqlalchemy.exc import IntegrityError
 import auth
 import email_service
 import geocode_service
+import server_timing
 from database import engine
 
 load_dotenv()
@@ -906,8 +907,18 @@ def _check_forecast_shortage_notifications(
     recommendations = recommendations or {}
     alerting_types = {a["type"] for a in alerts}
 
+    # One read first: a type already alerting needs no write at all (its upsert below could only match nothing), so a dashboard
+    # load that finds the same shortages as the last one sends no per-type statements. The upsert stays atomic for the types that
+    # are not yet alerting, so two concurrent calls still produce one notification.
+    currently_tracked = conn.execute(
+        text("SELECT blood_type FROM forecast_alert_state WHERE facility_id = :facility_id AND alerting = TRUE"),
+        {"facility_id": facility_id},
+    ).scalars().all()
+
     for alert in alerts:
         blood_type = alert["type"]
+        if blood_type in currently_tracked:
+            continue
         flipped = conn.execute(
             text(
                 """
@@ -931,10 +942,6 @@ def _check_forecast_shortage_notifications(
     # Clearing alerting back to false never creates a notification either way,
     # so there's no race to protect against here — a plain conditional UPDATE
     # (only touching rows that are currently TRUE) is enough.
-    currently_tracked = conn.execute(
-        text("SELECT blood_type FROM forecast_alert_state WHERE facility_id = :facility_id AND alerting = TRUE"),
-        {"facility_id": facility_id},
-    ).scalars().all()
     # evaluated_types: on a partial forecast (types still pending) a type that simply
     # wasn't evaluated yet must not be read as "no longer alerting".
     still_tracked = set(currently_tracked) if evaluated_types is None else set(currently_tracked) & evaluated_types
@@ -1425,28 +1432,10 @@ def _get_selected_order(conn, facility_id: int, blood_type: str) -> Optional[dic
     return dict(row) if row else None
 
 
-def _read_cached_sarimax(
-    conn, facility_id: int, blood_type: str, daily_series: list[tuple[date, int]], today: date
-) -> Optional[dict]:
-    """This facility+type's cached checkpoints if every one is present AND was
-    trained through `today` (trained_through_date == today), else None. Freshness
-    is only "trained today"; anything that changes the snapshots behind a cache
-    (upload, undo) drops the rows via _invalidate_facility_forecast_cache.
-
-    Day 0 is just today's stock (the same value a fresh fit stores there), so a
-    hit reports it live from the series: stock that changed since the fit shows up
-    immediately with no refit. Days 1-30 stay as fitted this morning."""
+def _cached_from_rows(cached_rows, daily_series: list[tuple[date, int]], today: date) -> Optional[dict]:
+    """The cache-hit answer for one type from its facility_forecast_cache rows, or None unless every checkpoint is present and was
+    trained today. The one place the freshness rule and the live day-0 value live, shared by the one-type and the batched read."""
     checkpoint_dates = [today + timedelta(days=c) for c in FORECAST_CHECKPOINTS]
-    cached_rows = conn.execute(
-        text(
-            """
-            SELECT forecast_date, forecast_units, lower_units, upper_units, trained_through_date, model_order
-            FROM facility_forecast_cache
-            WHERE facility_id = :facility_id AND blood_type = :blood_type AND forecast_date = ANY(:dates)
-            """
-        ),
-        {"facility_id": facility_id, "blood_type": blood_type, "dates": checkpoint_dates},
-    ).mappings().all()
     by_date = {row["forecast_date"]: row for row in cached_rows}
     if len(by_date) != len(checkpoint_dates) or any(row["trained_through_date"] != today for row in cached_rows):
         return None
@@ -1464,6 +1453,45 @@ def _read_cached_sarimax(
     # constant — a cache hit must report whichever order actually produced it.
     model_order = _normalize_stored_order_label(next(iter(by_date.values()))["model_order"])
     return {"checkpoints": checkpoints, "exog_included": True, "model_order": model_order}
+
+
+_CACHE_ROWS_SQL = """
+    SELECT blood_type, forecast_date, forecast_units, lower_units, upper_units, trained_through_date, model_order
+    FROM facility_forecast_cache
+    WHERE facility_id = :facility_id AND blood_type = ANY(:blood_types) AND forecast_date = ANY(:dates)
+"""
+
+
+def _read_cached_sarimax_many(
+    conn, facility_id: int, series_by_type: dict[str, list[tuple[date, int]]], today: date
+) -> dict[str, Optional[dict]]:
+    """_read_cached_sarimax for several types in ONE statement (a warm GET /forecast used to send one per type, a round trip each).
+    {blood_type: cached answer, or None}: the same answers, from the same rule (_cached_from_rows)."""
+    if not series_by_type:
+        return {}
+    rows = conn.execute(
+        text(_CACHE_ROWS_SQL),
+        {"facility_id": facility_id, "blood_types": list(series_by_type),
+         "dates": [today + timedelta(days=c) for c in FORECAST_CHECKPOINTS]},
+    ).mappings().all()
+    rows_by_type: dict[str, list] = {}
+    for row in rows:
+        rows_by_type.setdefault(row["blood_type"], []).append(row)
+    return {bt: _cached_from_rows(rows_by_type.get(bt, []), series, today) for bt, series in series_by_type.items()}
+
+
+def _read_cached_sarimax(
+    conn, facility_id: int, blood_type: str, daily_series: list[tuple[date, int]], today: date
+) -> Optional[dict]:
+    """This facility+type's cached checkpoints if every one is present AND was
+    trained through `today` (trained_through_date == today), else None. Freshness
+    is only "trained today"; anything that changes the snapshots behind a cache
+    (upload, undo) drops the rows via _invalidate_facility_forecast_cache.
+
+    Day 0 is just today's stock (the same value a fresh fit stores there), so a
+    hit reports it live from the series: stock that changed since the fit shows up
+    immediately with no refit. Days 1-30 stay as fitted this morning."""
+    return _read_cached_sarimax_many(conn, facility_id, {blood_type: daily_series}, today)[blood_type]
 
 
 def _ai_recommended_order(values) -> Optional[tuple[tuple[int, int, int], tuple[int, int, int, int]]]:
@@ -1636,21 +1664,25 @@ def _collect_sarimax_results(
     just reports what is cached and what is still pending."""
     results: dict[str, Optional[dict]] = {}
     missing: list[str] = []
+    fittable: dict[str, list[tuple[date, int]]] = {}
+    for blood_type, series in daily_by_type.items():
+        if len(series) < SARIMAX_MIN_DAYS_REQUIRED:
+            # Can't be fitted yet (the fitter returns None below this), so it must not spend one of
+            # the MAX_SARIMAX_FITS_PER_REQUEST slots or sit in pending_types. Happens once every type
+            # is snapshotted daily: a type with no stock history starts as a one-day series of 0.
+            results[blood_type] = None
+        else:
+            fittable[blood_type] = series
     with engine.connect() as conn:
-        for blood_type, series in daily_by_type.items():
-            if len(series) < SARIMAX_MIN_DAYS_REQUIRED:
-                # Can't be fitted yet (the fitter returns None below this), so it must not spend one of
-                # the MAX_SARIMAX_FITS_PER_REQUEST slots or sit in pending_types. Happens once every type
-                # is snapshotted daily: a type with no stock history starts as a one-day series of 0.
-                results[blood_type] = None
-                continue
-            cached = _read_cached_sarimax(conn, facility_id, blood_type, series, today)
-            if cached is not None:
-                results[blood_type] = cached
-            elif (facility_id, blood_type, today) in _SARIMAX_FIT_FAILED:
-                results[blood_type] = None
-            else:
-                missing.append(blood_type)
+        cached_by_type = _read_cached_sarimax_many(conn, facility_id, fittable, today)  # one read for every type
+    for blood_type in fittable:
+        cached = cached_by_type[blood_type]
+        if cached is not None:
+            results[blood_type] = cached
+        elif (facility_id, blood_type, today) in _SARIMAX_FIT_FAILED:
+            results[blood_type] = None
+        else:
+            missing.append(blood_type)
     if not missing:
         return results, []
 
@@ -1663,11 +1695,11 @@ def _collect_sarimax_results(
         try:
             # another request may have finished some of these while we were reading
             with engine.connect() as conn:
-                for blood_type in list(missing):
-                    cached = _read_cached_sarimax(conn, facility_id, blood_type, daily_by_type[blood_type], today)
-                    if cached is not None:
-                        results[blood_type] = cached
-                        missing.remove(blood_type)
+                now_cached = _read_cached_sarimax_many(conn, facility_id, {bt: daily_by_type[bt] for bt in missing}, today)
+            for blood_type, cached in now_cached.items():
+                if cached is not None:
+                    results[blood_type] = cached
+                    missing.remove(blood_type)
             for blood_type in list(missing)[:MAX_SARIMAX_FITS_PER_REQUEST]:
                 results[blood_type] = _fit_and_cache_sarimax(
                     facility_id, blood_type, daily_by_type[blood_type], today, observed_dates=observed_dates
@@ -2273,6 +2305,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Added last, so it is the outermost layer and its `app` figure covers everything this process does. Durations only; see
+# server_timing.py. SERVER_TIMING=false turns it off.
+if server_timing.enabled():
+    server_timing.install_db_timing(engine)
+    app.add_middleware(server_timing.ServerTimingMiddleware)
+
 
 @app.get("/health")
 def health():
@@ -2716,11 +2754,13 @@ def get_inventory_summary(facility_id: int = Depends(get_acting_facility_id)):
     """
     today = business_today()
     with engine.connect() as conn:
+        # The facility's type rides along on the same read (it used to be a second statement).
         rows = conn.execute(
             text(
                 f"""
-                SELECT t.blood_type, t.minimum_units, t.maximum_units, COALESCE(c.n, 0) AS units
+                SELECT t.blood_type, t.minimum_units, t.maximum_units, COALESCE(c.n, 0) AS units, f.facility_type
                 FROM blood_type_thresholds t
+                JOIN facilities f ON f.id = t.facility_id
                 LEFT JOIN ({USABLE_COUNTS_SQL}) c ON c.facility_id = t.facility_id AND c.blood_type = t.blood_type
                 WHERE t.facility_id = :facility_id
                 ORDER BY t.blood_type
@@ -2728,11 +2768,14 @@ def get_inventory_summary(facility_id: int = Depends(get_acting_facility_id)):
             ),
             {"facility_id": facility_id, "today": today},
         ).mappings().all()
-        is_bank = conn.execute(text("SELECT facility_type FROM facilities WHERE id = :id"), {"id": facility_id}).scalar() == "bloodbank"
-        releasable = {c: _releasable_counts(conn, c, today, facility_id).get(facility_id, {}) for c in COMPONENTS} if is_bank else {}
+        is_bank = bool(rows) and rows[0]["facility_type"] == "bloodbank"
+        # Every component's releasable counts in one statement, not one per component.
+        releasable = _releasable_counts_multi(conn, list(COMPONENTS), today, facility_id) if is_bank else {}
+        releasable = {c: releasable[c].get(facility_id, {}) for c in releasable}
     out = []
     for row in rows:
         entry = dict(row)
+        del entry["facility_type"]
         entry["can_give"] = (
             {c: max(0, releasable[c].get(entry["blood_type"], 0) - entry["minimum_units"]) for c in COMPONENTS} if is_bank else {}
         )
@@ -3356,11 +3399,17 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
     is_dengue_season = today.month in DENGUE_SEASON_MONTHS
 
     with engine.begin() as conn:
-        facility_type = conn.execute(
-            text("SELECT facility_type FROM facilities WHERE id = :id"), {"id": facility_id}
-        ).scalar()
-        if facility_type is None:
+        # The facility's type and its thresholds in one read (a bank needs both; a hospital's view reads its own).
+        facility_rows = conn.execute(
+            text(
+                "SELECT f.facility_type, t.blood_type, t.minimum_units, t.maximum_units FROM facilities f "
+                "LEFT JOIN blood_type_thresholds t ON t.facility_id = f.id WHERE f.id = :id"
+            ),
+            {"id": facility_id},
+        ).mappings().all()
+        if not facility_rows:
             raise HTTPException(status_code=500, detail="acting facility not found")
+        facility_type = facility_rows[0]["facility_type"]
 
         if facility_type == "hospital":
             return _build_hospital_threshold_view(conn, facility_id, is_dengue_season, today)
@@ -3379,13 +3428,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
             {"facility_id": facility_id},
         ).mappings().all()
 
-        threshold_rows = conn.execute(
-            text(
-                "SELECT blood_type, minimum_units, maximum_units FROM blood_type_thresholds "
-                "WHERE facility_id = :facility_id"
-            ),
-            {"facility_id": facility_id},
-        ).mappings().all()
+        threshold_rows = [row for row in facility_rows if row["blood_type"] is not None]
         thresholds = {row["blood_type"]: row["minimum_units"] for row in threshold_rows}
         maximum_thresholds = {row["blood_type"]: row["maximum_units"] for row in threshold_rows}
 
@@ -4146,6 +4189,28 @@ def _releasable_counts(conn, component: str, today: date, facility_id: Optional[
     for r in rows:
         counts.setdefault(r["facility_id"], {})[r["blood_type"]] = r["unit_count"]
     return counts
+
+
+def _releasable_counts_multi(conn, components, today: date, facility_id: Optional[int] = None) -> dict[str, dict[int, dict[str, int]]]:
+    """{component: _releasable_counts(component)} for several components in ONE statement: the same predicate
+    (RELEASABLE_UNITS_SQL, once per component, with that component's own expiry cutoff), so the answers are identical to calling
+    _releasable_counts per component; it only saves the round trips (the dashboard's summary asked once per component)."""
+    parts, params = [], {"facility_id": facility_id}
+    for i, component in enumerate(components):
+        where = RELEASABLE_UNITS_SQL.replace(":component", f":component_{i}").replace(":cutoff", f":cutoff_{i}")
+        parts.append(
+            f"SELECT CAST(:component_{i} AS text) AS component, facility_id, blood_type, count(*) AS unit_count "
+            f"FROM blood_units WHERE {where} AND (CAST(:facility_id AS bigint) IS NULL OR facility_id = :facility_id) "
+            f"GROUP BY facility_id, blood_type"
+        )
+        params[f"component_{i}"] = component
+        params[f"cutoff_{i}"] = _release_expiry_cutoff(component, today)
+    out: dict[str, dict[int, dict[str, int]]] = {c: {} for c in components}
+    if not parts:
+        return out
+    for r in conn.execute(text(" UNION ALL ".join(parts)), params).mappings().all():
+        out[r["component"]].setdefault(r["facility_id"], {})[r["blood_type"]] = r["unit_count"]
+    return out
 
 
 def _component_error(component: str) -> str | None:

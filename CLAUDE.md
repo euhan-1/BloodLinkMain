@@ -26,6 +26,12 @@ requests, SARIMAX demand forecasting, donor broadcast.
 - DB: Supabase Postgres (Tokyo). UptimeRobot pings to limit cold starts.
 - Render CPU is far slower than local: one SARIMAX fit ≈ 0.3 s local, 12–20 s
   deployed. Budget from the deployed number, never the local one.
+- **A request's cost is its round trips, not its rows.** API to Supabase is about 130 ms a round trip (measured 2026-11-09 from
+  `/health` against a page with no database call, and reproduced through a delaying proxy: `server/` endpoints cost 130 ms times the
+  statements they send). Every `engine.connect()`/`begin()` also costs three before your first query: the pool's pre-ping, `BEGIN`,
+  and the closing `ROLLBACK`/`COMMIT`. So count statements and connections, batch per-type or per-component reads into one
+  statement, and don't open a second connection where one will do. A response's `Server-Timing` header (`app`, `db`, durations
+  only; `SERVER_TIMING=false` turns it off) separates server time from network time in DevTools.
 
 ## Conventions that bite
 
@@ -221,7 +227,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (569 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (584 tests plus
   160 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
@@ -243,7 +249,8 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `node scripts/check_request_inbox.ts` (the Requests inbox's order, counts, status wording and unread rule) and
   `node scripts/check_bank_dashboard.ts` (the blood bank Dashboard's sentence, outlook, basis and order prefill) and
   `node scripts/check_bank_inventory.ts` (the blood bank Inventory's notes, filters, search, paging and backlog) and
-  `node scripts/check_notifications.ts` (the bell's badge, times, polling and paging), each printing `ok`, plus
+  `node scripts/check_notifications.ts` (the bell's badge, times, polling and paging) and
+  `node scripts/check_request_cache.ts` (the shared request layer under `apiGet`: in-flight sharing, the short cache, invalidation), each printing `ok`, plus
   `npm run typecheck`. The frontend has no component test runner.
   A red suite is a finding, not a footnote — "known failure" is how a real
   bug hides.
