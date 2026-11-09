@@ -5,6 +5,13 @@
       
       <meta charset="UTF-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <!-- The weights the sign-in screen paints with, fetched in parallel with the JS instead of after the CSS is parsed.
+           Plex Serif is the wide-screen brand panel only (hidden below the lg breakpoint, 1024px). crossorigin is required
+           for font preloads even though the files are same-origin. -->
+      <link rel="preload" href="/src/assets/fonts/ibm-plex-sans-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin />
+      <link rel="preload" href="/src/assets/fonts/ibm-plex-sans-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin />
+      <link rel="preload" href="/src/assets/fonts/archivo-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin />
+      <link rel="preload" href="/src/assets/fonts/ibm-plex-serif-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin media="(min-width: 1024px)" />
       <title>BloodLink Web Application Design</title>
       <meta name="description" content="Streamline blood supply management for hospitals and blood banks with real-time inventory tracking, emergency sourcing, and donor coordination features." />
       <meta name="robots" content="noindex, nofollow" />

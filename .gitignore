@@ -14,3 +14,6 @@ skills-lock.json
 *.joblib
 server/models/*
 !server/models/sarimax_selector_rules.json
+
+# local audit reports, never committed
+.audit/
