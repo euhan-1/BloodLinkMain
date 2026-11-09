@@ -201,8 +201,9 @@ requests, SARIMAX demand forecasting, donor broadcast.
   receipt (`/receipt/{id}`, `screens/Receipt.tsx`, printable via `print:` classes) renders the same `timeline` and
   `units`, the same page for both facilities, states how many chat messages exist without reproducing them, and always
   says what BloodLink does not record (condition, temperature, transport, signatures). The document itself is
-  `components/ReceiptRecord.tsx`, which the page renders and which the thread's **Receipt** control shows inline in place of the
-  conversation (from the thread's own `GET /requests/{id}` data, without the "Printed" stamp; the control replaces the old link to
+  `components/ReceiptRecord.tsx` (props `showPrintedLine`, `showChatLocation`, `headingLevel`; defaults suit the page), which the
+  page renders (`screens/Receipt.tsx` is only the shell: loader, title, Print button) and which the thread's **Receipt** control shows inline in place of the
+  conversation (from the thread's own `GET /requests/{id}` data, with the stamp and chat sentence off and `headingLevel={4}`; the control replaces the old link to
   the page, which stays reachable from inside the inline view for printing). The units table is `components/TransferUnits.tsx`,
   shared by the receipt (every column) and the thread, where the release and receipt events each carry a "Units" toggle (release:
   what was sent; receipt: how each unit arrived) when the ledger recorded them. Release and receipt events name the units from `request_units`, falling back to `request_unit_failures`
