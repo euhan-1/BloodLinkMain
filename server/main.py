@@ -14,6 +14,7 @@ import io
 import json
 import math
 import secrets
+import time
 import warnings
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -38,9 +39,11 @@ from sqlalchemy.exc import IntegrityError
 # lot on Render's free tier where a cold start already costs real time.
 
 import auth
+import client_ip
 import email_service
 import geocode_service
 import server_timing
+import upload_limits
 from database import engine
 
 load_dotenv()
@@ -320,17 +323,50 @@ ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "")
 VALID_FACILITY_TYPES = {"hospital", "bloodbank"}
 
 
+# A token is valid for 24 hours and cannot be revoked, so every authenticated request also checks that the account behind it
+# still exists and that its facility is still active; otherwise deactivating a facility would not stop a signed-in session.
+# That is one query (and about four round trips) per check, so a PASS is remembered per user for AUTH_ACTIVE_CACHE_SECONDS. This
+# cache is the longest a deactivation can go unnoticed by another worker, and the cap is 60 seconds: do not raise it above that.
+# Only a pass is remembered (a rejection is looked up again, so reactivation takes effect at once), and deactivating through
+# admin_update_facility_status clears it, so on the one worker this app runs it takes effect immediately.
+AUTH_ACTIVE_CACHE_SECONDS = 30
+_active_account_until: dict[int, float] = {}  # user id -> time.monotonic() until which the last check still counts
+
+
+def _assert_account_active(user_id: int) -> None:
+    now = time.monotonic()
+    if _active_account_until.get(user_id, 0.0) > now:
+        return
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT u.facility_id, f.is_active AS facility_is_active FROM users u "
+                "LEFT JOIN facilities f ON f.id = u.facility_id WHERE u.id = :id"
+            ),
+            {"id": user_id},
+        ).mappings().first()
+    if row is None:
+        _active_account_until.pop(user_id, None)
+        raise HTTPException(status_code=401, detail="this account no longer exists, please log in again")
+    if row["facility_id"] is not None and not row["facility_is_active"]:
+        _active_account_until.pop(user_id, None)
+        raise HTTPException(status_code=403, detail="this facility's account has been deactivated — contact your administrator")
+    _active_account_until[user_id] = now + AUTH_ACTIVE_CACHE_SECONDS
+
+
 def get_current_user(authorization: Optional[str] = Header(default=None)) -> dict:
-    """Requires 'Authorization: Bearer <token>'. Real auth (Step 6B)."""
+    """Requires 'Authorization: Bearer <token>'. Real auth (Step 6B), plus the account-still-active check above."""
     if authorization is None or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="not authenticated")
     token = authorization[len("Bearer "):]
     try:
-        return auth.decode_access_token(token)
+        user = auth.decode_access_token(token)
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="session expired, please log in again")
     except (jwt.PyJWTError, ValueError):
         raise HTTPException(status_code=401, detail="invalid authentication token")
+    _assert_account_active(int(user["sub"]))
+    return user
 
 
 def require_admin_role(user: dict = Depends(get_current_user)) -> dict:
@@ -399,6 +435,7 @@ def get_acting_facility_id(
         # requests, donors, ...) is off-limits rather than silently querying
         # with facility_id=NULL, which Postgres would just match nothing on.
         raise HTTPException(status_code=403, detail="admin accounts have no facility context")
+    _assert_account_active(int(user["sub"]))
     return user["facility_id"]
 
 
@@ -2310,7 +2347,21 @@ def _build_synthetic_stand_in_forecast(
     }
 
 
-app = FastAPI()
+def api_docs_enabled() -> bool:
+    """The interactive docs (/docs, /redoc) and the schema (/openapi.json) list every route, including /admin/* and the dev-only
+    tools, so they are OFF unless ENABLE_API_DOCS is true/1/yes/on. For local development set it in server/.env."""
+    return os.environ.get("ENABLE_API_DOCS", "false").strip().lower() in ("true", "1", "yes", "on")
+
+
+def fastapi_docs_settings(enabled: bool) -> dict:
+    return {} if enabled else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+
+
+app = FastAPI(**fastapi_docs_settings(api_docs_enabled()))
+
+# Added before CORS so CORS wraps it (a 413 still carries the CORS headers the browser needs to show the message). The donor upload
+# is deliberately not listed.
+app.add_middleware(upload_limits.UploadSizeLimitMiddleware, paths=("/inventory/upload", "/forecast/historical-upload"))
 
 app.add_middleware(
     CORSMiddleware,
@@ -2328,19 +2379,16 @@ if server_timing.enabled():
 
 @app.get("/health")
 def health():
+    """Liveness plus a database check, for UptimeRobot and the login page's warm-up ping. Deliberately says nothing else: a failure
+    is a bare 503 (the database error can carry the host, port and user, so it goes to the server log, never the response), and a
+    success is just "ok". The allowed CORS origins are no longer listed here; see DEPLOYMENT.md for how to check them."""
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"database unavailable: {exc}")
-    # cors_allowed_origins deliberately included: the list of allowed origins
-    # isn't sensitive (any real cross-origin request already reveals whether
-    # its own origin is on it), and this is the one live, no-dashboard-needed
-    # way to confirm exactly what CORS_ALLOWED_ORIGINS actually parsed to on
-    # whatever's currently running — the normal question when a CORS error
-    # shows up is "is the env var wrong, or did the redeploy not pick it up
-    # yet," and this answers both without needing host log/dashboard access.
-    return {"status": "ok", "database": "connected", "cors_allowed_origins": CORS_ALLOWED_ORIGINS}
+        print(f"[health] database check failed: {type(exc).__name__}: {exc}")
+        return Response(status_code=503)
+    return {"status": "ok"}
 
 
 NOTIFICATIONS_PAGE_SIZE = 50
@@ -2961,14 +3009,7 @@ def upload_inventory(
     on the event loop, where it would stop every other request on the instance until it finished. `file.file` is the
     upload's own synchronous file object.
     """
-    if not (file.filename or "").lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="only .csv files are accepted")
-
-    raw_bytes = file.file.read()
-    try:
-        csv_text = raw_bytes.decode("utf-8-sig")  # utf-8-sig tolerates a BOM from Excel exports
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="file must be UTF-8 encoded")
+    csv_text = upload_limits.read_csv_upload(file)  # .csv, size (MAX_UPLOAD_BYTES), a look at the bytes, UTF-8
 
     valid_rows, errors = _parse_inventory_csv(csv_text)
 
@@ -3205,14 +3246,7 @@ def upload_historical_inventory_snapshots(
     if facility_type != "bloodbank":
         raise HTTPException(status_code=403, detail="historical data upload is only available to blood bank facilities")
 
-    if not (file.filename or "").lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="only .csv files are accepted")
-
-    raw_bytes = file.file.read()
-    try:
-        csv_text = raw_bytes.decode("utf-8-sig")  # utf-8-sig tolerates a BOM from Excel exports
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="file must be UTF-8 encoded")
+    csv_text = upload_limits.read_csv_upload(file)  # .csv, size (MAX_UPLOAD_BYTES), a look at the bytes, UTF-8
 
     valid_rows, errors = _parse_historical_snapshot_csv(csv_text, business_today())
 
@@ -3738,11 +3772,11 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
 
 
 @app.get("/facilities")
-def list_facilities():
-    """Plain facility list — powers the dev-only facility switcher dropdown.
-    Unauthenticated, so a deactivated facility must not appear here at all —
-    is_active is an access gate (see admin_update_facility_status), and this
-    is the one facility-listing endpoint anyone can reach with no login."""
+def list_facilities(user: dict = Depends(get_current_user)):
+    """Plain facility list — resolves facility names on the Requests screen and powers the dev-only facility switcher dropdown.
+    Requires a login (any account): it used to be public, and no screen the signed-out visitor sees (sign-in, registration)
+    calls it. A deactivated facility still does not appear here — is_active is an access gate (see
+    admin_update_facility_status)."""
     with engine.connect() as conn:
         rows = conn.execute(
             text("SELECT id, name, facility_type FROM facilities WHERE is_active ORDER BY facility_type, name")
@@ -3845,13 +3879,29 @@ def complete_facility_profile(body: CompleteProfileBody, facility_id: int = Depe
 # administrator reviews after email ownership is proven. Unauthenticated by
 # nature: nobody has an account yet.
 
+# Public (registration has no login yet), so it is limited instead: per client address (client_ip.py), a minimum and maximum query
+# length, and in geocode_service.py a short cache, a one-call-per-second throttle toward Nominatim, and an identifying User-Agent.
+GEOCODE_MIN_QUERY_LENGTH = 5
+GEOCODE_MAX_QUERY_LENGTH = 200
+_GEOCODE_LIMITER = auth.AttemptLimiter(limit=10, window=60)
+
+
 @app.get("/facilities/geocode")
-def geocode_facility_address(address: str):
+def geocode_facility_address(address: str, request: Request):
     """Prefill-only lookup for the registration form's map picker (reuses
-    FacilityLocationFields). Never fails the request — a miss or a geocoder
-    outage just means the applicant places the pin manually, the same
-    required-confirmation step CompleteProfile.tsx already has."""
-    result = geocode_service.geocode_address(address)
+    FacilityLocationFields). A miss or a geocoder outage never fails the request —
+    it just means the applicant places the pin manually, the same
+    required-confirmation step CompleteProfile.tsx already has. Only a malformed
+    query (too short or too long) or too many lookups from one address is refused."""
+    query = address.strip()
+    if len(query) < GEOCODE_MIN_QUERY_LENGTH:
+        raise HTTPException(status_code=422, detail=f"Type at least {GEOCODE_MIN_QUERY_LENGTH} characters of the address to look it up.")
+    if len(query) > GEOCODE_MAX_QUERY_LENGTH:
+        raise HTTPException(status_code=422, detail=f"That address is too long to look up (at most {GEOCODE_MAX_QUERY_LENGTH} characters).")
+    keys = [f"ip:{_request_ip(request) or 'unknown'}"]  # an address we cannot tell shares one budget rather than none
+    _raise_if_limited(_GEOCODE_LIMITER, keys, "Too many address lookups.")
+    _record_attempt(_GEOCODE_LIMITER, keys)
+    result = geocode_service.geocode_address(query)
     if result is None:
         return {"latitude": None, "longitude": None}
     return {"latitude": result[0], "longitude": result[1]}
@@ -3960,9 +4010,9 @@ def register_facility(body: RegisterFacilityBody, request: Request):
     POST /auth/forgot-password, and the same rate limiter — one abuse
     concern (don't let this become a way to mail strangers), shared budget.
     """
-    key = _attempt_key(request, body.email)
-    _raise_if_limited(_FORGOT_LIMITER, key)
-    _FORGOT_LIMITER.record(key)
+    keys = _attempt_keys(request, body.email)
+    _raise_if_limited(_FORGOT_LIMITER, keys, "Too many email requests.")
+    _record_attempt(_FORGOT_LIMITER, keys)
 
     with engine.begin() as conn:
         existing_user = conn.execute(text("SELECT 1 FROM users WHERE email = :email"), {"email": body.email}).first()
@@ -5558,37 +5608,59 @@ def _user_response(user: dict, facility: Optional[dict]) -> dict:
     }
 
 
-# Brute-force limits — no global middleware, so /health and normal API
-# traffic are never throttled. Keyed on client IP + email, not IP alone:
-# behind Vercel/Render the IP can be a shared edge address, and an IP-only
-# key would let one person's typos lock out everyone.
-#   login: only FAILED attempts count, 5 per 60s; a success clears the count.
-#   forgot-password / OTP issuance (resend included): every request counts
-#   (the response must look identical either way), 5 per 10 min. OTP issuance
-#   is deliberately the SAME limiter as forgot-password's link flow rather
-#   than a third instance — both exist to stop the same abuse (mailing
-#   strangers from our sender identity), and email verification / password
-#   reset are two different `purpose`s on the same otp_codes table, so the
-#   same rate budget being purpose-agnostic per (ip, email) is the simpler
-#   choice, not a separate knob per purpose that could silently drift apart.
-_LOGIN_LIMITER = auth.AttemptLimiter(limit=5, window=60)
+# Brute-force limits — no global middleware, so /health and normal API traffic are never throttled. Every limited action is
+# counted under TWO keys and blocked when either is full:
+#   acct:<email>   the account being attacked. Not spoofable: it is the target, not a claim about the sender.
+#   ip:<address>   the sender, from client_ip.py (never the leftmost X-Forwarded-For entry, which the caller writes). A caller who
+#                  goes straight to the Render URL can still choose that address, so this key is the second line, not the first.
+# Before this, the one key was "<leftmost X-Forwarded-For>|<email>": changing the header gave a fresh budget on every request, so
+# nothing stopped a guessing run against any account, and no key ever added up per account or per address.
+#   login: only FAILED attempts count, 5 per 15 minutes per key; a success clears nothing (so a failed run cannot be reset by
+#   someone else signing in). The error says how long to wait.
+#   forgot-password / OTP issuance / registration (resend included): every request counts (the response must look identical
+#   either way), 5 per 10 min per key. OTP issuance is deliberately the SAME limiter as forgot-password's link flow rather
+#   than a third instance — both exist to stop the same abuse (mailing strangers from our sender identity), and email
+#   verification / password reset are two different `purpose`s on the same otp_codes table, so the same rate budget being
+#   purpose-agnostic is the simpler choice, not a separate knob per purpose that could silently drift apart.
+# In process memory: a restart clears them (one worker, see auth.AttemptLimiter).
+LOGIN_FAILURE_LIMIT = 5
+LOGIN_FAILURE_WINDOW_SECONDS = 15 * 60
+_LOGIN_LIMITER = auth.AttemptLimiter(limit=LOGIN_FAILURE_LIMIT, window=LOGIN_FAILURE_WINDOW_SECONDS)
 _FORGOT_LIMITER = auth.AttemptLimiter(limit=5, window=600)
 
 
-def _attempt_key(request: Request, email: str) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    ip = forwarded.split(",")[0].strip() or (request.client.host if request.client else "unknown")
-    return f"{ip}|{email.strip().lower()}"
+def _request_ip(request: Request) -> Optional[str]:
+    return client_ip.client_ip(request.headers, request.client.host if request.client else None)
 
 
-def _raise_if_limited(limiter: "auth.AttemptLimiter", key: str) -> None:
-    wait = limiter.retry_after(key)
+def _attempt_keys(request: Request, email: str) -> list[str]:
+    keys = [f"acct:{email.strip().lower()}"]
+    ip = _request_ip(request)
+    if ip is not None:
+        keys.append(f"ip:{ip}")
+    return keys
+
+
+def _wait_text(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds} second{'s' if seconds != 1 else ''}"
+    minutes = math.ceil(seconds / 60)
+    return f"{minutes} minute{'s' if minutes != 1 else ''}"
+
+
+def _raise_if_limited(limiter: "auth.AttemptLimiter", keys: list[str], subject: str = "Too many failed sign-in attempts.") -> None:
+    wait = max(limiter.retry_after(k) for k in keys)
     if wait:
         raise HTTPException(
             status_code=429,
-            detail="Too many sign-in attempts. Please wait a moment and try again.",
+            detail=f"{subject} Please try again in {_wait_text(wait)}.",
             headers={"Retry-After": str(wait)},
         )
+
+
+def _record_attempt(limiter: "auth.AttemptLimiter", keys: list[str]) -> None:
+    for k in keys:
+        limiter.record(k)
 
 
 # ─── OTP (Step 11) ──────────────────────────────────────────────────────────
@@ -5676,8 +5748,8 @@ def _verify_otp(
 
 @app.post("/auth/login")
 def login(body: LoginBody, request: Request):
-    key = _attempt_key(request, body.email)
-    _raise_if_limited(_LOGIN_LIMITER, key)
+    keys = _attempt_keys(request, body.email)
+    _raise_if_limited(_LOGIN_LIMITER, keys)
     with engine.connect() as conn:
         user = conn.execute(
             text(
@@ -5694,9 +5766,8 @@ def login(body: LoginBody, request: Request):
     # Same error for "no such user" and "wrong password" — don't leak which
     # emails are registered.
     if user is None or not auth.verify_password(body.password, user["password_hash"]):
-        _LOGIN_LIMITER.record(key)
+        _record_attempt(_LOGIN_LIMITER, keys)
         raise HTTPException(status_code=401, detail="invalid email or password")
-    _LOGIN_LIMITER.clear(key)
 
     # Only ever false for a facility-linked account (facility_is_active is
     # NULL, not False, for admins — who have no facility row to deactivate).
@@ -5784,9 +5855,9 @@ def forgot_password(body: ForgotPasswordBody, request: Request):
     seen again by this process — only its SHA-256 hash is stored, so a
     database read alone can never be used to complete a reset.
     """
-    key = _attempt_key(request, body.email)
-    _raise_if_limited(_FORGOT_LIMITER, key)
-    _FORGOT_LIMITER.record(key)
+    keys = _attempt_keys(request, body.email)
+    _raise_if_limited(_FORGOT_LIMITER, keys, "Too many email requests.")
+    _record_attempt(_FORGOT_LIMITER, keys)
 
     with engine.connect() as conn:
         user = conn.execute(
@@ -5918,9 +5989,9 @@ def forgot_password_otp(body: ForgotPasswordOtpBody, request: Request):
     POST /auth/forgot-password (identical response regardless of outcome) —
     a 6-digit code instead of a link. Shares _FORGOT_LIMITER with that
     endpoint: same abuse concern, one budget."""
-    key = _attempt_key(request, body.email)
-    _raise_if_limited(_FORGOT_LIMITER, key)
-    _FORGOT_LIMITER.record(key)
+    keys = _attempt_keys(request, body.email)
+    _raise_if_limited(_FORGOT_LIMITER, keys, "Too many email requests.")
+    _record_attempt(_FORGOT_LIMITER, keys)
 
     with engine.begin() as conn:
         user = conn.execute(
@@ -6366,6 +6437,7 @@ def admin_update_facility_status(facility_id: int, body: UpdateFacilityStatusBod
         ).mappings().first()
     if row is None:
         raise HTTPException(status_code=404, detail="facility not found")
+    _active_account_until.clear()  # a deactivation must not wait out the pass cache (see _assert_account_active)
     return dict(row)
 
 

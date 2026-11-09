@@ -101,6 +101,19 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `archive/migrations/resolve_existing_notifications.py` need `--i-know-this-writes-to-production`
   (`server/script_guard.py`). Other scripts, `select_orders.py` and the `migrate_*.py` migrations among them,
   have no such guard.
+- **Who is asking, and how often.** Never read `X-Forwarded-For` by position from the left: Render keeps what a caller sends and appends
+  its own hops, and `True-Client-IP` is the one value the caller cannot choose (`client_ip.py` explains the sources and its limits;
+  behind Vercel it finds the visitor as the entry before that peer, and an address that is not a plain public IP is "unknown", never a
+  shared key). Sign-in and the email-sending endpoints (forgot-password, OTP, registration) count under **two keys, the account
+  (`acct:<email>`, which cannot be spoofed) and the sender (`ip:<address>`)**, and block when either is full; login is 5 *failed* tries per
+  15 minutes and a success resets nothing; the error says how long to wait. In process memory, so a restart clears it. **Every
+  authenticated request checks that the user still exists and its facility is active** (`_assert_account_active`; a pass is remembered
+  30 s, never more than 60; a rejection is never remembered; the admin deactivation clears it), so deactivating a facility ends its
+  sessions. `GET /facilities` needs a login. `/health` is `{"status":"ok"}` or a bare 503 (the error goes to the log), and `/docs`,
+  `/redoc`, `/openapi.json` are off unless `ENABLE_API_DOCS`. The inventory and historical uploads refuse a body over
+  `MAX_UPLOAD_BYTES` (default 5 MB, 413, by `Content-Length` and while reading; `upload_limits.py`) and a file that is not plain text; the
+  donor upload is outside that. `GET /facilities/geocode` is public (registration) but limited: 10 lookups a minute per address, at least
+  5 characters, a 5-minute cache, one call a second to Nominatim for the whole process, and an identifying User-Agent.
 - **Uploads are batched** — `INSERT … SELECT … FROM unnest(...)`, never
   row-by-row. Three CSV parsers require exact column names, filter extras, and
   reject on a missing required column.
@@ -234,7 +247,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (597 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (668 tests plus
   160 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`

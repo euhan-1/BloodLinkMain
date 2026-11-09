@@ -48,7 +48,7 @@ Demo accounts exist for all three roles (hospital, blood bank, admin) with popul
 
 1. Coordination over silos — the app's value is the cross-facility workflow, not just per-facility record-keeping.
 2. Say what's real — simulated or synthetic capabilities (the SMS blast, the stand-in forecast model) are always visibly labeled as such, never presented as equivalent to the real thing.
-3. Admin-controlled trust — every account traces back to an admin decision; there is no open signup surface to secure or moderate.
+3. Admin-controlled trust — every account traces back to an admin decision. An admin provisions it, or an admin approves a self-registration after the applicant has proved their email with a one-time code; nothing is created until that approval. Self-registration (`/register`) is a public form, so it is a surface to secure and moderate: rate-limited, email-verified and reviewed.
 4. Built to hold up, not just to demo — treated as production-quality code and UX even though its audience of record is a thesis panel.
 
 ## Accessibility & Inclusion

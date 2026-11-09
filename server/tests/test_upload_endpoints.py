@@ -187,7 +187,7 @@ class ThroughTheRealAppTests(unittest.TestCase):
 
     def test_a_slow_upload_does_not_hold_up_other_requests(self):
         """The reason for the conversion: while an upload parses (blocking), the event loop must still answer other requests."""
-        asyncio.run(asgi("GET", "/openapi.json"))  # builds and caches the schema, so the timing below is only the handler
+        asyncio.run(asgi("GET", "/health"))  # warms the connection pool, so the timing below is only the request
 
         real = app._parse_inventory_csv
 
@@ -200,7 +200,7 @@ class ThroughTheRealAppTests(unittest.TestCase):
                 t0 = time.perf_counter()
                 upload = asyncio.ensure_future(self.post_upload("/inventory/upload", self.csv()))
                 await asyncio.sleep(0.2)  # the upload is now inside slow_parse (if the loop is free to tell)
-                other_status, _ = await asgi("GET", "/openapi.json")
+                other_status, _ = await asgi("GET", "/health")
                 other_done = time.perf_counter() - t0  # measured from the start: a blocked loop cannot even start the second request
                 upload_status, _ = await upload
                 return other_status, other_done, upload_status, time.perf_counter() - t0
