@@ -1,23 +1,13 @@
-import { ArrowDownLeft, ArrowUpRight, Clock } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight } from "lucide-react";
 import { BloodTypeBadge } from "./BloodTypeBadge";
 import { ReasonTag } from "./ReasonTag";
 import { useFlashOnChange } from "../lib/motion";
 import { formatDateTime } from "../lib/dateFormat";
 import { requestUnitsText } from "../lib/requestTypes";
-import { counterpartName, inboxStatus, requestPhase, type InboxRow, type StatusTone } from "../lib/requestInbox";
+import { counterpartName, requestPhase, rowActions, type InboxRow, type RowAction } from "../lib/requestInbox";
+import { RequestActionButtons, StatusPill } from "./RequestStatusParts";
 
-export type RowAction = "accept" | "decline" | "cancel" | "confirm-release" | "confirm-receipt";
-
-const TONE: Record<StatusTone, string> = {
-  yours: "bg-primary-tint text-primary border-border",
-  theirs: "bg-status-watch-tint text-status-watch-text border-status-watch-border",
-  done: "bg-secondary text-foreground border-border",
-};
-
-const ACTION_PRIMARY = "h-7 px-3 bg-primary text-white text-[12px] font-semibold rounded-lg hover:bg-primary-hover transition-colors disabled:opacity-60";
-const ACTION_SECONDARY = "h-7 px-3 bg-card border border-border text-[12px] font-semibold text-foreground rounded-lg hover:bg-secondary transition-colors disabled:opacity-60";
-
-// One request in the inbox: the row opens its thread, and the buttons under it are its primary action. They are siblings of the
+// One request in the inbox: the row opens its thread, and the buttons under it are its actions (the same as in the thread's header). They are siblings of the
 // opening button, not inside it, so a click on one never also opens the thread.
 export function RequestInboxRow({
   row, selected, unread, busy, onOpen, onAction,
@@ -32,10 +22,7 @@ export function RequestInboxRow({
   const { req, direction, position } = row;
   // Flashes once when this request's phase moves (pending -> accepted -> released -> completed), not on every poll.
   const flash = useFlashOnChange(requestPhase(req));
-  const status = inboxStatus(row);
   const Arrow = direction === "incoming" ? ArrowDownLeft : ArrowUpRight;
-  const released = !!req.supplier_confirmed_at;
-  const received = !!req.requester_confirmed_at;
 
   return (
     <li className={`rounded-lg border-2 transition-colors ${selected ? "border-primary bg-primary-tint" : "border-border bg-card hover:bg-secondary"} ${flash ? "animate-value-flash-bg" : ""}`}>
@@ -65,10 +52,7 @@ export function RequestInboxRow({
           <ReasonTag reason={req.emergency_type} />
         </div>
         <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-          <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border text-[12px] font-semibold ${TONE[status.tone]}`}>
-            {status.tone === "theirs" && <Clock size={11} aria-hidden="true" />}
-            {status.text}
-          </span>
+          <StatusPill row={row} />
           <span className="flex items-center gap-2 text-[12px]">
             <span className="font-mono text-muted-foreground">REQ-{req.id}</span>
             <time dateTime={req.created_at} className="text-gray-600">{formatDateTime(req.created_at)}</time>
@@ -76,36 +60,9 @@ export function RequestInboxRow({
         </div>
       </button>
 
-      {direction === "incoming" && req.status === "pending" && (
-        <div className="flex gap-1.5 px-3 pb-3">
-          <button type="button" onClick={() => onAction("accept")} disabled={busy} className={ACTION_PRIMARY}>{busy ? "…" : "Accept"}</button>
-          <button type="button" onClick={() => onAction("decline")} disabled={busy} className={ACTION_SECONDARY}>Decline</button>
-        </div>
-      )}
-      {direction === "outgoing" && req.status === "pending" && (
-        <div className="flex gap-1.5 px-3 pb-3">
-          <button
-            type="button"
-            onClick={() => onAction("cancel")}
-            disabled={busy}
-            className="h-7 px-3 bg-card border border-border text-[12px] font-semibold text-status-critical-text rounded-lg hover:bg-status-critical-tint transition-colors disabled:opacity-60"
-          >
-            Cancel request
-          </button>
-        </div>
-      )}
-      {direction === "incoming" && req.status === "accepted" && !released && (
+      {rowActions(row).length > 0 && (
         <div className="px-3 pb-3">
-          <button type="button" onClick={() => onAction("confirm-release")} disabled={busy} className={`w-full ${ACTION_PRIMARY}`}>
-            {busy ? "Confirming…" : "Confirm release"}
-          </button>
-        </div>
-      )}
-      {direction === "outgoing" && req.status === "accepted" && released && !received && (
-        <div className="px-3 pb-3">
-          <button type="button" onClick={() => onAction("confirm-receipt")} disabled={busy} className={`w-full ${ACTION_PRIMARY}`}>
-            {busy ? "Confirming…" : "Confirm receipt"}
-          </button>
+          <RequestActionButtons row={row} busy={busy} onAction={onAction} block />
         </div>
       )}
     </li>

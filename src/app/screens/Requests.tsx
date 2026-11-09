@@ -11,7 +11,8 @@ import { listIsBehind, mergeThread, type RequestDetail } from "../lib/requestTim
 import { BLOOD_COMPONENTS, type BloodComponent } from "../lib/bloodComponents";
 import { type EmergencyType, type RequestRow } from "../lib/requestTypes";
 import { RequestInboxRow } from "../components/RequestInboxRow";
-import { buildInbox, inboxCounts, loadSeen, requestPhase, saveSeen, seedSeen, unreadKind, type SeenMap } from "../lib/requestInbox";
+import { RequestHeader } from "../components/RequestHeader";
+import { buildInbox, inboxCounts, loadSeen, requestPhase, rowFromDetail, saveSeen, seedSeen, unreadKind, type RowAction, type SeenMap } from "../lib/requestInbox";
 import { TransferHistory } from "./TransferHistory";
 
 // Chat messages poll faster than notifications (App.tsx's NOTIFICATION_POLL_MS)
@@ -183,7 +184,9 @@ export function RequestsScreen({
   const [incomingError, setIncomingError] = useState<string | null>(null);
 
   const [actionPendingId, setActionPendingId] = useState<number | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  // The last action that failed and which request it was on. It is shown in that request's header, the one place visible at every
+  // width (a narrow screen shows the list or the thread, never both), so a failure opens that request's thread.
+  const [actionError, setActionError] = useState<{ id: number; message: string } | null>(null);
   // Which of the requester's own pending requests is showing the "are you
   // sure" confirmation before cancel — cancel is real and non-reversible,
   // unlike accept/decline elsewhere in this screen, so it gets a step the
@@ -260,7 +263,8 @@ export function RequestsScreen({
       fetchIncoming();
       refreshThreadRef.current?.();
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Action failed");
+      setActionError({ id: requestId, message: err instanceof Error ? err.message : "Action failed" });
+      setSelectedRequestId(requestId);
       actedRef.current.delete(requestId); // it did not happen, so the next change to this request is not this facility's own
     } finally {
       setActionPendingId(null);
@@ -436,6 +440,16 @@ export function RequestsScreen({
     }
     if (changed) setSeen(next);
   }, [seen, requests, incomingRequests]);
+  // An action from a row or from the thread's header (the same buttons, rowActions). Cancel is not undoable, so it asks first.
+  function handleRowAction(req: RequestRow, action: RowAction) {
+    if (action === "cancel") { setCancelConfirmId(req.id); return; }
+    actedRef.current.set(req.id, requestPhase(req));
+    performRequestAction(req.id, action);
+  }
+  // The header's request: as the thread's own poll describes it (fresher than the lists), else the list's row while that loads.
+  const headerRow = selectedRequestId === null ? null
+    : detail !== null && detail.request.id === selectedRequestId ? rowFromDetail(detail.request, actingFacilityId)
+    : openRow ?? null;
   useEffect(() => { if (seen) saveSeen(actingFacilityId, seen); }, [seen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
@@ -504,11 +518,6 @@ export function RequestsScreen({
               </p>
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto p-3">
-              {actionError && (
-                <div role="alert" className="mb-2 text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-lg px-3 py-2">
-                  {actionError}
-                </div>
-              )}
               {requestsError && (
                 <div role="alert" className="mb-2 text-[13px] text-status-critical-text">Failed to load your requests: {requestsError}</div>
               )}
@@ -536,11 +545,7 @@ export function RequestsScreen({
                       unread={unreadKind(row, seen)}
                       busy={actionPendingId === row.req.id}
                       onOpen={() => setSelectedRequestId(row.req.id)}
-                      onAction={(action) => {
-                        if (action === "cancel") { setCancelConfirmId(row.req.id); return; } // cancel is not undoable: confirm first
-                        actedRef.current.set(row.req.id, requestPhase(row.req));
-                        performRequestAction(row.req.id, action);
-                      }}
+                      onAction={(action) => handleRowAction(row.req, action)}
                     />
                   ))}
                 </ul>
@@ -554,23 +559,18 @@ export function RequestsScreen({
               const selectedRequest = [...requests, ...incomingRequests].find((r) => r.id === selectedRequestId);
               return (
                 <>
-                  <div className="px-5 py-4 border-b border-border flex items-center justify-between">
-                    <div>
+                  <div className="px-5 py-3 border-b border-border flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+                    <div className="flex items-center gap-3 min-w-0">
                       {selectedRequestId !== null && (
                         <button
                           type="button"
                           onClick={() => setSelectedRequestId(null)}
-                          className="lg:hidden mb-1.5 inline-flex items-center gap-1 text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
+                          className="lg:hidden inline-flex items-center gap-1 text-[13px] font-semibold text-muted-foreground hover:text-foreground transition-colors"
                         >
                           <ArrowLeft size={14} aria-hidden="true" /> Requests
                         </button>
                       )}
                       <h3 className="font-semibold text-foreground">Coordination chat</h3>
-                      <p className="text-[13px] text-muted-foreground">
-                        {selectedRequest
-                          ? `REQ-${selectedRequest.id} · ${resolveFacilityName(selectedRequest.requesting_facility_id, selectedRequest.requesting_facility_name)} ↔ ${resolveFacilityName(selectedRequest.supplying_facility_id, selectedRequest.supplying_facility_name)} · ${selectedRequest.blood_type}${selectedRequest.component ? ` ${selectedRequest.component}` : ""} · ${selectedRequest.quantity} units`
-                          : "Open a request from the list to see its thread"}
-                      </p>
                     </div>
                     {selectedRequestId !== null && (
                       <div className="flex items-center gap-4">
@@ -584,23 +584,36 @@ export function RequestsScreen({
                             Receipt
                           </a>
                         )}
-                      <div
-                        role="status"
-                        className={`flex items-center gap-1.5 text-[13px] font-semibold ${
-                          chatLive === "live" ? "text-status-safe-text" : chatLive === "lost" ? "text-status-critical-text" : "text-muted-foreground"
-                        }`}
-                      >
-                        <span
-                          aria-hidden="true"
-                          className={`w-2 h-2 rounded-full ${
-                            chatLive === "live" ? "bg-status-safe animate-pulse" : chatLive === "lost" ? "bg-status-critical" : "bg-gray-400"
+                        <div
+                          role="status"
+                          className={`flex items-center gap-1.5 text-[13px] font-semibold ${
+                            chatLive === "live" ? "text-status-safe-text" : chatLive === "lost" ? "text-status-critical-text" : "text-muted-foreground"
                           }`}
-                        />
-                        {chatLive === "live" ? "Live" : chatLive === "lost" ? "Connection lost, retrying" : "Connecting…"}
-                      </div>
+                        >
+                          <span
+                            aria-hidden="true"
+                            className={`w-2 h-2 rounded-full ${
+                              chatLive === "live" ? "bg-status-safe animate-pulse" : chatLive === "lost" ? "bg-status-critical" : "bg-gray-400"
+                            }`}
+                          />
+                          {chatLive === "live" ? "Live" : chatLive === "lost" ? "Connection lost, retrying" : "Connecting…"}
+                        </div>
                       </div>
                     )}
                   </div>
+
+                  {/* The request's details, pinned above the thread: outside the scrolling area, so the messages scroll under it. */}
+                  {headerRow !== null && (
+                    <RequestHeader
+                      key={headerRow.req.id}
+                      row={headerRow}
+                      requester={resolveFacilityName(headerRow.req.requesting_facility_id, headerRow.req.requesting_facility_name)}
+                      supplier={resolveFacilityName(headerRow.req.supplying_facility_id, headerRow.req.supplying_facility_name)}
+                      busy={actionPendingId === headerRow.req.id}
+                      actionError={actionError?.id === headerRow.req.id ? actionError.message : null}
+                      onAction={(action) => handleRowAction(headerRow.req, action)}
+                    />
+                  )}
 
                   <div ref={chatRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
                     {selectedRequestId === null && (
@@ -636,32 +649,6 @@ export function RequestsScreen({
                         items={mergeThread(messages, detail.timeline)}
                         request={detail.request}
                         actingFacilityId={actingFacilityId}
-                        renderAction={(event) => {
-                          // The accept event is where the supplier confirms release; the release event is where the requester
-                          // confirms receipt. Only while that step is the one waiting, and only for the facility that owns it.
-                          const r = detail.request;
-                          const waitingOnRelease = r.status === "accepted" && !r.supplier_confirmed_at;
-                          const waitingOnReceipt = r.status === "accepted" && !!r.supplier_confirmed_at && !r.requester_confirmed_at;
-                          const action: RequestAction | null =
-                            event.kind === "accepted" && waitingOnRelease && actingFacilityId === r.supplying_facility.id ? "confirm-release"
-                            : event.kind === "released" && waitingOnReceipt && actingFacilityId === r.requesting_facility.id ? "confirm-receipt"
-                            : null;
-                          if (action === null) return null;
-                          const busy = actionPendingId === r.id;
-                          return (
-                            <div className="mt-2">
-                              <button
-                                type="button"
-                                onClick={() => performRequestAction(r.id, action)}
-                                disabled={busy}
-                                className="h-8 px-3 bg-primary text-white text-[13px] font-semibold rounded-md hover:bg-primary-hover transition-colors disabled:opacity-60"
-                              >
-                                {busy ? "Confirming…" : action === "confirm-release" ? "Confirm release" : "Confirm receipt"}
-                              </button>
-                              {actionError && <p role="alert" className="mt-1.5 text-[13px] text-status-critical-text">{actionError}</p>}
-                            </div>
-                          );
-                        }}
                       />
                     )}
                     {detail !== null && messages.length === 0 && (

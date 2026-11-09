@@ -1,5 +1,5 @@
 // Asserts the Requests screen's single inbox: its order, status wording and unread rule (lib/requestInbox.ts). Run: node scripts/check_request_inbox.ts
-import { buildInbox, counterpartName, inboxCounts, needsAction, inboxStatus, requestPhase, seedSeen, unreadKind, type InboxRow } from "../src/app/lib/requestInbox.ts";
+import { buildInbox, counterpartName, inboxCounts, needsAction, rowActions, rowFromDetail, inboxStatus, requestPhase, seedSeen, unreadKind, type InboxRow } from "../src/app/lib/requestInbox.ts";
 import type { RequestRow } from "../src/app/lib/requestTypes.ts";
 
 const eq = (a: unknown, b: unknown, m: string) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m}: ${JSON.stringify(a)} !== ${JSON.stringify(b)}`); };
@@ -63,6 +63,43 @@ eq(inboxStatus(row(req(1, "accepted", "restock", 0, { supplier_confirmed_at: rel
 eq(inboxStatus(row(req(1, "accepted", "restock", 0), "outgoing")).tone, "theirs", "requester waits for release");
 eq(inboxStatus(row(req(1, "accepted", "restock", 0, { supplier_confirmed_at: released }), "outgoing")), { text: "Released, confirm receipt", tone: "yours" }, "requester must confirm receipt");
 eq(inboxStatus(row(req(1, "failed", "restock", 0), "outgoing")), { text: "Failed", tone: "done" }, "finished");
+
+// the actions: one list for the row and the thread's header. Cancel is an action but not a move waiting on this facility.
+const rel = { supplier_confirmed_at: released };
+const done = { supplier_confirmed_at: released, requester_confirmed_at: released };
+eq(rowActions(row(req(1, "pending", "restock", 0), "incoming")), ["accept", "decline"], "incoming pending");
+eq(rowActions(row(req(1, "pending", "restock", 0), "outgoing")), ["cancel"], "outgoing pending");
+eq(rowActions(row(req(1, "accepted", "restock", 0), "incoming")), ["confirm-release"], "incoming accepted, not released");
+eq(rowActions(row(req(1, "accepted", "restock", 0, rel), "incoming")), [], "incoming released: the requester's move");
+eq(rowActions(row(req(1, "accepted", "restock", 0), "outgoing")), [], "outgoing not released: the supplier's move");
+eq(rowActions(row(req(1, "accepted", "restock", 0, rel), "outgoing")), ["confirm-receipt"], "outgoing released");
+eq(rowActions(row(req(1, "accepted", "restock", 0, done), "outgoing")), [], "received");
+for (const status of ["completed", "failed", "declined", "cancelled", "mystery"]) {
+  for (const d of ["incoming", "outgoing"] as const) eq(rowActions(row(req(1, status, "restock", 0, rel), d)), [], `no actions when ${status}`);
+}
+eq(needsAction(row(req(1, "pending", "restock", 0), "outgoing")), false, "cancelling is not a move waiting on you");
+// badge, header and row cannot disagree: the status tone says "yours" exactly when needsAction does, over every state
+for (const status of ["pending", "accepted", "completed", "failed", "declined", "cancelled"]) {
+  for (const extra of [{}, rel, done]) {
+    for (const d of ["incoming", "outgoing"] as const) {
+      const r = row(req(1, status, "restock", 0, extra), d);
+      eq(inboxStatus(r).tone === "yours", needsAction(r), `tone matches needsAction: ${status} ${d} ${JSON.stringify(extra)}`);
+      eq(needsAction(r), rowActions(r).some((a) => a !== "cancel"), "needsAction is rowActions without cancel");
+    }
+  }
+}
+
+// the header's row, from GET /requests/{id}: its own facilities, and direction by which side this facility is
+const detail: Parameters<typeof rowFromDetail>[0] = {
+  id: 77, status: "accepted", blood_type: "A-", component: "Platelets", quantity: 4, emergency_type: "trauma", created_at: new Date(T0).toISOString(),
+  supplier_confirmed_at: released, requester_confirmed_at: null,
+  requesting_facility: { id: 1, name: "Hospital", facility_type: "hospital", address: null }, supplying_facility: { id: 2, name: "Bank", facility_type: "bloodbank", address: null },
+};
+const fromDetail = rowFromDetail(detail, 1);
+eq([fromDetail.direction, fromDetail.req.id, fromDetail.req.blood_type, fromDetail.req.component, fromDetail.req.quantity], ["outgoing", 77, "A-", "Platelets", 4], "requester side is outgoing");
+eq([counterpartName(fromDetail), rowFromDetail(detail, 2).direction, counterpartName(rowFromDetail(detail, 2))], ["Bank", "incoming", "Hospital"], "supplier side is incoming; each sees the other");
+eq(rowActions(fromDetail), ["confirm-receipt"], "the header's row offers what the list's row would");
+eq(inboxStatus(fromDetail), inboxStatus({ req: { ...fromDetail.req }, direction: "outgoing" }), "same status from the same data");
 
 // counterpart is the other facility, and never blank
 eq(counterpartName(row(req(1, "pending", "restock", 0), "incoming")), "Hospital", "incoming: the requester");

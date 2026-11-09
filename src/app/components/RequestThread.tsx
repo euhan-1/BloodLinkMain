@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import { Ban, CheckCircle, Package, PackageCheck, Send, XCircle, type LucideIcon } from "lucide-react";
 import { formatTime } from "../lib/dateFormat";
 import {
@@ -17,11 +16,11 @@ const ICONS: Record<TimelineKind, LucideIcon> = {
 // say who acted. That is said inside the event instead: the facility's name leads the sentence in bold, "(you)" follows it
 // when it is this facility, and a bar on the left edge is the facility's accent colour for its own events and grey for the
 // other's, the same own/other colouring the bubbles' sender names use. When, and which of its accounts, is on the second line,
-// with "not recorded" where the request never captured it. `action` is a step this event calls for (confirm release on
-// the accept event, confirm receipt on the release event), shown only while that step is the one waiting.
+// with "not recorded" where the request never captured it. An event is the record, never an action: the step a request is
+// waiting on (confirm release, confirm receipt) is a button in the request's header (RequestHeader).
 function EventRow({
-  event, request, own, action,
-}: { event: TimelineEvent; request: RequestDetail["request"]; own: boolean; action?: ReactNode }) {
+  event, request, own,
+}: { event: TimelineEvent; request: RequestDetail["request"]; own: boolean }) {
   const Icon = ICONS[event.kind];
   const who = event.facility_name ?? "A facility";
   const sentence = describeEvent(event, request);
@@ -41,7 +40,6 @@ function EventRow({
           <time dateTime={event.at ?? undefined}>{eventTimeText(event)}</time>
           <span>{eventAccountText(event)}</span>
         </p>
-        {action}
       </div>
     </div>
   );
@@ -78,12 +76,11 @@ function DaySeparator({ label }: { label: string }) {
 
 // The coordination chat and the request's history as one thread, in time order.
 export function RequestThread({
-  items, request, actingFacilityId, renderAction,
+  items, request, actingFacilityId,
 }: {
   items: ThreadItem<Message>[];
   request: RequestDetail["request"];
   actingFacilityId: number | null;
-  renderAction?: (event: TimelineEvent) => ReactNode;
 }) {
   return (
     <>
@@ -91,7 +88,7 @@ export function RequestThread({
         item.type === "day" ? (
           <DaySeparator key={(item as DayMarker).key} label={(item as DayMarker).label} />
         ) : item.type === "event" ? (
-          <EventRow key={item.key} event={item.event} request={request} own={item.event.facility_id === actingFacilityId} action={renderAction?.(item.event)} />
+          <EventRow key={item.key} event={item.event} request={request} own={item.event.facility_id === actingFacilityId} />
         ) : (
           <MessageBubble key={item.key} msg={item.message} own={item.message.sender_facility_id === actingFacilityId} />
         ),

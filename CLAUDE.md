@@ -191,8 +191,11 @@ requests, SARIMAX demand forecasting, donor broadcast.
   facility had sent that were still pending, which for a hospital was everything it was waiting for and for a bank left out its
   whole incoming side. The supplier's incoming list is polled only while that tab is open, so the badge's incoming part is as fresh as
   the last visit to the tab (or the load at mount); its outgoing part is polled on every tab. Request and chats is for work in flight only (awaiting a decision, awaiting release, awaiting receipt): finished
-  transfers are in Transfer history, whose rows open their thread and receipt. Confirm release sits on the accept event and confirm
-  receipt on the release event (the cards keep them too); events stay full width, never aligned to a side. An
+  transfers are in Transfer history, whose rows open their thread and receipt. Events are the record, not action surfaces: confirm release and confirm
+  receipt are buttons in the open request's header (`RequestHeader`, above the thread, always visible) and on its inbox row, both
+  from `rowActions` in `lib/requestInbox.ts`, so they cannot disagree; an action that fails shows its error in that header
+  (a failure opens the request's thread so it is seen, since a narrow screen shows the list or the thread, never both). Events
+  stay full width, never aligned to a side. An
   event is listed whenever status and timestamps show it happened; a time or account never captured is None and reads
   "not recorded", never omitted. An event's account is the account's email (not an id), shown to both facilities. The
   receipt (`/receipt/{id}`, `screens/Receipt.tsx`, printable via `print:` classes) renders the same `timeline` and
