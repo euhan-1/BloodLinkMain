@@ -44,7 +44,7 @@ import email_service
 import geocode_service
 import server_timing
 import upload_limits
-from database import engine
+from database import engine, read_engine, retry_read
 
 load_dotenv()
 
@@ -333,18 +333,23 @@ AUTH_ACTIVE_CACHE_SECONDS = 30
 _active_account_until: dict[int, float] = {}  # user id -> time.monotonic() until which the last check still counts
 
 
-def _assert_account_active(user_id: int) -> None:
-    now = time.monotonic()
-    if _active_account_until.get(user_id, 0.0) > now:
-        return
-    with engine.connect() as conn:
-        row = conn.execute(
+@retry_read
+def _lookup_account(user_id: int):
+    with read_engine.connect() as conn:
+        return conn.execute(
             text(
                 "SELECT u.facility_id, f.is_active AS facility_is_active FROM users u "
                 "LEFT JOIN facilities f ON f.id = u.facility_id WHERE u.id = :id"
             ),
             {"id": user_id},
         ).mappings().first()
+
+
+def _assert_account_active(user_id: int) -> None:
+    now = time.monotonic()
+    if _active_account_until.get(user_id, 0.0) > now:
+        return
+    row = _lookup_account(user_id)
     if row is None:
         _active_account_until.pop(user_id, None)
         raise HTTPException(status_code=401, detail="this account no longer exists, please log in again")
@@ -525,6 +530,38 @@ def _resolve_notifications(conn, facility_id: int, notif_type: str, link: str) -
     ).rowcount
 
 
+# The ONE definition of "this unread notification is no longer true" (see _resolve_stale_notifications). The UPDATE that marks such rows
+# read and the unread count that leaves them out both use it, so the badge can never disagree with what the sweep would do. Needs the
+# notifications table aliased `n`, and :today (the Manila business date).
+_STALE_NOTIFICATION_SQL = """
+(
+  -- an offer of expiring units, once the date it names has passed
+  (
+    n.type = 'expiring_unit_alert'
+    AND n.message ~ 'expires? (today|in [0-9]+ days?)'
+    AND (n.created_at AT TIME ZONE 'Asia/Manila')::date
+        + COALESCE((substring(n.message from 'expires? in ([0-9]+) days?'))::int, 0) < :today
+  )
+  -- anything about a request that is gone, or that no longer needs the prompt
+  OR (
+    n.link ~ '^requests:[0-9]+$'
+    AND (
+      NOT EXISTS (SELECT 1 FROM requests r WHERE r.id = (substring(n.link from '^requests:([0-9]+)$'))::bigint)
+      OR EXISTS (
+          SELECT 1 FROM requests r
+          WHERE r.id = (substring(n.link from '^requests:([0-9]+)$'))::bigint
+            AND (
+              (n.type = 'incoming_request' AND r.status <> 'pending')
+              OR (n.type = 'receipt_needed'
+                  AND (r.requester_confirmed_at IS NOT NULL OR r.status IN ('completed', 'failed')))
+            )
+      )
+    )
+  )
+)
+"""
+
+
 def _resolve_stale_notifications(conn, facility_id: Optional[int], today: Optional[date] = None) -> int:
     """Resolves (marks read) the unread notifications whose truth has already gone: the request no longer exists, an
     incoming_request whose request is no longer pending, a receipt prompt whose receipt has been confirmed, and an
@@ -540,35 +577,11 @@ def _resolve_stale_notifications(conn, facility_id: Optional[int], today: Option
     today = today or business_today()
     return conn.execute(
         text(
-            """
+            f"""
             UPDATE notifications n SET read_at = now()
             WHERE n.read_at IS NULL
               AND (CAST(:facility_id AS bigint) IS NULL OR n.facility_id = :facility_id)
-              AND (
-                -- an offer of expiring units, once the date it names has passed
-                (
-                  n.type = 'expiring_unit_alert'
-                  AND n.message ~ 'expires? (today|in [0-9]+ days?)'
-                  AND (n.created_at AT TIME ZONE 'Asia/Manila')::date
-                      + COALESCE((substring(n.message from 'expires? in ([0-9]+) days?'))::int, 0) < :today
-                )
-                -- anything about a request that is gone, or that no longer needs the prompt
-                OR (
-                  n.link ~ '^requests:[0-9]+$'
-                  AND (
-                    NOT EXISTS (SELECT 1 FROM requests r WHERE r.id = (substring(n.link from '^requests:([0-9]+)$'))::bigint)
-                    OR EXISTS (
-                        SELECT 1 FROM requests r
-                        WHERE r.id = (substring(n.link from '^requests:([0-9]+)$'))::bigint
-                          AND (
-                            (n.type = 'incoming_request' AND r.status <> 'pending')
-                            OR (n.type = 'receipt_needed'
-                                AND (r.requester_confirmed_at IS NOT NULL OR r.status IN ('completed', 'failed')))
-                          )
-                    )
-                  )
-                )
-              )
+              AND {_STALE_NOTIFICATION_SQL}
             """
         ),
         {"facility_id": facility_id, "today": today},
@@ -926,6 +939,24 @@ def _shortage_message(blood_type: str, alert: dict, recommendation: Optional[dic
     days = alert["days_until_threshold"]
     when = "today" if days <= 0 else f"around {_format_day_month(today + timedelta(days=days))}"
     return f"{blood_type}: {_SHORTAGE_MSG_HEAD} {when}."
+
+
+def _read_tracked_alert_types(conn, facility_id: int) -> list[str]:
+    """The blood types currently marked alerting for this facility (forecast_alert_state)."""
+    return list(conn.execute(
+        text("SELECT blood_type FROM forecast_alert_state WHERE facility_id = :facility_id AND alerting = TRUE"),
+        {"facility_id": facility_id},
+    ).scalars().all())
+
+
+def _shortage_check_needs_writes(tracked: list[str], alerts: list[dict], evaluated_types: Optional[set[str]] = None) -> bool:
+    """Whether _check_forecast_shortage_notifications would write anything, given the alert state read a moment ago: a type alerting
+    that is not yet tracked (to flip on and notify), or a tracked type in `evaluated_types` that is no longer alerting (to clear).
+    The mirror of that function's two loops; tests/test_forecast_one_connection.py runs both over the same cases."""
+    alerting = {a["type"] for a in alerts}
+    tracked_now = set(tracked)
+    still_tracked = tracked_now if evaluated_types is None else tracked_now & evaluated_types
+    return bool(alerting - tracked_now) or bool(still_tracked - alerting)
 
 
 def _check_forecast_shortage_notifications(
@@ -1701,7 +1732,7 @@ def _fit_and_cache_sarimax(
 
 def _collect_sarimax_results(
     facility_id: int, daily_by_type: dict[str, list[tuple[date, int]]], today: date,
-    observed_dates: Optional[set[date]] = None,
+    observed_dates: Optional[set[date]] = None, prefetched_cache: Optional[dict[str, Optional[dict]]] = None,
 ) -> tuple[dict[str, Optional[dict]], list[str]]:
     """Returns ({type: result-or-None}, pending_types). A type with a result is
     ready; one mapped to None had an unusable fit (caller uses the linear trend);
@@ -1723,8 +1754,11 @@ def _collect_sarimax_results(
             results[blood_type] = None
         else:
             fittable[blood_type] = series
-    with engine.connect() as conn:
-        cached_by_type = _read_cached_sarimax_many(conn, facility_id, fittable, today)  # one read for every type
+    if prefetched_cache is not None:
+        cached_by_type = prefetched_cache  # already read, in the caller's transaction (see get_forecast)
+    else:
+        with engine.connect() as conn:
+            cached_by_type = _read_cached_sarimax_many(conn, facility_id, fittable, today)  # one read for every type
     for blood_type in fittable:
         cached = cached_by_type[blood_type]
         if cached is not None:
@@ -2377,14 +2411,19 @@ if server_timing.enabled():
     app.add_middleware(server_timing.ServerTimingMiddleware)
 
 
+@retry_read
+def _check_database() -> None:
+    with read_engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+
+
 @app.get("/health")
 def health():
     """Liveness plus a database check, for UptimeRobot and the login page's warm-up ping. Deliberately says nothing else: a failure
     is a bare 503 (the database error can carry the host, port and user, so it goes to the server log, never the response), and a
     success is just "ok". The allowed CORS origins are no longer listed here; see DEPLOYMENT.md for how to check them."""
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        _check_database()
     except Exception as exc:
         print(f"[health] database check failed: {type(exc).__name__}: {exc}")
         return Response(status_code=503)
@@ -2419,17 +2458,26 @@ def list_notifications(limit: int = NOTIFICATIONS_PAGE_SIZE, before_id: Optional
 
 
 @app.get("/notifications/unread-count")
+@retry_read
 def notifications_unread_count(facility_id: int = Depends(get_acting_facility_id)):
     """The bell's badge: how many notifications this facility has unread, all of them, not only the newest page.
-    `latest_id` is the newest row's id (read or not), so the bell can tell a new arrival from a count that merely changed."""
-    with engine.begin() as conn:
-        _resolve_stale_notifications(conn, facility_id)
+    `latest_id` is the newest row's id (read or not), so the bell can tell a new arrival from a count that merely changed.
+
+    A pure read, one statement. It used to run _resolve_stale_notifications (an UPDATE) first, on every poll, so that a notice whose
+    request had moved on stopped counting. It now leaves those rows out of the count with the same condition
+    (_STALE_NOTIFICATION_SQL) and writes nothing: the number is the one the sweep would have produced. The rows themselves are
+    marked read where they always were besides this: at the event, and when the list is opened (GET /notifications)."""
+    today = business_today()
+    with read_engine.connect() as conn:
         row = conn.execute(
             text(
-                "SELECT count(*) FILTER (WHERE read_at IS NULL) AS unread, COALESCE(max(id), 0) AS latest_id "
-                "FROM notifications WHERE facility_id = :facility_id"
+                f"""
+                SELECT count(*) FILTER (WHERE n.read_at IS NULL AND NOT COALESCE({_STALE_NOTIFICATION_SQL}, false)) AS unread,
+                       COALESCE(max(n.id), 0) AS latest_id
+                FROM notifications n WHERE n.facility_id = :facility_id
+                """
             ),
-            {"facility_id": facility_id},
+            {"facility_id": facility_id, "today": today},
         ).mappings().first()
     return {"unread": row["unread"], "latest_id": row["latest_id"]}
 
@@ -2663,6 +2711,7 @@ def create_inventory_unit(body: CreateInventoryUnitBody, facility_id: int = Depe
 
 
 @app.get("/inventory")
+@retry_read
 def get_inventory(facility_id: int = Depends(get_acting_facility_id)):
     """The logged-in user's own facility's stock only — blood_units holds every
     facility's inventory (for the availability search), so this must filter.
@@ -2673,7 +2722,7 @@ def get_inventory(facility_id: int = Depends(get_acting_facility_id)):
     POST /inventory/archive-expired. Only excludes units already archived,
     so the working list declutters once that backlog is cleared without
     losing the rows (archived_at IS NULL, never a DELETE)."""
-    with engine.connect() as conn:
+    with read_engine.connect() as conn:
         rows = conn.execute(
             text(
                 """
@@ -2790,6 +2839,7 @@ USABLE_COUNTS_SQL = """
 
 
 @app.get("/inventory/summary")
+@retry_read
 def get_inventory_summary(facility_id: int = Depends(get_acting_facility_id)):
     """Per-type USABLE unit counts (the logged-in user's own facility)
     against this facility's own configured minimum thresholds.
@@ -2815,7 +2865,7 @@ def get_inventory_summary(facility_id: int = Depends(get_acting_facility_id)):
     figure subtracts the type's one minimum, exactly as the search does (a known limitation, while platelets are rare).
     """
     today = business_today()
-    with engine.connect() as conn:
+    with read_engine.connect() as conn:
         # The facility's type rides along on the same read (it used to be a second statement).
         rows = conn.execute(
             text(
@@ -3536,17 +3586,30 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
                 "restock_status": None,
             }
 
-    first_date = distinct_dates[0]
-    observed_dates = set(distinct_dates)
-    by_type: dict[str, list[tuple[int, int]]] = {}
-    raw_units_by_type: dict[str, dict[date, int]] = {}
-    for row in history_rows:
-        x = (row["snapshot_date"] - first_date).days
-        by_type.setdefault(row["blood_type"], []).append((x, row["units"]))
-        raw_units_by_type.setdefault(row["blood_type"], {})[row["snapshot_date"]] = row["units"]
+        # Everything the warm path needs from the database, read in THIS transaction: the history is already here, so the series are
+        # built here, and the cache and the alert state are read here too. Before, each came from its own connection (three
+        # round trips of overhead apiece). The transaction still ends before anything slow: a fit (cold path) happens after the
+        # commit, with the snapshot row locks released.
+        first_date = distinct_dates[0]
+        observed_dates = set(distinct_dates)
+        by_type: dict[str, list[tuple[int, int]]] = {}
+        raw_units_by_type: dict[str, dict[date, int]] = {}
+        for row in history_rows:
+            x = (row["snapshot_date"] - first_date).days
+            by_type.setdefault(row["blood_type"], []).append((x, row["units"]))
+            raw_units_by_type.setdefault(row["blood_type"], {})[row["snapshot_date"]] = row["units"]
 
-    today_offset = (today - first_date).days
-    use_sarimax = days_of_history >= SARIMAX_MIN_DAYS_REQUIRED
+        today_offset = (today - first_date).days
+        use_sarimax = days_of_history >= SARIMAX_MIN_DAYS_REQUIRED
+        daily_by_type: dict[str, list[tuple[date, int]]] = {}
+        prefetched_cache: Optional[dict[str, Optional[dict]]] = None
+        if use_sarimax:
+            daily_by_type = {bt: _resample_daily_series(raw_units_by_type[bt], observed_dates, today) for bt in by_type}
+            prefetched_cache = _read_cached_sarimax_many(
+                conn, facility_id, {bt: sr for bt, sr in daily_by_type.items() if len(sr) >= SARIMAX_MIN_DAYS_REQUIRED}, today
+            )
+        tracked_alert_types = _read_tracked_alert_types(conn, facility_id)
+
     sarimax_fallback_types: list[str] = []
     alerts = []
     restock_recommendations = []
@@ -3564,14 +3627,12 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
     upper_by_checkpoint = {c: 0 for c in FORECAST_CHECKPOINTS}
     band_available = False
 
-    daily_by_type: dict[str, list[tuple[date, int]]] = {}
     sarimax_by_type: dict[str, Optional[dict]] = {}
     pending_types: list[str] = []
     if use_sarimax:
-        daily_by_type = {
-            bt: _resample_daily_series(raw_units_by_type[bt], observed_dates, today) for bt in by_type
-        }
-        sarimax_by_type, pending_types = _collect_sarimax_results(facility_id, daily_by_type, today, observed_dates)
+        sarimax_by_type, pending_types = _collect_sarimax_results(
+            facility_id, daily_by_type, today, observed_dates, prefetched_cache=prefetched_cache
+        )
 
     for blood_type, points in by_type.items():
         if blood_type in pending_types:
@@ -3719,13 +3780,17 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
         for c in FORECAST_CHECKPOINTS
     ] if not pending_types else []
 
-    with engine.begin() as conn:
-        # Same thresholds as the Dashboard: a type on limited history shows "not enough history" there, so it is not notified.
-        _check_forecast_shortage_notifications(
-            conn, facility_id, [a for a in alerts if a["type"] not in limited_history_types],
-            evaluated_types=set(by_type) - set(pending_types),
-            recommendations={r["blood_type"]: r for r in restock_recommendations}, today=today,
-        )
+    # Same thresholds as the Dashboard: a type on limited history shows "not enough history" there, so it is not notified.
+    shortage_alerts = [a for a in alerts if a["type"] not in limited_history_types]
+    evaluated_types = set(by_type) - set(pending_types)
+    # The usual load finds the same shortages as the last one: nothing to flip on or clear, so no connection is opened at all. When
+    # there is something to write, the check re-reads the state itself, so two concurrent loads still produce one notification.
+    if _shortage_check_needs_writes(tracked_alert_types, shortage_alerts, evaluated_types):
+        with engine.begin() as conn:
+            _check_forecast_shortage_notifications(
+                conn, facility_id, shortage_alerts, evaluated_types=evaluated_types,
+                recommendations={r["blood_type"]: r for r in restock_recommendations}, today=today,
+            )
 
     restock_recommendations.sort(key=lambda r: r["days_until_breach"])
     downside_risks.sort(key=lambda r: r["days_until_risk"])
@@ -3772,12 +3837,13 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
 
 
 @app.get("/facilities")
+@retry_read
 def list_facilities(user: dict = Depends(get_current_user)):
     """Plain facility list — resolves facility names on the Requests screen and powers the dev-only facility switcher dropdown.
     Requires a login (any account): it used to be public, and no screen the signed-out visitor sees (sign-in, registration)
     calls it. A deactivated facility still does not appear here — is_active is an access gate (see
     admin_update_facility_status)."""
-    with engine.connect() as conn:
+    with read_engine.connect() as conn:
         rows = conn.execute(
             text("SELECT id, name, facility_type FROM facilities WHERE is_active ORDER BY facility_type, name")
         ).mappings().all()
@@ -4427,6 +4493,7 @@ OFFERABLE_UNITS_SQL = "archived_at IS NULL AND reserved_for_request_id IS NULL"
 
 
 @app.get("/inventory/expiring")
+@retry_read
 def get_expiring_inventory(facility_id: int = Depends(get_acting_facility_id)):
     """The facility's units that expire within NOTIFY_EXPIRY_NEAR_DAYS (today included), grouped by blood type, component and
     expiry date, soonest first, for the Dashboard: a bank holding hundreds of units wants "3 units of O+ expire on 2 Nov",
@@ -4435,7 +4502,7 @@ def get_expiring_inventory(facility_id: int = Depends(get_acting_facility_id)):
 
     This is where expiring units live; it writes no notification (the old once-per-tier unit_expiry notification is gone)."""
     today = business_today()
-    with engine.connect() as conn:
+    with read_engine.connect() as conn:
         rows = conn.execute(
             text(
                 f"""
@@ -4757,11 +4824,12 @@ _FAILED_UNITS_SQL = """
 
 
 @app.get("/requests")
+@retry_read
 def list_requests(facility_id: int = Depends(get_acting_facility_id)):
     """The logged-in user's own facility's outgoing requests, with pending ones
     priority-sorted (see _apply_priority_sort) and all other statuses left in
     natural order."""
-    with engine.connect() as conn:
+    with read_engine.connect() as conn:
         rows = conn.execute(
             text(
                 f"""
@@ -4781,10 +4849,11 @@ def list_requests(facility_id: int = Depends(get_acting_facility_id)):
 
 
 @app.get("/requests/incoming")
+@retry_read
 def list_incoming_requests(facility_id: int = Depends(get_acting_facility_id)):
     """Requests where the acting facility (dev switcher, or Riverside by
     default) is the supplier — the "what do I need to act on" inbox."""
-    with engine.connect() as conn:
+    with read_engine.connect() as conn:
         rows = conn.execute(
             text(
                 f"""
@@ -6149,12 +6218,13 @@ def update_password(body: UpdatePasswordBody, user: dict = Depends(get_current_u
 
 
 @app.get("/auth/me")
+@retry_read
 def get_me(user: dict = Depends(get_current_user)):
     """Re-checks the logged-in user's facility fresh from the DB — used on
     app load so a stale localStorage session (e.g. profile_completed flipped
     true in a different tab, or by an admin) doesn't gate someone into a
     profile-completion screen they've already finished, or the reverse."""
-    with engine.connect() as conn:
+    with read_engine.connect() as conn:
         row = conn.execute(
             text(
                 """

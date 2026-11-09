@@ -13,6 +13,7 @@ How BloodLink is deployed and what it needs from its environment. Environment va
 - **512 MB of memory and a throttled CPU.** scikit-learn and joblib would exhaust the memory, so production installs `server/requirements.txt` only. `requirements-dev.txt` is for local work.
 - **The instance sleeps after about 15 minutes idle**, and the next request pays a cold start. UptimeRobot pings the backend to limit this (`GET /health` is the lightweight endpoint for it).
 - **One SARIMAX fit takes about 12–20 s deployed** (about 0.3 s locally). A forecast request therefore fits at most 2 blood types and reports the rest in `pending_types`, which the dashboard polls.
+- **Two database pools.** The normal engine (up to 15 connections) and a small read engine (up to 8) for endpoints that only read. Both need the Supabase pooler in **session mode** (port 5432): the read engine marks each session `default_transaction_read_only`, which a transaction-mode pooler would not keep, and the forecast's advisory lock is session-scoped. Supabase reports `max_connections = 60`; the pooler's own per-user limit is not visible from here, so if you lower it, keep it above 23.
 - **Outbound SMTP is blocked**, so email goes out through an HTTP provider (see below).
 - The rest of the service configuration (Python version, build command, root directory) is set in the Render dashboard and is not recorded in this repository.
 

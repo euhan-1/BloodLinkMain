@@ -29,7 +29,7 @@ class HealthTests(unittest.TestCase):
         broken = mock.MagicMock()
         broken.connect.side_effect = OperationalError("SELECT 1", {}, Exception(SECRET_DETAIL))
         log = io.StringIO()
-        with mock.patch.object(app, "engine", broken), redirect_stdout(log):
+        with mock.patch.object(app, "read_engine", broken), redirect_stdout(log):
             response = app.health()
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.body, b"")                       # no detail at all
@@ -40,7 +40,7 @@ class HealthTests(unittest.TestCase):
     def test_through_the_real_app_a_failure_has_no_body_and_no_detail(self):
         broken = mock.MagicMock()
         broken.connect.side_effect = OperationalError("SELECT 1", {}, Exception(SECRET_DETAIL))
-        with mock.patch.object(app, "engine", broken), redirect_stdout(io.StringIO()):
+        with mock.patch.object(app, "read_engine", broken), redirect_stdout(io.StringIO()):
             status, body = asyncio.run(asgi("GET", "/health"))
         self.assertEqual((status, body), (503, b""))
 

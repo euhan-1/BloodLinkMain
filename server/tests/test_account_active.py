@@ -10,7 +10,7 @@ from sqlalchemy import event, text
 
 import auth
 import main as app
-from database import engine
+from database import engine, read_engine
 
 
 def bearer(user_id, facility_id, role="staff"):
@@ -44,11 +44,13 @@ class AccountActiveTests(unittest.TestCase):
     def statements(self, fn):
         seen = []
         record = lambda *a: seen.append(a[2])  # noqa: E731
-        event.listen(engine, "before_cursor_execute", record)
+        for e in (engine, read_engine):
+            event.listen(e, "before_cursor_execute", record)
         try:
             fn()
         finally:
-            event.remove(engine, "before_cursor_execute", record)
+            for e in (engine, read_engine):
+                event.remove(e, "before_cursor_execute", record)
         return seen
 
     def test_an_active_account_passes(self):

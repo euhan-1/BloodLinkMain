@@ -12,7 +12,7 @@ from datetime import timedelta
 from sqlalchemy import event, text
 
 import main as app
-from database import engine
+from database import engine, read_engine
 from tests.test_expired_transfer import TODAY, make_pair
 from tests.test_request_component import add
 
@@ -27,11 +27,13 @@ def statements():
     def record(conn, cursor, statement, parameters, context, executemany):
         seen.append(" ".join(statement.split()))
 
-    event.listen(engine, "before_cursor_execute", record)
+    for e in (engine, read_engine):  # a read endpoint now uses the read engine, a writing one the normal engine
+        event.listen(e, "before_cursor_execute", record)
     try:
         yield seen
     finally:
-        event.remove(engine, "before_cursor_execute", record)
+        for e in (engine, read_engine):
+            event.remove(e, "before_cursor_execute", record)
 
 
 class SummaryRoundTripsTests(unittest.TestCase):

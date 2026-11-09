@@ -182,7 +182,9 @@ class SweepTests(FlowBase):
         # there is no date limit: a row from before the notification rebuild resolves like any other
         ancient = self.row(self.bank, "incoming_request", "requests:2000000000", created_at=datetime(2026, 8, 21, 9, 0, tzinfo=timezone.utc))
         recent = self.row(self.bank, "incoming_request", "requests:2000000001", created_at=WRITTEN)
-        app.notifications_unread_count(facility_id=self.bank)
+        self.assertEqual(app.notifications_unread_count(facility_id=self.bank)["unread"], 0)  # the count already leaves them out...
+        self.assertEqual((self.read(ancient), self.read(recent)), (False, False))               # ...without writing anything
+        app.list_notifications(facility_id=self.bank)                                          # the sweep that marks them is the list's
         self.assertEqual((self.read(ancient), self.read(recent)), (True, True))
 
     def test_the_sweep_derives_each_rule_from_the_requests_state(self):
@@ -438,7 +440,9 @@ class OfferResolutionTests(unittest.TestCase):
             app.list_notifications(facility_id=self.hospital)
         self.assertFalse(self.resolved(nid))
         with mock.patch.object(app, "business_today", return_value=manila_day + timedelta(days=2)):
-            self.assertEqual(app.notifications_unread_count(facility_id=self.hospital)["unread"], 0)
+            self.assertEqual(app.notifications_unread_count(facility_id=self.hospital)["unread"], 0)   # not counted, and not written:
+            self.assertFalse(self.resolved(nid))
+            app.list_notifications(facility_id=self.hospital)                                           # marked when the list is opened
         self.assertTrue(self.resolved(nid))
 
     def test_an_offer_whose_text_it_cannot_read_is_left_alone(self):

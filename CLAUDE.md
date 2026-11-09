@@ -27,11 +27,26 @@ requests, SARIMAX demand forecasting, donor broadcast.
 - Render CPU is far slower than local: one SARIMAX fit ≈ 0.3 s local, 12–20 s
   deployed. Budget from the deployed number, never the local one.
 - **A request's cost is its round trips, not its rows.** API to Supabase is about 130 ms a round trip (measured 2026-11-09 from
-  `/health` against a page with no database call, and reproduced through a delaying proxy: `server/` endpoints cost 130 ms times the
-  statements they send). Every `engine.connect()`/`begin()` also costs three before your first query: the pool's pre-ping, `BEGIN`,
-  and the closing `ROLLBACK`/`COMMIT`. So count statements and connections, batch per-type or per-component reads into one
-  statement, and don't open a second connection where one will do. A response's `Server-Timing` header (`app`, `db`, durations
-  only; `SERVER_TIMING=false` turns it off) separates server time from network time in DevTools.
+  `/health` against a page with no database call, and reproduced through a delaying proxy: endpoints cost 130 ms times the
+  statements they send). Count statements and connections, batch per-type or per-component reads into one statement, and don't open
+  a second connection where one will do. Two engines (`database.py`):
+  - **`read_engine`, for endpoints that never write**: autocommit (no `BEGIN`/`COMMIT`), no pre-ping, every connection set
+    `default_transaction_read_only` so a stray write fails at the database instead of committing by itself, and the function wrapped
+    in `@retry_read` (a dead pooled connection, e.g. after Render's sleep, discards the pool and runs the read once more). A read
+    costs **one round trip** per statement. A new read-only endpoint goes here; `tests/test_read_engine.py` scans the listed
+    functions for writes and for the normal engine, so add yours to `READ_ONLY_FUNCTIONS`. Needs the pooler in **session mode**
+    (port 5432): the read-only setting is per session. Autocommit is exactly what READ COMMITTED (the production default) already
+    gave each statement; if a read ever needs one snapshot across statements it does not belong on this engine.
+  - **`engine`, for anything that writes or needs a transaction**: pre-ping (`SELECT 1`) on every checkout, plus `BEGIN` and
+    `COMMIT`/`ROLLBACK`: **three round trips before your first query**. The pre-ping stays here because a write cannot be retried
+    after a dead-connection error, and checking only after a connection has been idle would let a connection that died a few seconds
+    ago fail a user's write.
+  `GET /forecast` writes (today's snapshot, the alert state), so it is on `engine`, but its warm path is one connection and one
+  transaction (snapshot write, history, cache and alert state together; a second connection only when an alert must be written),
+  and a fit always happens after that transaction has committed. `GET /notifications/unread-count` is a pure read: it leaves the rows
+  `_STALE_NOTIFICATION_SQL` calls resolved out of the count instead of updating them (the sweep that marks them read runs at the event
+  and when the list is opened). A response's `Server-Timing` header (`app`, `db`, durations only; `SERVER_TIMING=false` turns it
+  off) separates server time from network time in DevTools.
 
 ## Conventions that bite
 
@@ -247,7 +262,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (668 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (691 tests plus
   160 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
