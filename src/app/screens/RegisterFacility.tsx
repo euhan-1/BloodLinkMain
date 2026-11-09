@@ -240,7 +240,7 @@ export function RegisterFacilityScreen() {
                 <input
                   id={`${uid}-email`}
                   type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)}
-                  placeholder="facility@email.com"
+                  placeholder="name@facility.com"
                   aria-describedby={`${uid}-email-hint`}
                   className={FIELD}
                 />

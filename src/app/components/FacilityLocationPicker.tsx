@@ -222,7 +222,7 @@ export function FacilityLocationFields({
             </div>
           </>
         )}
-        {geocodeError && <p className="text-[13px] text-status-critical-text mt-1.5">{geocodeError}</p>}
+        {geocodeError && <p role="alert" className="text-[13px] text-status-critical-text mt-1.5">{geocodeError}</p>}
       </div>
 
       <div>
