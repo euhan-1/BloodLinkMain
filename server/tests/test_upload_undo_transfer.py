@@ -8,7 +8,6 @@ deleted by its undo (its prior values aren't recorded, so it is left as is).
 
 Needs the scratch database from conftest.py (TEST_DATABASE_URL).
 """
-import asyncio
 import io
 import unittest
 import uuid
@@ -49,8 +48,8 @@ class UndoAfterTransferTests(unittest.TestCase):
             for din, loc, days in [(f"{tag}-1", "Fridge A", 10), (f"{tag}-2", "Fridge A", 11),
                                    (f"{tag}-3", "Fridge A", 30), (f"{tag}-OLD", "Fridge B", 60)]
         )
-        body = asyncio.run(app.upload_inventory(
-            file=UploadFile(file=io.BytesIO(csv_text.encode()), filename="u.csv"), facility_id=bank, uploaded_by=None))
+        body = app.upload_inventory(
+            file=UploadFile(file=io.BytesIO(csv_text.encode()), filename="u.csv"), facility_id=bank, uploaded_by=None)
         self.assertEqual(body["rows_processed"], 4)
         upload_id = q("SELECT id FROM upload_history WHERE facility_id = :f", f=bank)[0][0]
 

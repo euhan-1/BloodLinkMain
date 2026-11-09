@@ -211,6 +211,19 @@ _ORDER_SELECTION_LOCK_NAMESPACE = 7302  # a SEPARATE advisory-lock namespace fro
 # fallback, whichever is available right now, so it never needs to wait on
 # selection.
 
+
+def _auto_order_selection_enabled() -> bool:
+    """Whether a successful historical upload starts order selection in the background. OFF unless
+    AUTO_ORDER_SELECTION_AFTER_UPLOAD is true/1/yes/on. Read on every call so a test (or an operator restarting with the variable
+    changed) needs no import-time state.
+
+    Off by default because the task is not harmless on the deployed instance: it runs up to MAX_ORDER_SELECTIONS_PER_BACKGROUND_RUN
+    types x 72 SARIMAX fits in the one web process (a fit is 12-20 s deployed, so tens of minutes: ESTIMATED from that figure, never
+    measured), it competes for the CPU with every request, it upserts over any existing facility_sarimax_order row (and gives the
+    type a new soundness baseline), and it deletes that type's cached forecast so the next dashboard load must refit. Selection is
+    offline work: server/select_orders.py, run by hand after dumping the facility's rows (CLAUDE.md)."""
+    return os.environ.get("AUTO_ORDER_SELECTION_AFTER_UPLOAD", "false").strip().lower() in ("true", "1", "yes", "on")
+
 # CONVERGENCE, beyond mle_retvals.converged (see _sarimax_fit_is_sane). Northside O+
 # investigation (2026-09): the training-window (390-day) SELECTION fit for O+'s winning
 # order (1,0,2)x(1,0,1,7) converged cleanly (corrected Ljung-Box 0.44-0.80, 0/28 residual
@@ -1910,7 +1923,8 @@ def _run_order_selection_for_facility(facility_id: int, max_types: Optional[int]
         shared database from a real machine, so Render's CPU budget never
         enters into it at all. Passes max_types=None: every eligible type,
         every run.
-      - upload_historical_inventory_snapshots's BackgroundTasks trigger —
+      - upload_historical_inventory_snapshots's BackgroundTasks trigger, which is OFF unless AUTO_ORDER_SELECTION_AFTER_UPLOAD=true
+        (see _auto_order_selection_enabled for why) —
         passes MAX_ORDER_SELECTIONS_PER_BACKGROUND_RUN (2), so an unattended
         facility (nobody ever running the script for it) still makes bounded
         progress after each upload instead of one very long background task.
@@ -2922,7 +2936,7 @@ def _parse_inventory_csv(csv_text: str) -> tuple[list[dict], list[dict]]:
 
 
 @app.post("/inventory/upload")
-async def upload_inventory(
+def upload_inventory(
     file: UploadFile = File(...),
     facility_id: int = Depends(get_acting_facility_id),
     uploaded_by: Optional[int] = Depends(get_acting_user_id),
@@ -2942,11 +2956,15 @@ async def upload_inventory(
     The INSERT ... ON CONFLICT ... WHERE facility_id = :facility_id below
     does the ownership check atomically in the same statement as the
     insert/update, so there's no separate SELECT-then-write race window.
+
+    A plain `def`, not `async def`: the CSV parse and the database work block, so FastAPI runs this in its threadpool instead of
+    on the event loop, where it would stop every other request on the instance until it finished. `file.file` is the
+    upload's own synchronous file object.
     """
     if not (file.filename or "").lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="only .csv files are accepted")
 
-    raw_bytes = await file.read()
+    raw_bytes = file.file.read()
     try:
         csv_text = raw_bytes.decode("utf-8-sig")  # utf-8-sig tolerates a BOM from Excel exports
     except UnicodeDecodeError:
@@ -3141,7 +3159,7 @@ def _parse_historical_snapshot_csv(csv_text: str, today: date) -> tuple[list[dic
 
 
 @app.post("/forecast/historical-upload")
-async def upload_historical_inventory_snapshots(
+def upload_historical_inventory_snapshots(
     file: UploadFile = File(...),
     facility_id: int = Depends(get_acting_facility_id),
     uploaded_by: Optional[int] = Depends(get_acting_user_id),
@@ -3170,15 +3188,15 @@ async def upload_historical_inventory_snapshots(
     corrected export is expected, not a duplicate) — same upsert-by-natural-
     key pattern GET /forecast itself already uses for today's snapshot.
 
-    On success, schedules _run_order_selection_for_facility (bounded to
-    MAX_ORDER_SELECTIONS_PER_BACKGROUND_RUN types) as a BackgroundTask: it runs
-    AFTER this response is sent (so the upload itself stays fast), never inside
-    a request that's waiting on it. This is a safety net for a facility nobody
-    runs server/select_orders.py for, not the primary path — see that script's
-    module docstring for why running it by hand against the shared database is
-    preferred. See _run_order_selection_for_facility for what happens if a run
-    is interrupted partway (per-type commits) or collides with another
-    upload's own run (a non-blocking advisory lock).
+    Order selection does NOT run after an upload by default: it is offline work (server/select_orders.py, run by hand from a real
+    machine). Only when AUTO_ORDER_SELECTION_AFTER_UPLOAD=true does a successful upload schedule
+    _run_order_selection_for_facility (bounded to MAX_ORDER_SELECTIONS_PER_BACKGROUND_RUN types) as a BackgroundTask, after the
+    response is sent; otherwise one log line says it was skipped. That task overwrites facility_sarimax_order rows and clears the
+    facility's forecast cache, and it burns the single instance's CPU for a long time (see _auto_order_selection_enabled). See
+    _run_order_selection_for_facility for what happens if a run is interrupted partway (per-type commits) or collides with
+    another run (a non-blocking advisory lock).
+
+    A plain `def`, not `async def`, for the same reason as upload_inventory: it runs in the threadpool, not on the event loop.
     """
     with engine.connect() as conn:
         facility_type = conn.execute(
@@ -3190,7 +3208,7 @@ async def upload_historical_inventory_snapshots(
     if not (file.filename or "").lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="only .csv files are accepted")
 
-    raw_bytes = await file.read()
+    raw_bytes = file.file.read()
     try:
         csv_text = raw_bytes.decode("utf-8-sig")  # utf-8-sig tolerates a BOM from Excel exports
     except UnicodeDecodeError:
@@ -3258,7 +3276,11 @@ async def upload_historical_inventory_snapshots(
         ).scalar()
 
     if rows_processed and background_tasks is not None:
-        background_tasks.add_task(_run_order_selection_for_facility, facility_id, MAX_ORDER_SELECTIONS_PER_BACKGROUND_RUN)
+        if _auto_order_selection_enabled():
+            background_tasks.add_task(_run_order_selection_for_facility, facility_id, MAX_ORDER_SELECTIONS_PER_BACKGROUND_RUN)
+        else:
+            print(f"[order-selection] skipped after upload for facility {facility_id}: AUTO_ORDER_SELECTION_AFTER_UPLOAD is not true "
+                  "(select orders offline with server/select_orders.py)")
 
     return {"rows_processed": rows_processed, "errors": errors, "days_of_history": days_of_history, "min_days_required": MIN_DAYS_REQUIRED}
 

@@ -1,10 +1,9 @@
 """Runs per-type SARIMAX order selection (main.py:_run_order_selection_for_facility)
 against the shared database and prints the resulting table.
 
-THE PRIMARY PATH. The BackgroundTasks trigger on POST /forecast/historical-upload
-is a safety net for a facility nobody runs this for, bounded to 2 types per
-upload so an unattended facility still converges over repeated uploads — it is
-NOT how this is meant to be run day to day. Running it here, on your own
+THE PRIMARY PATH, and since AUTO_ORDER_SELECTION_AFTER_UPLOAD exists the only one by default. The BackgroundTasks trigger on
+POST /forecast/historical-upload is OFF unless that variable is true; when on it is a safety net for a facility nobody runs this
+for, bounded to 2 types per upload — it is NOT how this is meant to be run day to day. Running it here, on your own
 machine, means Render's CPU (and its 512 MB / free-tier idle-sleep budget) never
 enters into it: the grid is 72 candidates per type, and that fit time locally
 is the whole cost (measured once: 166.7 s for all 8 types of a 420-day demonstration

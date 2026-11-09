@@ -12,7 +12,6 @@ real scenario is a day passing while the units are in transit.
 
 Needs the scratch database from conftest.py (TEST_DATABASE_URL).
 """
-import asyncio
 import io
 import unittest
 import uuid
@@ -183,8 +182,8 @@ class UndoAfterFailedTransferTests(unittest.TestCase):
         col = TODAY - timedelta(days=2)
         csv_text = "din,blood_type,component,location,volume_ml,collected_date,expires_date\n" + "\n".join(
             f"{tag}-{n},O+,Packed RBC,Fridge A,450,{col},{TODAY + timedelta(days=d)}" for n, d in [(1, 3), (2, 30)])
-        asyncio.run(app.upload_inventory(
-            file=UploadFile(file=io.BytesIO(csv_text.encode()), filename="u.csv"), facility_id=bank, uploaded_by=None))
+        app.upload_inventory(
+            file=UploadFile(file=io.BytesIO(csv_text.encode()), filename="u.csv"), facility_id=bank, uploaded_by=None)
         upload_id = q("SELECT id FROM upload_history WHERE facility_id = :f", f=bank)[0][0]
         rid = released_request(bank, hospital, 1)  # FEFO reserves -1
         receive_on(4, rid, hospital)

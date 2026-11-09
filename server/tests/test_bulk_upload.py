@@ -11,6 +11,7 @@ update-not-duplicate on re-upload.
 Run from server/: .venv\\Scripts\\python.exe -m pytest tests/test_bulk_upload.py -q  (TEST_DATABASE_URL must point at a local scratch Postgres)
 """
 import asyncio
+import inspect
 import io
 import time
 import unittest
@@ -41,7 +42,9 @@ def upload(fn, fid, csv_text, name="f.csv"):
     event.listen(engine, "before_cursor_execute", counter)
     try:
         t0 = time.time()
-        body = asyncio.run(fn(file=UploadFile(file=io.BytesIO(csv_text.encode()), filename=name), facility_id=fid, uploaded_by=None))
+        body = fn(file=UploadFile(file=io.BytesIO(csv_text.encode()), filename=name), facility_id=fid, uploaded_by=None)
+        if inspect.isawaitable(body):  # the donor upload is still async (left as it was); the inventory ones are plain functions
+            body = asyncio.run(body)
         return body, counter.n, time.time() - t0
     finally:
         event.remove(engine, "before_cursor_execute", counter)

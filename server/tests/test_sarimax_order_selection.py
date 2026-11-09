@@ -261,10 +261,16 @@ class OrderSelectionRunTests(unittest.TestCase):
 
 
 class UploadTriggersBackgroundSelectionTests(unittest.TestCase):
+    """With AUTO_ORDER_SELECTION_AFTER_UPLOAD=true a successful upload schedules selection; the default (off) is tested in
+    test_upload_endpoints.py."""
+
     def setUp(self):
         with engine.begin() as c:
             self.fid = c.execute(text("INSERT INTO facilities (name, facility_type, is_active, profile_completed) "
                                       "VALUES (:n, 'bloodbank', true, true) RETURNING id"), {"n": f"OrderTrig {uuid.uuid4().hex[:6]}"}).scalar()
+        patcher = mock.patch.dict("os.environ", {"AUTO_ORDER_SELECTION_AFTER_UPLOAD": "true"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         with engine.begin() as c:
@@ -272,17 +278,18 @@ class UploadTriggersBackgroundSelectionTests(unittest.TestCase):
                 c.execute(text(f"DELETE FROM {t} WHERE facility_id = :f"), {"f": self.fid})
             c.execute(text("DELETE FROM facilities WHERE id = :f"), {"f": self.fid})
 
+    def upload(self, csv, bg):
+        import io
+        from starlette.datastructures import UploadFile
+        return app.upload_historical_inventory_snapshots(
+            file=UploadFile(file=io.BytesIO(csv.encode()), filename="h.csv"),
+            facility_id=self.fid, uploaded_by=None, background_tasks=bg)
+
     def test_successful_upload_schedules_the_background_task_but_never_runs_it_inline(self):
         from fastapi import BackgroundTasks
         bg = BackgroundTasks()
         with mock.patch.object(app, "_run_order_selection_for_facility") as run:
-            import asyncio
-            import io
-            from starlette.datastructures import UploadFile
-            csv = f"snapshot_date,blood_type,units\n{TODAY - timedelta(days=1)},O+,10\n"
-            asyncio.run(app.upload_historical_inventory_snapshots(
-                file=UploadFile(file=io.BytesIO(csv.encode()), filename="h.csv"),
-                facility_id=self.fid, uploaded_by=None, background_tasks=bg))
+            self.upload(f"snapshot_date,blood_type,units\n{TODAY - timedelta(days=1)},O+,10\n", bg)
             run.assert_not_called()  # scheduled, not run inline
             self.assertEqual(len(bg.tasks), 1)
             task = bg.tasks[0]
@@ -291,10 +298,5 @@ class UploadTriggersBackgroundSelectionTests(unittest.TestCase):
     def test_empty_upload_schedules_nothing(self):
         from fastapi import BackgroundTasks
         bg = BackgroundTasks()
-        import asyncio
-        import io
-        from starlette.datastructures import UploadFile
-        asyncio.run(app.upload_historical_inventory_snapshots(
-            file=UploadFile(file=io.BytesIO(b"snapshot_date,blood_type,units\n"), filename="h.csv"),
-            facility_id=self.fid, uploaded_by=None, background_tasks=bg))
+        self.upload("snapshot_date,blood_type,units\n", bg)
         self.assertEqual(len(bg.tasks), 0)

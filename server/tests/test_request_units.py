@@ -13,7 +13,6 @@ screen shows the ledger (there is none yet).
 
 Needs the scratch database from conftest.py (TEST_DATABASE_URL).
 """
-import asyncio
 import io
 import unittest
 import uuid
@@ -109,8 +108,8 @@ class SnapshotSurvivesChangesTests(LedgerBase):
         new_col, new_exp = TODAY - timedelta(days=1), TODAY + timedelta(days=90)
         csv_text = ("din,blood_type,component,location,volume_ml,collected_date,expires_date\n"
                     f"{self.din(0)},A+,Platelets,Shelf Z,450,{new_col},{new_exp}\n")
-        asyncio.run(app.upload_inventory(
-            file=UploadFile(file=io.BytesIO(csv_text.encode()), filename="u.csv"), facility_id=self.bank, uploaded_by=None))
+        app.upload_inventory(
+            file=UploadFile(file=io.BytesIO(csv_text.encode()), filename="u.csv"), facility_id=self.bank, uploaded_by=None)
 
         live = q("SELECT blood_type, component, location, volume_ml, expires_date FROM blood_units WHERE din = :d", d=self.din(0))[0]
         self.assertEqual(live, ("A+", "Platelets", "Shelf Z", 450, new_exp))  # the upload really did rewrite the unit
@@ -118,11 +117,11 @@ class SnapshotSurvivesChangesTests(LedgerBase):
 
     def test_the_snapshot_is_what_receipt_settles_even_after_the_unit_changed(self):
         rid = self.released([5])
-        asyncio.run(app.upload_inventory(
+        app.upload_inventory(
             file=UploadFile(file=io.BytesIO(
                 ("din,blood_type,component,location,volume_ml,collected_date,expires_date\n"
                  f"{self.din(0)},O+,Packed RBC,Shelf Z,280,{TODAY},{TODAY + timedelta(days=5)}\n").encode()), filename="u.csv"),
-            facility_id=self.bank, uploaded_by=None))
+            facility_id=self.bank, uploaded_by=None)
         receive_on(1, rid, self.hospital)
         row = ledger(rid)[0]
         self.assertEqual((row[6], row[8], row[10]), ("Fridge A", "received", 4))  # the supplier's shelf at release, not Shelf Z
@@ -130,8 +129,8 @@ class SnapshotSurvivesChangesTests(LedgerBase):
     def reupload_expiry(self, din, days):
         csv_text = ("din,blood_type,component,location,volume_ml,collected_date,expires_date\n"
                     f"{din},O+,Packed RBC,Fridge A,280,{TODAY - timedelta(days=3)},{TODAY + timedelta(days=days)}\n")
-        asyncio.run(app.upload_inventory(
-            file=UploadFile(file=io.BytesIO(csv_text.encode()), filename="u.csv"), facility_id=self.bank, uploaded_by=None))
+        app.upload_inventory(
+            file=UploadFile(file=io.BytesIO(csv_text.encode()), filename="u.csv"), facility_id=self.bank, uploaded_by=None)
 
     def test_days_at_receipt_follow_the_live_expiry_when_a_reupload_extends_it_in_transit(self):
         rid = self.released([5])

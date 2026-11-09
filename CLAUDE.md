@@ -49,7 +49,14 @@ requests, SARIMAX demand forecasting, donor broadcast.
   seasonal P,Q ∈ {0,1}, D=0, s=7), selected on the training window only
   (series minus last 30 days), lowest AIC among candidates passing df-corrected
   Ljung-Box at lags 14/21/28 with K = p+q+P+Q. Stored per (facility, blood type)
-  in `facility_sarimax_order`.
+  in `facility_sarimax_order`. **Nothing selects orders after an upload by default.** The historical upload used to schedule
+  `_run_order_selection_for_facility` (2 types, 72 fits each) as a background task in the one web process; that is now gated by
+  `AUTO_ORDER_SELECTION_AFTER_UPLOAD` (default false; when false the upload logs one `[order-selection] skipped` line). Turn it on
+  only knowingly: it upserts over existing `facility_sarimax_order` rows (with a new soundness baseline), deletes the type's
+  forecast cache, takes the instance's CPU for what is estimated at tens of minutes (one fit is 12-20 s deployed; the 72-fit run was
+  never timed there), and has no guard for any facility (not 158, which has 168 days of history and no stored order today). The
+  inventory and historical uploads are plain `def`s so their blocking work runs in the threadpool, not on the event loop; the donor
+  upload is still `async def`.
 - **Which order a fit uses** (`_resolve_order`), in precedence: (1) the grid-searched
   row; (2) an AI recommendation, a depth-4 decision tree over 13 features of the
   type's own daily series, walked from `server/models/sarimax_selector_rules.json`
@@ -227,7 +234,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (584 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (597 tests plus
   160 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
