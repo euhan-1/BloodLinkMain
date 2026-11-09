@@ -3,10 +3,11 @@ import { RefreshCw } from "lucide-react";
 import { completeFacilityProfile } from "../lib/api";
 import { type SessionUser } from "../lib/session";
 import { BloodDropLogo } from "../components/BloodTypeBadge";
-import { FacilityLocationFields } from "../components/FacilityLocationPicker";
+import { FacilityLocationFields, EMPTY_ADDRESS_PARTS, type AddressParts } from "../components/FacilityLocationPicker";
 
 export function CompleteProfileScreen({ user, onComplete }: { user: SessionUser; onComplete: () => void }) {
   const [address, setAddress] = useState("");
+  const [addressParts, setAddressParts] = useState<AddressParts>(EMPTY_ADDRESS_PARTS);
   const [department, setDepartment] = useState("");
   const [position, setPosition] = useState<[number, number] | null>(null);
 
@@ -53,6 +54,7 @@ export function CompleteProfileScreen({ user, onComplete }: { user: SessionUser;
             address={address} onAddressChange={setAddress}
             position={position} onPositionChange={setPosition}
             department={department} onDepartmentChange={setDepartment}
+            splitAddress addressParts={addressParts} onAddressPartsChange={setAddressParts}
           />
 
           {submitError && (

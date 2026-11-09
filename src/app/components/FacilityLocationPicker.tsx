@@ -8,6 +8,7 @@ import "../lib/leafletSetup";
 import { Search } from "lucide-react";
 import { DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, PIN_PLACED_ZOOM } from "../lib/mapConstants";
 import { FOCUS } from "../lib/formStyles";
+import { MapScrollZoomOptIn } from "./MapScrollZoomOptIn";
 
 function RecenterMap({ position, zoom }: { position: [number, number]; zoom: number }) {
   const map = useMap();
@@ -60,12 +61,13 @@ async function lookUpAddressViaNominatim(address: string): Promise<[number, numb
   return [parseFloat(results[0].lat), parseFloat(results[0].lon)];
 }
 
-// The four parts of splitAddress mode, in Philippine order. Street is optional (not every site has one); the rest are required.
+// The four parts of splitAddress mode, in Philippine order. All four are required by default, so a new address always joins to
+// exactly four parts and splitSavedAddress below reads it back exactly.
 const ADDRESS_PARTS = [
-  { key: "street", label: "Street / House no.", placeholder: "e.g. 12 Rizal Avenue", required: false },
-  { key: "barangay", label: "Barangay", placeholder: "e.g. Poblacion", required: true },
-  { key: "city", label: "City or Municipality", placeholder: "e.g. Batangas City", required: true },
-  { key: "province", label: "Province", placeholder: "e.g. Batangas", required: true },
+  { key: "street", label: "Street / House no.", placeholder: "e.g. 12 Rizal Avenue" },
+  { key: "barangay", label: "Barangay", placeholder: "e.g. Poblacion" },
+  { key: "city", label: "City or Municipality", placeholder: "e.g. Batangas City" },
+  { key: "province", label: "Province", placeholder: "e.g. Batangas" },
 ] as const;
 type AddressPart = (typeof ADDRESS_PARTS)[number]["key"];
 export type AddressParts = Record<AddressPart, string>;
@@ -74,6 +76,18 @@ export const EMPTY_ADDRESS_PARTS: AddressParts = { street: "", barangay: "", cit
 // The one string the rest of the app sees: parts in order, comma-separated, empty ones skipped.
 const joinAddress = (parts: AddressParts) =>
   ADDRESS_PARTS.map(({ key }) => parts[key].trim()).filter(Boolean).join(", ");
+
+// Seeds the four parts from a saved address string, by one rule and no heuristic: split on ", "; exactly four pieces map to
+// Street, Barangay, City, Province in order; anything else goes whole into Street with the other three empty, and `fallback`
+// says so (so the form can ask the user to split it). An empty saved address is not a fallback: there is nothing to split.
+export function splitSavedAddress(saved: string): { parts: AddressParts; fallback: boolean } {
+  const pieces = saved.split(", ");
+  if (pieces.length === 4) {
+    const [street, barangay, city, province] = pieces;
+    return { parts: { street, barangay, city, province }, fallback: false };
+  }
+  return { parts: { ...EMPTY_ADDRESS_PARTS, street: saved }, fallback: saved.trim() !== "" };
+}
 
 // Shared by CompleteProfileScreen (first-time onboarding), EditFacilityProfileModal
 // (Account menu, after the fact), and RegisterFacility (self-registration) —
@@ -94,6 +108,8 @@ export function FacilityLocationFields({
   showDepartment = true,
   addressParts,
   onAddressPartsChange,
+  addressNeedsSplitting = false,
+  requireAllParts = true,
 }: {
   address: string;
   onAddressChange: (v: string) => void;
@@ -107,10 +123,15 @@ export function FacilityLocationFields({
   // fills it in later via the same post-login CompleteProfile flow an
   // admin-onboarded facility already goes through.
   showDepartment?: boolean;
-  // true for RegisterFacility only: four fields (street, barangay, city, province) instead of one, still emitted through
-  // onAddressChange as a single joined string. The other callers load an existing address string, which cannot be reliably
-  // split apart, so they keep the single input. The parts are the parent's state (like address and position), so they
-  // survive this component remounting; the joined string is never parsed back apart.
+  // With addressParts: four fields (street, barangay, city, province) instead of one, still emitted through onAddressChange
+  // as a single joined string. The parts are the parent's state (like address and position), so they survive this component
+  // remounting. A caller with a saved address string seeds them with splitSavedAddress, the only place a string is split.
+  // addressNeedsSplitting: that seed fell back to putting the whole string in Street. The line asking the user to split it
+  // shows until any of the other three fields has something in it.
+  addressNeedsSplitting?: boolean;
+  // false: only Street is required. For the edit modal, where an address that predates the four fields must not block an
+  // unrelated edit (the department). Registration and first-time profile keep all four required.
+  requireAllParts?: boolean;
 } & (
   | { splitAddress: true; addressParts: AddressParts; onAddressPartsChange: (p: AddressParts) => void }
   | { splitAddress?: false; addressParts?: undefined; onAddressPartsChange?: undefined }
@@ -163,14 +184,17 @@ export function FacilityLocationFields({
         {addressParts ? (
           <div role="group" aria-labelledby={`${uid}-address`}>
             <p id={`${uid}-address`} className="text-[14px] font-semibold text-foreground mb-1.5">Address</p>
+            {addressNeedsSplitting && !addressParts.barangay && !addressParts.city && !addressParts.province && (
+              <p className="text-[13px] text-muted-foreground mb-2">Your saved address needs splitting into these fields.</p>
+            )}
             <div className="grid sm:grid-cols-2 gap-4">
-              {ADDRESS_PARTS.map(({ key, label, placeholder, required }) => (
+              {ADDRESS_PARTS.map(({ key, label, placeholder }) => (
                 <div key={key}>
                   <label htmlFor={`${uid}-${key}`} className="text-[14px] font-semibold text-foreground block mb-1.5">{label}</label>
                   <input
                     id={`${uid}-${key}`}
                     type="text"
-                    required={required}
+                    required={requireAllParts || key === "street"}
                     value={addressParts[key]}
                     onChange={(e) => changePart(key, e.target.value)}
                     placeholder={placeholder}
@@ -209,8 +233,9 @@ export function FacilityLocationFields({
           Look up your address above, or click anywhere on the map to place the pin. Drag it to fine-tune.
         </p>
         <div className="h-72 rounded-lg overflow-hidden border border-border">
-          <MapContainer center={position ?? DEFAULT_MAP_CENTER} zoom={position ? PIN_PLACED_ZOOM : DEFAULT_MAP_ZOOM} style={{ height: "100%", width: "100%" }}>
+          <MapContainer center={position ?? DEFAULT_MAP_CENTER} zoom={position ? PIN_PLACED_ZOOM : DEFAULT_MAP_ZOOM} style={{ height: "100%", width: "100%" }} scrollWheelZoom={false}>
             <MapReadySizer />
+            <MapScrollZoomOptIn mode="modifier" />
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -234,11 +259,6 @@ export function FacilityLocationFields({
             )}
           </MapContainer>
         </div>
-        {position && (
-          <p className="text-[12px] text-muted-foreground mt-1.5 font-mono">
-            {position[0].toFixed(5)}, {position[1].toFixed(5)}
-          </p>
-        )}
       </div>
 
       {showDepartment && (
