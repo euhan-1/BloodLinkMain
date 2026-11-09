@@ -1,17 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { CheckCircle, RefreshCw, ShieldCheck } from "lucide-react";
 import {
   login as apiLogin, changePassword as apiChangePassword, requestPasswordResetOtp, resetPasswordOtp, warmBackend,
 } from "../lib/api";
 import { type SessionUser } from "../lib/session";
 import { BloodDropLogo } from "../components/BloodTypeBadge";
+import { FOCUS } from "../lib/formStyles";
 
 // ─── Login Screen ─────────────────────────────────────────────────────────────
 
-// A 2px solid brand outline, offset so it clears a filled button's edge. The
-// fields' own 30%-ring is too faint against a charcoal border that already
-// sits close to oxblood in darkness, so every control here uses this instead.
-const FOCUS = "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary";
+// FOCUS (lib/formStyles.ts) is the focus outline every control here uses; the fields' own 30%-ring was too faint.
 const FIELD = `w-full h-10 px-3 text-sm border border-border rounded-md bg-card placeholder:text-secondary-foreground/60 focus:border-primary transition-colors ${FOCUS}`;
 const BTN = `w-full h-10 bg-primary text-white text-sm font-semibold rounded-md hover:bg-primary-hover transition-colors disabled:opacity-60 flex items-center justify-center gap-2 ${FOCUS}`;
 const LINK_BTN = `text-[13px] text-muted-foreground hover:text-foreground transition-colors rounded-sm ${FOCUS}`;
@@ -23,6 +21,7 @@ const LINK_BTN = `text-[13px] text-muted-foreground hover:text-foreground transi
 type PendingReset = { resetToken: string; email: string; facilityName: string };
 
 export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void }) {
+  const uid = useId(); // prefixes the ids of the reset-flow fields, so no two fields on the page can share one
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -206,8 +205,9 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
 
                 <form onSubmit={handleResetOtpSubmit} className="space-y-4">
                   <div>
-                    <label className="text-[14px] font-semibold text-foreground block mb-1.5">Reset code</label>
+                    <label htmlFor={`${uid}-reset-code`} className="text-[14px] font-semibold text-foreground block mb-1.5">Reset code</label>
                     <input
+                      id={`${uid}-reset-code`}
                       type="text"
                       inputMode="numeric"
                       pattern="[0-9]{6}"
@@ -221,8 +221,9 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                     />
                   </div>
                   <div>
-                    <label className="text-[14px] font-semibold text-foreground block mb-1.5">New password</label>
+                    <label htmlFor={`${uid}-reset-new`} className="text-[14px] font-semibold text-foreground block mb-1.5">New password</label>
                     <input
+                      id={`${uid}-reset-new`}
                       type="password"
                       required
                       autoComplete="new-password"
@@ -232,8 +233,9 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                     />
                   </div>
                   <div>
-                    <label className="text-[14px] font-semibold text-foreground block mb-1.5">Confirm new password</label>
+                    <label htmlFor={`${uid}-reset-confirm`} className="text-[14px] font-semibold text-foreground block mb-1.5">Confirm new password</label>
                     <input
+                      id={`${uid}-reset-confirm`}
                       type="password"
                       required
                       autoComplete="new-password"
@@ -244,7 +246,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                   </div>
 
                   {resetError && (
-                    <div className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
+                    <div role="alert" className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
                       {resetError}
                     </div>
                   )}
@@ -278,10 +280,11 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
 
                 <form onSubmit={handleForgotSubmit} className="space-y-4">
                   <div>
-                    <label className="text-[14px] font-semibold text-foreground block mb-1.5">
+                    <label htmlFor={`${uid}-forgot-email`} className="text-[14px] font-semibold text-foreground block mb-1.5">
                       Email address
                     </label>
                     <input
+                      id={`${uid}-forgot-email`}
                       type="email"
                       required
                       autoComplete="email"
@@ -292,7 +295,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                   </div>
 
                   {forgotError && (
-                    <div className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
+                    <div role="alert" className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
                       {forgotError}
                     </div>
                   )}
@@ -364,7 +367,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                 </div>
 
                 {error && (
-                  <div className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
+                  <div role="alert" className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
                     {error}
                   </div>
                 )}
@@ -410,6 +413,7 @@ function ForcePasswordChangeForm({
   onSuccess: (user: SessionUser) => void;
 }) {
   const [newPassword, setNewPassword] = useState("");
+  const uid = useId();
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -448,8 +452,9 @@ function ForcePasswordChangeForm({
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
-          <label className="text-[14px] font-semibold text-foreground block mb-1.5">New password</label>
+          <label htmlFor={`${uid}-new`} className="text-[14px] font-semibold text-foreground block mb-1.5">New password</label>
           <input
+            id={`${uid}-new`}
             type="password"
             required
             autoComplete="new-password"
@@ -459,8 +464,9 @@ function ForcePasswordChangeForm({
           />
         </div>
         <div>
-          <label className="text-[14px] font-semibold text-foreground block mb-1.5">Confirm new password</label>
+          <label htmlFor={`${uid}-confirm`} className="text-[14px] font-semibold text-foreground block mb-1.5">Confirm new password</label>
           <input
+            id={`${uid}-confirm`}
             type="password"
             required
             autoComplete="new-password"
@@ -471,7 +477,7 @@ function ForcePasswordChangeForm({
         </div>
 
         {error && (
-          <div className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
+          <div role="alert" className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
             {error}
           </div>
         )}

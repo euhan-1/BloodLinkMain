@@ -1,8 +1,12 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Building2, CheckCircle, FlaskConical, RefreshCw } from "lucide-react";
 import { registerFacility, geocodeAddress, verifyFacilityRegistrationEmail, type RegisterFacilityBody } from "../lib/api";
 import { BloodDropLogo } from "../components/BloodTypeBadge";
 import { FacilityLocationFields } from "../components/FacilityLocationPicker";
+import { FOCUS } from "../lib/formStyles";
+
+// The same field and focus treatment as the sign-in screen (see lib/formStyles.ts).
+const FIELD = `w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:border-primary transition-colors ${FOCUS}`;
 
 // ─── Facility self-registration ────────────────────────────────────────────
 // Reachable with no session, same as ResetPasswordScreen — App.tsx renders
@@ -18,6 +22,7 @@ import { FacilityLocationFields } from "../components/FacilityLocationPicker";
 // matching the backend's own response shape.
 
 export function RegisterFacilityScreen() {
+  const uid = useId(); // prefixes every field id, so none can collide with another form's
   const [facilityName, setFacilityName] = useState("");
   const [facilityType, setFacilityType] = useState<"hospital" | "bloodbank">("hospital");
   const [contactPerson, setContactPerson] = useState("");
@@ -118,8 +123,9 @@ export function RegisterFacilityScreen() {
 
             <form onSubmit={handleVerifySubmit} className="space-y-4">
               <div>
-                <label className="text-[14px] font-semibold text-foreground block mb-1.5">Verification code</label>
+                <label htmlFor={`${uid}-code`} className="text-[14px] font-semibold text-foreground block mb-1.5">Verification code</label>
                 <input
+                  id={`${uid}-code`}
                   type="text"
                   inputMode="numeric"
                   pattern="[0-9]{6}"
@@ -129,12 +135,12 @@ export function RegisterFacilityScreen() {
                   value={code}
                   onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
                   placeholder="000000"
-                  className="w-full h-10 px-3 text-sm tracking-[0.3em] text-center font-mono border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+                  className={`${FIELD} tracking-[0.3em] text-center font-mono`}
                 />
               </div>
 
               {verifyError && (
-                <div className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
+                <div role="alert" className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
                   {verifyError}
                 </div>
               )}
@@ -168,12 +174,13 @@ export function RegisterFacilityScreen() {
 
             <form onSubmit={handleSubmit} className="space-y-5">
               <div>
-                <label className="text-[14px] font-semibold text-foreground block mb-1.5">Facility type</label>
-                <div className="flex gap-1 bg-secondary rounded-lg p-1 w-fit">
+                <label id={`${uid}-type`} className="text-[14px] font-semibold text-foreground block mb-1.5">Facility type</label>
+                <div role="group" aria-labelledby={`${uid}-type`} className="flex gap-1 bg-secondary rounded-lg p-1 w-fit">
                   {(["hospital", "bloodbank"] as const).map((type) => (
                     <button
                       key={type}
                       type="button"
+                      aria-pressed={facilityType === type}
                       onClick={() => setFacilityType(type)}
                       className={`flex items-center justify-center gap-1.5 px-4 py-2 text-[14px] font-semibold rounded border transition-all duration-200 ease-out ${
                         facilityType === type
@@ -181,7 +188,7 @@ export function RegisterFacilityScreen() {
                           : "border-transparent text-muted-foreground hover:text-foreground"
                       }`}
                     >
-                      {type === "hospital" ? <Building2 size={15} /> : <FlaskConical size={15} />}
+                      {type === "hospital" ? <Building2 size={15} aria-hidden="true" /> : <FlaskConical size={15} aria-hidden="true" />}
                       {type === "hospital" ? "Hospital" : "Blood Bank"}
                     </button>
                   ))}
@@ -189,10 +196,11 @@ export function RegisterFacilityScreen() {
               </div>
 
               <div>
-                <label className="text-[14px] font-semibold text-foreground block mb-1.5">Facility name</label>
+                <label htmlFor={`${uid}-name`} className="text-[14px] font-semibold text-foreground block mb-1.5">Facility name</label>
                 <input
+                  id={`${uid}-name`}
                   type="text" required value={facilityName} onChange={(e) => setFacilityName(e.target.value)}
-                  className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+                  className={FIELD}
                 />
               </div>
 
@@ -205,54 +213,59 @@ export function RegisterFacilityScreen() {
 
               <div className="grid sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="text-[14px] font-semibold text-foreground block mb-1.5">Contact person</label>
+                  <label htmlFor={`${uid}-contact`} className="text-[14px] font-semibold text-foreground block mb-1.5">Contact person</label>
                   <input
+                    id={`${uid}-contact`}
                     type="text" required value={contactPerson} onChange={(e) => setContactPerson(e.target.value)}
-                    className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+                    className={FIELD}
                   />
                 </div>
                 <div>
-                  <label className="text-[14px] font-semibold text-foreground block mb-1.5">Phone</label>
+                  <label htmlFor={`${uid}-phone`} className="text-[14px] font-semibold text-foreground block mb-1.5">Phone</label>
                   <input
+                    id={`${uid}-phone`}
                     type="tel" required value={phone} onChange={(e) => setPhone(e.target.value)}
                     placeholder="09XXXXXXXXX"
-                    className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+                    className={FIELD}
                   />
                 </div>
               </div>
 
               <div>
-                <label className="text-[14px] font-semibold text-foreground block mb-1.5">Work email</label>
+                <label htmlFor={`${uid}-email`} className="text-[14px] font-semibold text-foreground block mb-1.5">Work email</label>
                 <input
+                  id={`${uid}-email`}
                   type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)}
-                  className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+                  className={FIELD}
                 />
               </div>
 
               <div className="grid sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="text-[14px] font-semibold text-foreground block mb-1.5">Password</label>
+                  <label htmlFor={`${uid}-password`} className="text-[14px] font-semibold text-foreground block mb-1.5">Password</label>
                   <input
+                    id={`${uid}-password`}
                     type="password" required autoComplete="new-password" value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+                    className={FIELD}
                   />
                   <p className="text-[12px] text-muted-foreground mt-1.5">
-                    At least 10 characters, including a letter and a number.
+                    At least 8 characters.
                   </p>
                 </div>
                 <div>
-                  <label className="text-[14px] font-semibold text-foreground block mb-1.5">Confirm password</label>
+                  <label htmlFor={`${uid}-confirm`} className="text-[14px] font-semibold text-foreground block mb-1.5">Confirm password</label>
                   <input
+                    id={`${uid}-confirm`}
                     type="password" required autoComplete="new-password" value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+                    className={FIELD}
                   />
                 </div>
               </div>
 
               {submitError && (
-                <div className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
+                <div role="alert" className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
                   {submitError}
                 </div>
               )}

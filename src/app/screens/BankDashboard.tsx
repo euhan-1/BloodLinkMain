@@ -73,14 +73,15 @@ export function BankDashboardView(p: BankDashboardProps) {
     <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-8">
       <SupplyLine {...p} waiting={waiting} expiring={expiring} expiringError={expiringError} />
 
-      {/* Phone: "Waiting for you" above the table. From lg the table is the wide left column and the requests sit beside it. */}
+      {/* DOM order is the phone order, so tab order matches what is on screen: "Waiting for you" above the table. From lg the
+          table is the wide left column and the requests sit beside it, placed explicitly (as in HospitalDashboard). */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-x-8 gap-y-8">
-        <div className="order-2 lg:order-none lg:col-span-2 min-w-0 space-y-8">
+        <div className="lg:col-start-3 lg:row-start-1 lg:col-span-1 self-start">
+          <WaitingForYou requests={waiting} failed={p.requestsFailed} onViewRequests={p.onViewRequests} />
+        </div>
+        <div className="lg:col-start-1 lg:row-start-1 lg:col-span-2 min-w-0 space-y-8">
           <StockAndOutlook {...p} />
           <WhatToDoNext {...p} />
-        </div>
-        <div className="order-1 lg:order-none lg:col-span-1 self-start">
-          <WaitingForYou requests={waiting} failed={p.requestsFailed} onViewRequests={p.onViewRequests} />
         </div>
       </div>
 

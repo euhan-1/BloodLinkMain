@@ -1,6 +1,10 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
+  /* Native controls (select popups, the file picker, scrollbars, autofill) follow the app's own theme, which is the .dark
+     class on <html> and not the OS setting; "light dark" would follow the OS and clash with the app's light default. The
+     dark counterpart is on .dark below. */
+  color-scheme: light;
   --font-size: 16px;
   --background: #FAF9F7;
   --foreground: #1C1917;
@@ -188,6 +192,7 @@
    deliberately NOT redefined here — this app's bold-everywhere type doesn't
    change with theme, only color does. */
 .dark {
+  color-scheme: dark;
   --background: #17130F;
   --foreground: #F3ECE3;
   --card: #211B16;
@@ -630,4 +635,26 @@
 /* The transfer record (screens/Receipt.tsx) prints on its own page: modest margins, nothing else. */
 @page {
   margin: 14mm;
+}
+
+/* For people who ask their system for less motion: no entrance slides or rises, no cross-screen view transition, no skeleton
+   pulse. Each entrance animation ends fully visible, so with it off the content simply shows at once (the `both` fill would
+   otherwise hold it at opacity 0 for its delay). Kept on purpose: the spinners (animate-spin, a loading signal), the one-shot
+   feedback flashes and pops, and the bell pulse, which are small and signal a change. Unlayered and last, so it wins over
+   Tailwind's layered .animate-pulse. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-page-enter,
+  .animate-header-drop-in,
+  .animate-content-rise-in,
+  .animate-card-rise-in,
+  .animate-panel-slide-left,
+  .animate-panel-slide-right,
+  .animate-bullet-rise-in,
+  .animate-pulse {
+    animation: none;
+  }
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
+  }
 }

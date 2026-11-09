@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useId } from "react";
 import { MapContainer, TileLayer, Marker, useMap } from "react-leaflet";
 import L from "leaflet";
 // See the same import in FacilityNetworkMap.tsx — kept in both Leaflet
@@ -7,6 +7,7 @@ import L from "leaflet";
 import "../lib/leafletSetup";
 import { Search } from "lucide-react";
 import { DEFAULT_MAP_CENTER, DEFAULT_MAP_ZOOM, PIN_PLACED_ZOOM } from "../lib/mapConstants";
+import { FOCUS } from "../lib/formStyles";
 
 function RecenterMap({ position, zoom }: { position: [number, number]; zoom: number }) {
   const map = useMap();
@@ -90,6 +91,7 @@ export function FacilityLocationFields({
   // admin-onboarded facility already goes through.
   showDepartment?: boolean;
 }) {
+  const uid = useId();
   const [geocoding, setGeocoding] = useState(false);
   const [geocodeError, setGeocodeError] = useState<string | null>(null);
 
@@ -114,15 +116,16 @@ export function FacilityLocationFields({
   return (
     <>
       <div>
-        <label className="text-[14px] font-semibold text-foreground block mb-1.5">Address</label>
+        <label htmlFor={`${uid}-address`} className="text-[14px] font-semibold text-foreground block mb-1.5">Address</label>
         <div className="flex gap-2">
           <input
+            id={`${uid}-address`}
             type="text"
             required
             value={address}
             onChange={(e) => onAddressChange(e.target.value)}
             placeholder="Street, barangay, city"
-            className="flex-1 h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+            className={`flex-1 h-10 px-3 text-sm border border-border rounded-md bg-card focus:border-primary transition-colors ${FOCUS}`}
           />
           <button
             type="button"
@@ -178,14 +181,15 @@ export function FacilityLocationFields({
 
       {showDepartment && (
         <div>
-          <label className="text-[14px] font-semibold text-foreground block mb-1.5">Department / Branch</label>
+          <label htmlFor={`${uid}-department`} className="text-[14px] font-semibold text-foreground block mb-1.5">Department / Branch</label>
           <input
+            id={`${uid}-department`}
             type="text"
             required
             value={department}
             onChange={(e) => onDepartmentChange?.(e.target.value)}
             placeholder="e.g. Blood Services Unit"
-            className="w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary transition-all"
+            className={`w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:border-primary transition-colors ${FOCUS}`}
           />
         </div>
       )}
