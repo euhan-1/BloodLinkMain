@@ -58,10 +58,10 @@ export function releaseOrder(a: InventoryUnit, b: InventoryUnit): number {
 
 export const sortUnits = (units: InventoryUnit[]): InventoryUnit[] => [...units].sort(releaseOrder);
 
-export type WindowFilter = "any" | "expired" | "3" | "7" | "14" | "30";
+// "Expired" lives in the Status filter; these windows are upcoming expiry only, so they never match an expired unit.
+export type WindowFilter = "any" | "3" | "7" | "14" | "30";
 export const WINDOW_OPTIONS: { value: WindowFilter; label: string }[] = [
   { value: "any", label: "Any time" },
-  { value: "expired", label: "Expired" },
   { value: "3", label: "Within 3 days" },
   { value: "7", label: "Within 7 days" },
   { value: "14", label: "Within 14 days" },
@@ -75,8 +75,7 @@ export const hasUnitFilters = (f: UnitFilters): boolean => f.component !== "" ||
 export function filterUnits(units: InventoryUnit[], f: UnitFilters): InventoryUnit[] {
   return units.filter((u) => {
     if (f.component && u.component !== f.component) return false;
-    if (f.window === "expired" && u.daysLeft >= 0) return false;
-    if (f.window !== "any" && f.window !== "expired" && !(u.daysLeft >= 0 && u.daysLeft <= Number(f.window))) return false;
+    if (f.window !== "any" && !(u.daysLeft >= 0 && u.daysLeft <= Number(f.window))) return false;
     if (f.state !== "any" && unitState(u) !== f.state) return false;
     return true;
   });

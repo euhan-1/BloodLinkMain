@@ -58,7 +58,7 @@ eq(ids({ component: "Platelets" }), ["E"], "component");
 eq(ids({ window: "7" }), ["A", "B"], "within 7 days is live units only, never the expired");
 eq(ids({ window: "3" }), ["A"], "within 3 days");
 eq(ids({ window: "30" }), ["A", "B", "C", "E"], "within 30 days");
-eq(ids({ window: "expired" }), ["D"], "expired");
+eq(ids({ state: "expired" }), ["D"], "expired");
 eq(ids({ state: "reserved" }), ["F"], "reserved");
 eq(ids({ state: "inside_margin" }), ["A"], "inside the margin");
 eq(ids({ state: "available" }), ["B", "C", "E"], "available");
