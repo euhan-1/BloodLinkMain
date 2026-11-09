@@ -189,6 +189,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                   onClick={() => {
                     setForgotMode(false); setForgotSent(false); setResetDone(false); setForgotEmail("");
                     setResetCode(""); setResetNewPassword(""); setResetConfirmPassword("");
+                    setError(null); setResetError(null);
                   }}
                   className={BTN}
                 >
@@ -203,7 +204,10 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                   6-digit code to it. Enter it below along with your new password. The code expires in 10 minutes.
                 </p>
 
-                <form onSubmit={handleResetOtpSubmit} className="space-y-4">
+                {/* The three forms below sit at the same spot in the tree with the same element types, so without distinct keys
+                    React reuses their DOM nodes when the view switches: "Back to sign in" (type="button") becomes the sign-in
+                    form's submit button mid-click, and the browser then submits. Keys make each view its own element. */}
+                <form key="reset-code" onSubmit={handleResetOtpSubmit} className="space-y-4">
                   <div>
                     <label htmlFor={`${uid}-reset-code`} className="text-[14px] font-semibold text-foreground block mb-1.5">Reset code</label>
                     <input
@@ -278,7 +282,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                   Enter the email address on your facility's account and we'll send you a code to reset your password.
                 </p>
 
-                <form onSubmit={handleForgotSubmit} className="space-y-4">
+                <form key="forgot-email" onSubmit={handleForgotSubmit} className="space-y-4">
                   <div>
                     <label htmlFor={`${uid}-forgot-email`} className="text-[14px] font-semibold text-foreground block mb-1.5">
                       Email address
@@ -328,7 +332,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                 Access your facility's blood management dashboard.
               </p>
 
-              <form onSubmit={handleSubmit} className="space-y-4">
+              <form key="sign-in" onSubmit={handleSubmit} className="space-y-4">
                 <div>
                   <label htmlFor="login-email" className="text-[14px] font-semibold text-foreground block mb-1.5">
                     Email address
