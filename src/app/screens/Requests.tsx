@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { liveSync } from "../lib/liveSyncRuntime";
 import { ArrowLeft, MessageSquare, Send } from "lucide-react";
 import { apiGet, apiPost, getMyFacilityProfile } from "../lib/api";
 import { getCurrentUser } from "../lib/session";
@@ -16,15 +17,14 @@ import { ReceiptRecord } from "../components/ReceiptRecord";
 import { buildInbox, inboxCounts, loadSeen, requestPhase, rowFromDetail, saveSeen, seedSeen, unreadKind, type RowAction, type SeenMap } from "../lib/requestInbox";
 import { TransferHistory } from "./TransferHistory";
 
-// Chat messages poll faster than notifications (App.tsx's NOTIFICATION_POLL_MS)
-// since a coordination chat is a live conversation, not a background alert.
+// The open request's chat is the one thing here with its own timer: it polls faster than the shared poller (lib/liveSync.ts, about
+// 15 s) since a coordination chat is a live conversation, and only while a thread is open.
 const CHAT_MESSAGE_POLL_MS = 4000;
 
-// Both sides' request lists refresh this often while the browser tab is visible (the same interval as the Dashboard's own
-// polls), so a status change made by the other facility shows up on this one within the same window whichever side made it:
-// a request that arrives at a supplier appears in its place in the priority order, and a requester's "Awaiting response"
-// becomes "accepted" without a reload. Silent: no loading state, and a failed refresh leaves what is on screen alone.
-const REQUEST_LISTS_POLL_MS = 25000;
+// Both sides' request lists reload when the shared poller says their token moved (no timer here), so a status change made by the
+// other facility shows up within about 15 s whichever side made it: a request that arrives at a supplier appears in its place in
+// the priority order, and a requester's "Awaiting response" becomes "accepted" without a reload. Silent: no loading state, and a
+// failed refresh leaves what is on screen alone.
 
 type RequestTab = "sourcing" | "transfer" | "history";
 
@@ -241,21 +241,15 @@ export function RequestsScreen({
     fetchIncoming();
   }, [actingFacilityId]);
 
-  // Keep both lists fresh while the browser tab is visible, and catch up at once when it becomes visible again (a hidden tab
-  // does not poll, so it can be a long way behind). The requester's own list is polled on every tab, since the badge is on
-  // every tab; the supplier's inbox only on the tab that shows it, and only blood banks have one. So the badge's incoming part
-  // (decisions and releases) is as fresh as the last visit to this tab, or the load when the screen mounted.
+  // Both lists reload when the shared poller (lib/liveSync.ts) says their token moved: about 15 s after the other facility acts, never
+  // while the tab is hidden, and at once when it becomes visible again. The requester's own list and the supplier's incoming list
+  // (only blood banks have one) are separate tokens, so the tab badge's incoming part is as fresh as its outgoing part on every tab.
   useEffect(() => {
-    const refresh = () => {
-      if (document.visibilityState !== "visible") return;
-      fetchRequests(true);
-      if (isBloodBankRequester && tab === "transfer") fetchIncoming(true);
-    };
-    const timer = setInterval(refresh, REQUEST_LISTS_POLL_MS);
-    document.addEventListener("visibilitychange", refresh);
-    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
+    const offOutgoing = liveSync.subscribe("requestsOutgoing", () => fetchRequests(true));
+    const offIncoming = isBloodBankRequester ? liveSync.subscribe("requestsIncoming", () => fetchIncoming(true)) : () => {};
+    return () => { offOutgoing(); offIncoming(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isBloodBankRequester, tab, actingFacilityId]);
+  }, [isBloodBankRequester, actingFacilityId]);
 
   async function performRequestAction(requestId: number, action: RequestAction) {
     if (actingFacilityId === null) return;

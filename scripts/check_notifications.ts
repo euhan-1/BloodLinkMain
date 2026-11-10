@@ -1,6 +1,6 @@
 // Asserts what the notification bell shows (src/app/lib/notifications.ts). Run: node scripts/check_notifications.ts
 import {
-  BADGE_MAX, agoText, appendOlder, badgeLabel, isArrival, markEveryRead, markOneRead, mayHaveMore, oldestId, shouldPoll, unreadText,
+  BADGE_MAX, agoText, appendOlder, badgeLabel, isArrival, markEveryRead, markOneRead, mayHaveMore, oldestId, unreadText,
 } from "../src/app/lib/notifications.ts";
 import { formatDateTime } from "../src/app/lib/dateFormat.ts";
 import type { NotificationItem } from "../src/app/lib/api.ts";
@@ -25,9 +25,6 @@ eq(agoText("2026-10-30T12:00:00Z", t0 + 23 * 3_600_000), "23 hours ago", "hours"
 eq(agoText("2026-10-30T12:00:00Z", t0 + 25 * 3_600_000), formatDateTime("2026-10-30T12:00:00Z"), "a day or more: the date, written out");
 if (!/^\d{1,2} [A-Z][a-z]{2} \d{4}, \d{2}:\d{2}$/.test(agoText("2026-10-30T12:00:00Z", t0 + 9 * 86_400_000))) throw new Error("an old notification is dated explicitly");
 for (const ms of [30_000, 600_000, 7_200_000, 90_000_000]) if (/\b\d+[mhd]\b/.test(agoText("2026-10-30T12:00:00Z", t0 + ms))) throw new Error("compressed time");
-
-// ── polling follows the tab
-eq([shouldPoll("visible"), shouldPoll("hidden"), shouldPoll("prerender")], [true, false, false], "only a visible tab polls");
 
 // ── the list's bookkeeping
 eq(markOneRead([note(3), note(2), note(1, "x")], 2, "T").map((n) => n.read_at), [null, "T", "x"], "one row is read, others keep their own state");

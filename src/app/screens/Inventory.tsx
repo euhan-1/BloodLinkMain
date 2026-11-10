@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { liveSync } from "../lib/liveSyncRuntime";
 import { Plus, Upload, Archive } from "lucide-react";
 import { apiGet, apiUploadFile, updateThreshold, deleteInventoryUnit, createInventoryUnit, archiveExpiredInventory } from "../lib/api";
 import { getCurrentUser } from "../lib/session";
@@ -69,16 +70,20 @@ export function InventoryScreen() {
   const [addingUnit, setAddingUnit] = useState(false);
   const [addUnitError, setAddUnitError] = useState<string | null>(null);
 
-  function loadInventory(onSettled?: () => void) {
+  // `silent` is a reload because the shared poller (lib/liveSync.ts) saw the inventory token move: the table stays on screen, and a
+  // failure leaves what is shown alone.
+  function loadInventory(onSettled?: () => void, silent = false) {
     let cancelled = false;
-    setLoading(true);
-    setError(null);
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
     apiGet<InventoryApiRow[]>("/inventory")
       .then((data) => {
-        if (!cancelled) setRows(data.map(toInventoryUnit));
+        if (!cancelled) { setRows(data.map(toInventoryUnit)); setError(null); }
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load inventory");
+        if (!cancelled && !silent) setError(err instanceof Error ? err.message : "Failed to load inventory");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -89,22 +94,30 @@ export function InventoryScreen() {
     };
   }
 
-  useEffect(() => loadInventory(), []);
+  useEffect(() => {
+    const cancelFirst = loadInventory();
+    const unsubscribe = liveSync.subscribe("inventory", () => { loadInventory(undefined, true); });
+    return () => { cancelFirst(); unsubscribe(); };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
-    apiGet<InventorySummaryRow[]>("/inventory/summary")
-      .then((data) => {
-        if (!cancelled) setThresholds(Object.fromEntries(data.map((t) => [t.blood_type, t])));
-      })
-      .catch((err) => {
-        if (!cancelled) setSummaryError(err instanceof Error ? err.message : "Failed to load stock levels");
-      })
-      .finally(() => {
-        if (!cancelled) setSummaryLoading(false);
-      });
+    const load = (first: boolean) =>
+      apiGet<InventorySummaryRow[]>("/inventory/summary")
+        .then((data) => {
+          if (!cancelled) { setThresholds(Object.fromEntries(data.map((t) => [t.blood_type, t]))); setSummaryError(null); }
+        })
+        .catch((err) => {
+          if (!cancelled && first) setSummaryError(err instanceof Error ? err.message : "Failed to load stock levels");
+        })
+        .finally(() => {
+          if (!cancelled) setSummaryLoading(false);
+        });
+    load(true);
+    const unsubscribe = liveSync.subscribe("inventory", () => load(false)); // thresholds and counts follow the same token
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, []);
 

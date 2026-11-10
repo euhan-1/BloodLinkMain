@@ -2,6 +2,7 @@ import { getDevFacilityId } from "./devMode";
 import { clearSession, getToken, setSession, updateSessionUser, type SessionUser } from "./session";
 import { type InventoryApiRow } from "./inventoryTypes";
 import { SharedRequests, type SharedOptions } from "./sharedRequests";
+import type { PollResult, SyncPayload } from "./liveSync";
 
 // Production always calls same-origin, through Vercel's /api/:path* rewrite
 // (see vercel.json) to the real Render backend — not the Render URL
@@ -88,6 +89,20 @@ export function apiGet<T>(path: string, headers?: HeadersInit, options?: SharedO
   };
   if (headers) return load();
   return shared.get(`${getToken() ?? ""}|${getDevFacilityId() ?? ""}|${path}`, load, options);
+}
+
+// One poll of GET /sync (see liveSync.ts). Not through apiGet: it needs the status and the ETag, and must never be shared or cached.
+// The conditional header is set by hand with cache: "no-store" so a 304 reaches the caller instead of being turned back into the
+// cached 200. A 401 clears the session exactly as every other authenticated call does; any other failure is thrown with its status.
+export async function syncPoll(etag: string | null): Promise<PollResult> {
+  const res = await fetch(`${API_BASE_URL}/sync`, {
+    headers: withAuthHeaders(etag ? { "If-None-Match": etag } : undefined),
+    cache: "no-store",
+  });
+  if (res.status === 304) return { status: 304 };
+  if (res.status === 401) return throwForResponse(res);
+  if (!res.ok) throw Object.assign(new Error(await extractErrorMessage(res)), { status: res.status });
+  return { status: 200, data: (await res.json()) as SyncPayload, etag: res.headers.get("ETag") };
 }
 
 export async function apiPost<T>(path: string, body: unknown, headers?: HeadersInit): Promise<T> {
@@ -573,11 +588,7 @@ export function listNotifications(opts: { limit?: number; beforeId?: number } = 
   return apiGet<NotificationItem[]>(query ? `/notifications?${query}` : "/notifications");
 }
 
-// The bell's badge and its poll: every unread notification (not just the newest page) and the newest id, so an arrival can be told
-// from a count that merely changed.
-export function getNotificationUnreadCount(): Promise<{ unread: number; latest_id: number }> {
-  return apiGet<{ unread: number; latest_id: number }>("/notifications/unread-count");
-}
+// (The bell's badge comes from the shared poller, GET /sync: see lib/liveSync.ts. GET /notifications/unread-count stays on the server.)
 
 export function markNotificationRead(notificationId: number): Promise<{ id: number; read?: boolean; already_read_or_not_found?: boolean }> {
   return apiPost(`/notifications/${notificationId}/read`, {});

@@ -47,6 +47,21 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `_STALE_NOTIFICATION_SQL` calls resolved out of the count instead of updating them (the sweep that marks them read runs at the event
   and when the list is opened). A response's `Server-Timing` header (`app`, `db`, durations only; `SERVER_TIMING=false` turns it
   off) separates server time from network time in DevTools.
+- **Indexes added 2026-11-09 by `server/migrate_add_facility_indexes.sql`** (run by hand in the Supabase SQL editor with `CREATE INDEX
+  CONCURRENTLY`, one at a time; checked valid in production by a read-only catalog query on 2026-11-10; all five are in
+  `server/tests/schema.sql`): `idx_blood_units_facility_type_expiry` (facility_id, blood_type, expires_date: every facility-scoped
+  stock read), `idx_blood_units_reserved_for_request` (reserved_for_request_id, partial `WHERE ... IS NOT NULL`: `confirm_receipt`'s
+  lookup and the foreign key), `idx_requests_requester_created` (requesting_facility_id, created_at), `idx_requests_supplier_created`
+  (supplying_facility_id, created_at), `idx_inventory_snapshots_facility_date` (facility_id, snapshot_date: the forecast's history
+  read; the UNIQUE (snapshot_date, blood_type, facility_id) stays, it enforces one row per day). They are plain additive indexes:
+  dropping one changes nothing but speed. At today's table sizes the planner may still seq-scan `requests` (16 rows) and the
+  whole-facility `blood_units` reads; whether each is chosen was an expectation in the migration file, **not measured after
+  creation**.
+- **Fonts are self-hosted** (`src/styles/fonts.css`, files in `src/assets/fonts/`): IBM Plex Sans 400/500/600/700, Archivo 700/800,
+  JetBrains Mono 400/500/600 and IBM Plex Serif 700, Latin subset only (a non-Latin script needs its subset files added), woff2 from the
+  Fontsource packages (5.3.0), so no request goes to Google Fonts. All four families are SIL OFL 1.1: the `OFL-*.txt` files beside the
+  fonts must stay with them. `index.html` preloads four (Plex Sans 400 and 600, Archivo 700, and Plex Serif 700 only at
+  `min-width: 1024px`); adding a family means a `@font-face`, the file, its licence text, and a preload only if it is used above the fold.
 
 ## Conventions that bite
 
@@ -212,9 +227,11 @@ requests, SARIMAX demand forecasting, donor broadcast.
   units brings it back to its maximum."). Every request notification names its quantity and component, dates are written out
   ("28 Oct 2026"), and the text says "request", "kilometers" and "near-expiry". The bell (`NotificationBell`, logic in
   `lib/notifications.ts`, asserted by `check_notifications.ts`) shows the **server's count of every unread row** (exact to 99, then
-  "99+"; the list's header gives the exact number), polls `GET /notifications/unread-count` every 20 s **only while the browser tab
-  is visible** (and at once when it becomes visible), loads the list when opened, 50 a page, and pages older rows with
-  `GET /notifications?before_id=`. Expiring units are on the Dashboard, not in the list.
+  "99+"; the list's header gives the exact number), takes that count (and the newest id, to tell an arrival from a count that merely
+  changed) from the one shared poller's `GET /sync` (see **Live sync**), which polls **only while the browser tab is visible** and at
+  once when it becomes visible; it has no timer of its own. It loads the list when opened, 50 a page, and pages older rows with
+  `GET /notifications?before_id=`. `GET /notifications/unread-count` still exists and is tested, but nothing in the app calls it.
+  Expiring units are on the Dashboard, not in the list.
 - **The blood bank Inventory** (`BankInventory.tsx`, logic in `lib/bankInventory.ts`): the expired backlog is the headline (one
   button archives exactly the units the server will archive, never the expired ones still reserved for a request, after a
   confirmation), then a search across every type (DIN prefix or substring, case and spaces ignored), then a table of the eight
@@ -237,7 +254,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
   The five transition functions take `user_id`, so tests call them with `user_id=None` (a bare call would pass the
   `Depends` object into SQL, as for `uploaded_by`).
 - **A request's timeline is derived, not stored** (`_request_timeline`, served by `GET /requests/{id}`, which the chat
-  re-fetches with its messages every 4 s while the browser tab is visible; the Live label is the last poll's result). Both sides' request lists poll every 25 s while the browser tab is visible (silent, and at once on becoming visible); the
+  re-fetches with its messages every 4 s while the browser tab is visible; the Live label is the last poll's result). Both sides' request lists reload silently when the shared poller's token for them moves (see **Live sync**; no timer of their own); the
   chat shows a day separator above each run of bubbles once the thread spans more than one day. The **Request and chats tab badge counts
   the rows where this facility has an action available** (`needsAction` in `lib/requestInbox.ts`): incoming requests awaiting its decision,
   accepted incoming requests awaiting its release, accepted outgoing requests awaiting its receipt. Requests waiting on the other
@@ -263,6 +280,34 @@ requests, SARIMAX demand forecasting, donor broadcast.
   shared by the receipt (every column) and the thread, where the release and receipt events each carry a "Units" toggle (release:
   what was sent; receipt: how each unit arrived) when the ledger recorded them. Release and receipt events name the units from `request_units`, falling back to `request_unit_failures`
   for a request released before the ledger existed.
+- **Live sync** (`GET /sync`, `lib/liveSync.ts`, `lib/liveSyncRuntime.ts`, `scripts/check_live_sync.ts`, `tests/test_sync.py`): one
+  poller per signed-in tab asks `GET /sync` about every 15 s (±10 % jitter) **while the tab is visible**, instead of each screen polling
+  its own endpoint, so a change another facility makes shows within about 15-17 s with no reload. No websocket and no SSE: they hold a
+  connection open per user on a one-worker, 512 MB instance. The endpoint is authenticated and facility-scoped (401 without a token,
+  403 for a deactivated facility or an admin; the facility is whichever `get_acting_facility_id` resolves, like every facility endpoint), on
+  `read_engine` (in `READ_ONLY_FUNCTIONS`) and **one statement** (measured 2026-11-10 through the logging proxy: 1 round trip, plus 1 more
+  at most every 30 s for the active-account check, which any request shares); it writes nothing and no rate limiter sees it. It returns
+  `{notifications: {unread, latest_id}, requests: {incoming, outgoing}, inventory, expiring}` (about 150 bytes) with an `ETag`
+  (a hash of the payload) and `Cache-Control: private, no-cache`; a matching `If-None-Match` gets a bodyless 304. Tokens are 12 hex
+  characters hashed from a count and a version value over the caller's own rows, so they say "something changed", never what, and
+  nothing about another facility. **`requests.*`**: count + max id + the newest of `created_at`/`accepted_at`/`declined_at`/
+  `cancelled_at`/`supplier_confirmed_at`/`requester_confirmed_at` (every transition stamps one: a new transition column must be added
+  to that `GREATEST`). **`inventory`**: a row-by-row hash (`sum(hashtextextended(...))`, order-independent, since `blood_units` has no
+  `updated_at`) of every unit that still matters (not archived, or archived but not yet expired: the units `USABLE_COUNTS_SQL` can
+  count) plus the facility's thresholds plus the Manila date (midnight expires units without touching a row). **`expiring`**: the same
+  hash over `OFFERABLE_UNITS_SQL`'s units inside `NOTIFY_EXPIRY_NEAR_DAYS`, plus the date. **notifications** are two numbers, not a token;
+  they replace the unread-count polling, and `_STALE_NOTIFICATION_SQL` is the one definition of "resolved" for the sweep, the count and
+  `/sync`. The 12 hex characters are not secret, only unreadable. **Frontend**: `LiveSync` (pure, injected network, clock and visibility)
+  has exactly one pending timer for the whole app (the check script asserts it); the first answer is a baseline and notifies nobody (each
+  screen loads its own data on mount), every later answer notifies only the sections whose token changed, and a screen reloads silently
+  through `apiGet`, so the shared request layer still de-duplicates and the TTL cache still applies; hidden tab: the pending poll is
+  dropped; visible or window focus: poll at once; errors double the interval up to 120 s; **401 and 403 stop it** until `start()` is
+  called again (TopNav mounts it, so signing in does); sign-out and `SESSION_EXPIRED_EVENT` stop it. Forecasts are not polled (cached per
+  Manila day; the Dashboard loads them and asks again only while types are pending). The open request's chat keeps its own 4 s poll (only
+  while a thread is open). Known limits: a change landing between a screen's mount fetch and the first poll's baseline is missed until
+  the next change; a facility's own write moves its own token, so it costs one extra silent refetch; `latest_id` is `max(id)` over the
+  facility's notifications, which scans more as history grows (an `(facility_id, id DESC)` index would make it a lookup: not added);
+  the admin screens, the donor list and the hospital sourcing search are not covered.
 - **The transfer history** (`GET /transfers`, the third Requests tab): a transfer is an accepted request, so finished ones
   (completed, failed) by default and accepted ones with `include_active`; pending never; declined and cancelled only when
   chosen as the outcome (dated by when requested, no units, so received is null, not 0). Filtering
@@ -276,7 +321,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (723 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (757 tests plus
   160 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
@@ -298,11 +343,19 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `node scripts/check_request_inbox.ts` (the Requests inbox's order, counts, status wording and unread rule) and
   `node scripts/check_bank_dashboard.ts` (the blood bank Dashboard's sentence, outlook, basis and order prefill) and
   `node scripts/check_bank_inventory.ts` (the blood bank Inventory's notes, filters, search, paging and backlog) and
-  `node scripts/check_notifications.ts` (the bell's badge, times, polling and paging) and
+  `node scripts/check_notifications.ts` (the bell's badge, times and paging) and
+  `node scripts/check_live_sync.ts` (the shared poller: baseline, 304, one timer, hidden tab, backoff, 401/403 stop, restart) and
   `node scripts/check_request_cache.ts` (the shared request layer under `apiGet`: in-flight sharing, the short cache, invalidation), each printing `ok`, plus
   `npm run typecheck`. The frontend has no component test runner.
   A red suite is a finding, not a footnote — "known failure" is how a real
   bug hides.
+- **Regenerating `server/tests/schema.sql`** is a `pg_dump --schema-only --no-owner --no-privileges` of production, run by Euhan
+  (pg_dump 17 to match the dump's header). Where no `pg_dump` is installed, a read-only fallback was used on 2026-11-10: compare
+  production's catalog (`pg_indexes` joined to `pg_index.indisvalid`, `information_schema.columns`, `pg_get_constraintdef` over
+  `pg_constraint`, `pg_tables`) with the file through `database.read_engine` (a read-only session, so `.env` is never read directly),
+  and add what differs by hand in `pg_dump`'s format. That compares table, column, constraint and index **names**; it does not compare
+  column types, defaults or index definitions of indexes the file already has, so it is weaker than a real dump. Only the five indexes
+  above differed. The pytest run (conftest rebuilds the scratch schema from this file) confirms the file loads, nothing more.
 - **Don't report a measurement you didn't take.** Say UNKNOWN. Check that the
   deployed code actually contains the feature before measuring it there.
 - **Check what you fed a statistical test** before believing its result. Use

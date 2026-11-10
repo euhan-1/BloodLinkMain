@@ -3,15 +3,16 @@ import { Bell, Building2, CheckCircle, ChevronDown, KeyRound, LogOut, Moon, Refr
 import {
   updatePassword as apiUpdatePassword,
   requestPasswordReset,
-  listNotifications, getNotificationUnreadCount, markNotificationRead, markAllNotificationsRead, type NotificationItem,
+  listNotifications, markNotificationRead, markAllNotificationsRead, type NotificationItem,
 } from "../lib/api";
 import {
-  agoText, appendOlder, badgeLabel, isArrival, markEveryRead, markOneRead, mayHaveMore, oldestId, shouldPoll, unreadText,
+  agoText, appendOlder, badgeLabel, isArrival, markEveryRead, markOneRead, mayHaveMore, oldestId, unreadText,
 } from "../lib/notifications";
 import { formatDateTime } from "../lib/dateFormat";
 import { type SessionUser } from "../lib/session";
 import { getStoredTheme, setTheme, type Theme } from "../lib/theme";
 import { Modal } from "./Modal";
+import { liveSync } from "../lib/liveSyncRuntime";
 
 // Lazy on purpose: the edit-profile form embeds the map picker, and Leaflet would otherwise ride along in the first chunk and be
 // downloaded by every visitor to the sign-in page.
@@ -159,16 +160,15 @@ function ChangePasswordModal({ email, onClose }: { email: string; onClose: () =>
   );
 }
 
-const NOTIFICATION_POLL_MS = 20000;
 const NOTIFICATION_PAGE = 50;
 
 // Bell trigger + dropdown for facility accounts (TopNav only — admins have no
 // facility_id, so notifications, which are facility-scoped, never apply to
 // them; AdminDashboardScreen's header renders AccountMenu without this).
 //
-// The badge is the server's count of every unread notification, polled every 20 s while the browser tab is visible (and at
-// once when it becomes visible again), not a count of whatever page happens to be loaded. The list loads when it is opened,
-// 50 at a time, with "Show older" for the rest.
+// The badge is the server's count of every unread notification, delivered by the one shared poller (lib/liveSync.ts, GET /sync,
+// about every 15 s while the browser tab is visible, and at once when it becomes visible again), not a count of whatever page
+// happens to be loaded. The list loads when it is opened, 50 at a time, with "Show older" for the rest.
 export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationItem) => void }) {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unread, setUnread] = useState(0);
@@ -214,9 +214,10 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
     }
   }
 
-  async function poll() {
-    try {
-      const { unread: count, latest_id } = await getNotificationUnreadCount();
+  // The two numbers arrive with every answer of the shared poller (and at once on subscribing, if it already has them). A failed
+  // poll is the poller's business (it backs off); the bell just keeps what it shows.
+  useEffect(() => {
+    const unsubscribe = liveSync.subscribeNotifications(({ unread: count, latest_id }) => {
       setUnread(count);
       if (isArrival(knownLatestIdRef.current, latest_id)) {
         setJustArrived(true);
@@ -225,19 +226,9 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
         if (openRef.current) loadFirstPage();
       }
       knownLatestIdRef.current = latest_id;
-    } catch {
-      // A failed poll shouldn't surface an error banner on every screen — it'll just quietly retry on the next tick.
-    }
-  }
-
-  useEffect(() => {
-    poll();
-    const interval = setInterval(() => { if (shouldPoll(document.visibilityState)) poll(); }, NOTIFICATION_POLL_MS);
-    const onVisible = () => { if (shouldPoll(document.visibilityState)) poll(); };
-    document.addEventListener("visibilitychange", onVisible);
+    });
     return () => {
-      clearInterval(interval);
-      document.removeEventListener("visibilitychange", onVisible);
+      unsubscribe();
       if (pulseTimeoutRef.current !== null) clearTimeout(pulseTimeoutRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -17,8 +17,11 @@
 -- silently on a re-run. After running all five, run the CHECK query at the bottom: every row must say valid = true. For a row that
 -- says false, run its DROP INDEX CONCURRENTLY from the ROLLBACK section, then run its CREATE again.
 --
--- After they are all valid, regenerate server/tests/schema.sql (a pg_dump --schema-only of production, per CLAUDE.md) so the test
--- schema matches. I did not edit schema.sql: until this runs, it is still an accurate dump of production.
+-- STATUS (2026-11-10): the five indexes exist in production and are valid (read-only pg_index/pg_indexes check), and
+-- server/tests/schema.sql now carries them, added in pg_dump's format at their name-sorted positions (no pg_dump was available;
+-- see "Regenerating server/tests/schema.sql" in CLAUDE.md for the method and its limits).
+-- Original note: after they are all valid, regenerate server/tests/schema.sql (a pg_dump --schema-only of production) so the test
+-- schema matches.
 --
 -- Run them outside a busy minute if you can; the build reads the table once and takes only a lightweight lock that does not block
 -- the app's reads or writes. The cost afterwards is one extra index to maintain on each insert/update of the table (tiny here).

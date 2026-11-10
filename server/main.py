@@ -24,6 +24,7 @@ import jwt
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -2438,8 +2439,8 @@ NOTIFICATIONS_MAX_PAGE_SIZE = 100
 @app.get("/notifications")
 def list_notifications(limit: int = NOTIFICATIONS_PAGE_SIZE, before_id: Optional[int] = None, facility_id: int = Depends(get_acting_facility_id)):
     """Newest first, `limit` rows (default 50, at most 100). To reach older rows pass `before_id` = the id of the oldest row
-    already held: this returns the rows older than it. The frontend polls GET /notifications/unread-count instead of this
-    on a short interval; there's no push/WebSocket involved. Rows whose truth has gone (see _resolve_stale_notifications)
+    already held: this returns the rows older than it. The bell's count comes from the shared poller's GET /sync, not from this;
+    there's no push/WebSocket involved. Rows whose truth has gone (see _resolve_stale_notifications)
     are marked read first, so the list never offers a finished to-do as new."""
     limit = max(1, min(limit, NOTIFICATIONS_MAX_PAGE_SIZE))
     with engine.begin() as conn:
@@ -2456,6 +2457,113 @@ def list_notifications(limit: int = NOTIFICATIONS_PAGE_SIZE, before_id: Optional
             {"facility_id": facility_id, "before_id": before_id, "limit": limit},
         ).mappings().all()
     return [dict(row) for row in rows]
+
+
+# ─── Live sync ──────────────────────────────────────────────────────────────
+# GET /sync is what every signed-in browser tab polls (one timer per tab, about every 15 s while the tab is visible) INSTEAD OF each
+# screen polling its own endpoint. It answers "did anything change for my facility?" with small opaque tokens, one per section; the
+# page refetches only the section whose token moved. No websocket and no SSE: those hold a connection open per user on a one-worker,
+# 512 MB instance. Properties that matter, each tested in tests/test_sync.py:
+#   - ONE statement on the read engine (three aggregates and a tiny fourth, cross-joined: one round trip), so a poll costs 1 statement,
+#     plus the 30-second active-account check every other authenticated request has. It writes nothing and touches no rate limiter.
+#   - Scoped to the caller's facility by construction: every aggregate is filtered by the acting facility, and tokens are hashes, so
+#     they say "something changed", never what, and never anything about another facility.
+#   - A token is a hash of (a count, a version value) over that facility's own rows:
+#       requests.incoming / requests.outgoing  count + max id + the newest stamp of any transition column (every transition stamps a time)
+#       inventory   every unit that still matters (not archived, or archived but not yet expired) hashed row by row, plus the facility's
+#                   thresholds, plus the Manila date (midnight expires units without touching a row)
+#       expiring    the same hash over the units a bank can still offer within NOTIFY_EXPIRY_NEAR_DAYS, plus the date
+#     notifications is not a token but the two numbers the bell draws (unread and latest_id), which replace /notifications/unread-count's polling.
+#   - ETag / If-None-Match: the ETag is a hash of the whole payload; an unchanged answer is a bodyless 304.
+#   - Forecasts are NOT part of it: they are cached per Manila day and refetched by the Dashboard's own rules.
+SYNC_TOKEN_LENGTH = 12
+
+
+def _token(*parts) -> str:
+    """An opaque 12-hex-character token for a section: a hash of its parts, so it reveals nothing about the rows behind it."""
+    return hashlib.sha1("|".join(str(p) for p in parts).encode("utf-8")).hexdigest()[:SYNC_TOKEN_LENGTH]
+
+
+_SYNC_SQL = f"""
+    SELECT ns.unread, ns.latest_id,
+           rs.in_count, rs.in_max_id, rs.in_stamp, rs.out_count, rs.out_max_id, rs.out_stamp,
+           us.units, us.units_hash, us.expiring_units, us.expiring_hash,
+           ts.thresholds_hash
+    FROM (
+        SELECT (SELECT count(*) FROM notifications n
+                WHERE n.facility_id = :facility_id AND n.read_at IS NULL AND NOT COALESCE({_STALE_NOTIFICATION_SQL}, false)) AS unread,
+               (SELECT COALESCE(max(id), 0) FROM notifications WHERE facility_id = :facility_id) AS latest_id
+    ) ns,
+    (
+        SELECT count(*) FILTER (WHERE supplying_facility_id = :facility_id) AS in_count,
+               COALESCE(max(id) FILTER (WHERE supplying_facility_id = :facility_id), 0) AS in_max_id,
+               extract(epoch FROM max(GREATEST(created_at, accepted_at, declined_at, cancelled_at, supplier_confirmed_at, requester_confirmed_at))
+                                  FILTER (WHERE supplying_facility_id = :facility_id)) AS in_stamp,
+               count(*) FILTER (WHERE requesting_facility_id = :facility_id) AS out_count,
+               COALESCE(max(id) FILTER (WHERE requesting_facility_id = :facility_id), 0) AS out_max_id,
+               extract(epoch FROM max(GREATEST(created_at, accepted_at, declined_at, cancelled_at, supplier_confirmed_at, requester_confirmed_at))
+                                  FILTER (WHERE requesting_facility_id = :facility_id)) AS out_stamp
+        FROM requests WHERE requesting_facility_id = :facility_id OR supplying_facility_id = :facility_id
+    ) rs,
+    (
+        SELECT count(*) AS units,
+               COALESCE(sum(hashtextextended(concat_ws('|', id, location, volume_ml, collected_date, expires_date,
+                                                       COALESCE(reserved_for_request_id::text, '~'), COALESCE(archived_at::text, '~')), 0)), 0) AS units_hash,
+               count(*) FILTER (WHERE archived_at IS NULL AND reserved_for_request_id IS NULL
+                                  AND expires_date >= :today AND expires_date <= :last_day) AS expiring_units,
+               COALESCE(sum(hashtextextended(concat_ws('|', id, expires_date), 0)) FILTER (
+                            WHERE archived_at IS NULL AND reserved_for_request_id IS NULL
+                              AND expires_date >= :today AND expires_date <= :last_day), 0) AS expiring_hash
+        FROM blood_units
+        WHERE facility_id = :facility_id AND (archived_at IS NULL OR expires_date >= :today)
+    ) us,
+    (
+        SELECT COALESCE(sum(hashtextextended(concat_ws('|', blood_type, minimum_units, maximum_units), 0)), 0) AS thresholds_hash
+        FROM blood_type_thresholds WHERE facility_id = :facility_id
+    ) ts
+"""
+
+
+@retry_read
+def _read_sync_state(facility_id: int, today: date):
+    with read_engine.connect() as conn:
+        return conn.execute(
+            text(_SYNC_SQL),
+            {"facility_id": facility_id, "today": today, "last_day": today + timedelta(days=NOTIFY_EXPIRY_NEAR_DAYS)},
+        ).mappings().first()
+
+
+def _sync_payload(facility_id: int, today: date) -> dict:
+    r = _read_sync_state(facility_id, today)
+    return {
+        "notifications": {"unread": r["unread"], "latest_id": r["latest_id"]},
+        "requests": {
+            "incoming": _token("in", r["in_count"], r["in_max_id"], r["in_stamp"]),
+            "outgoing": _token("out", r["out_count"], r["out_max_id"], r["out_stamp"]),
+        },
+        "inventory": _token("inv", today, r["units"], r["units_hash"], r["thresholds_hash"]),
+        "expiring": _token("exp", today, r["expiring_units"], r["expiring_hash"]),
+    }
+
+
+def _etag_matches(header: Optional[str], etag: str) -> bool:
+    """If-None-Match: a list of entity tags (weak ones too) or *; true when `etag` is one of them."""
+    if not header:
+        return False
+    return any(part.strip() in ("*", etag, f"W/{etag}") for part in header.split(","))
+
+
+@app.get("/sync")
+def sync_tokens(request: Request, facility_id: int = Depends(get_acting_facility_id)):
+    """The change tokens for the caller's own facility (see the Live sync notes above). 200 with a small JSON body and an ETag, or a
+    bodyless 304 when the caller's If-None-Match already matches. Authenticated like every facility endpoint (401 without a valid
+    token, 403 for a deactivated facility or an admin account), reads only, never limited."""
+    payload = _sync_payload(facility_id, business_today())
+    etag = '"' + hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16] + '"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    if _etag_matches(request.headers.get("if-none-match"), etag):
+        return Response(status_code=304, headers=headers)
+    return JSONResponse(payload, headers=headers)
 
 
 @app.get("/notifications/unread-count")

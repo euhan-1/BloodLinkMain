@@ -6,6 +6,7 @@ import {
 } from "./lib/api";
 import { getCurrentUser, type SessionUser } from "./lib/session";
 import { withViewTransition } from "./lib/motion";
+import { startLiveSync, stopLiveSync } from "./lib/liveSyncRuntime";
 import { isDevModeEnabled, getDevFacilityId, setDevFacilityId } from "./lib/devMode";
 import { BloodDropLogo } from "./components/BloodTypeBadge";
 import { NotificationBell, AccountMenu } from "./components/AccountMenu";
@@ -66,6 +67,13 @@ function TopNav({
     { key: "inventory", label: "Inventory", icon: <Package size={17} /> },
     { key: "requests", label: "Requests", icon: <MapPin size={17} /> },
   ];
+
+  // The one shared poller (lib/liveSync.ts) runs exactly while a facility account's nav is on screen: it starts when the nav mounts and
+  // stops when it goes (sign-out, or a 401). Admins have no TopNav and no facility to watch.
+  useEffect(() => {
+    startLiveSync();
+    return stopLiveSync;
+  }, []);
 
   return (
     <header className="sticky top-0 z-[1100] bg-card border-b border-border animate-header-drop-in">

@@ -67,6 +67,7 @@ node scripts/check_bank_dashboard.ts
 node scripts/check_bank_inventory.ts
 node scripts/check_notifications.ts
 node scripts/check_request_cache.ts
+node scripts/check_live_sync.ts
 ```
 
 Each script prints `ok` when it passes.

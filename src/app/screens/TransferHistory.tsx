@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { apiGet } from "../lib/api";
+import { liveSync } from "../lib/liveSyncRuntime";
 import { BloodTypeBadge } from "../components/BloodTypeBadge";
 import { ReasonTag } from "../components/ReasonTag";
 import { Skeleton } from "../components/Skeleton";
@@ -39,13 +40,21 @@ export function TransferHistory({ isBloodBank, onOpenThread }: { isBloodBank: bo
   const set = (patch: Partial<TransferFilters>) => setFilters((f) => ({ ...f, ...patch }));
 
   useEffect(() => {
-    const mine = ++seq.current;
-    setLoading(true);
-    setError(null);
-    apiGet<TransfersResponse>(`/transfers?${transfersQuery(filters)}`)
-      .then((d) => { if (mine === seq.current) setData(d); })
-      .catch((e) => { if (mine === seq.current) setError(e instanceof Error ? e.message : "Failed to load"); })
-      .finally(() => { if (mine === seq.current) setLoading(false); });
+    // `silent` is a reload because a request changed (the shared poller, lib/liveSync.ts): the table stays on screen meanwhile and a
+    // failure leaves what is shown alone. A changed filter loads with the loading state, as before.
+    const load = (silent: boolean) => {
+      const mine = ++seq.current;
+      if (!silent) { setLoading(true); setError(null); }
+      apiGet<TransfersResponse>(`/transfers?${transfersQuery(filters)}`)
+        .then((d) => { if (mine === seq.current) { setData(d); setError(null); } })
+        .catch((e) => { if (!silent && mine === seq.current) setError(e instanceof Error ? e.message : "Failed to load"); })
+        .finally(() => { if (mine === seq.current) setLoading(false); });
+    };
+    load(false);
+    const reload = () => load(true);
+    const offIncoming = liveSync.subscribe("requestsIncoming", reload);
+    const offOutgoing = liveSync.subscribe("requestsOutgoing", reload);
+    return () => { offIncoming(); offOutgoing(); };
   }, [filters]);
 
   const applyPreset = (kind: DatePreset) => {

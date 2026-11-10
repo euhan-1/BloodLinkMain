@@ -1126,6 +1126,20 @@ ALTER TABLE ONLY public.users
 
 
 --
+-- Name: idx_blood_units_facility_type_expiry; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_blood_units_facility_type_expiry ON public.blood_units USING btree (facility_id, blood_type, expires_date);
+
+
+--
+-- Name: idx_blood_units_reserved_for_request; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_blood_units_reserved_for_request ON public.blood_units USING btree (reserved_for_request_id) WHERE (reserved_for_request_id IS NOT NULL);
+
+
+--
 -- Name: idx_blood_units_upload_history; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1151,6 +1165,13 @@ CREATE UNIQUE INDEX idx_facility_registration_requests_email_live ON public.faci
 --
 
 CREATE INDEX idx_facility_registration_requests_queue ON public.facility_registration_requests USING btree (status) WHERE (archived_at IS NULL);
+
+
+--
+-- Name: idx_inventory_snapshots_facility_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_inventory_snapshots_facility_date ON public.inventory_snapshots USING btree (facility_id, snapshot_date);
 
 
 --
@@ -1214,6 +1235,20 @@ CREATE INDEX idx_request_unit_failures_unit ON public.request_unit_failures USIN
 --
 
 CREATE INDEX idx_request_units_unit ON public.request_units USING btree (blood_unit_id);
+
+
+--
+-- Name: idx_requests_requester_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_requests_requester_created ON public.requests USING btree (requesting_facility_id, created_at);
+
+
+--
+-- Name: idx_requests_supplier_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_requests_supplier_created ON public.requests USING btree (supplying_facility_id, created_at);
 
 
 --

@@ -29,10 +29,6 @@ export function agoText(iso: string, now: number = Date.now()): string {
 // "12 unread" / "Nothing unread": the exact count, in the list's header.
 export const unreadText = (unread: number): string => (unread <= 0 ? "Nothing unread" : `${unread} unread`);
 
-// The bell polls only while the browser tab is visible, like the request lists and the chat, and asks again at once when the
-// tab comes back.
-export const shouldPoll = (visibility: string): boolean => visibility === "visible";
-
 export const markOneRead = (items: NotificationItem[], id: number, at: string): NotificationItem[] =>
   items.map((n) => (n.id === id && n.read_at === null ? { ...n, read_at: at } : n));
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { liveSync } from "../lib/liveSyncRuntime";
 import { Bell, CheckCircle, ChevronDown, FlaskConical, TrendingUp, Upload } from "lucide-react";
 import {
   Area, CartesianGrid, ComposedChart, Line, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
@@ -35,7 +36,6 @@ import {
 const RAISED = "shadow-[var(--shadow-raised)]";
 const VISIBLE_WAITING = 5;
 const VISIBLE_EXPIRING = 5;
-const EXPIRY_POLL_MS = 25000;
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
 export type BankDashboardProps = {
@@ -64,8 +64,8 @@ export function BankDashboardView(p: BankDashboardProps) {
         .then((d) => { if (!cancelled) { setExpiring(d); setExpiringError(null); } })
         .catch((e) => { if (!cancelled && first) setExpiringError(e instanceof Error ? e.message : "Failed to load"); }); // a failed refresh keeps what is shown
     load(true);
-    const timer = setInterval(() => load(false), EXPIRY_POLL_MS);
-    return () => { cancelled = true; clearInterval(timer); };
+    const unsubscribe = liveSync.subscribe("expiring", () => load(false)); // reloads when the shared poller says the expiring token moved
+    return () => { cancelled = true; unsubscribe(); };
   }, []);
 
   const waiting = waitingRequests(p.requests);

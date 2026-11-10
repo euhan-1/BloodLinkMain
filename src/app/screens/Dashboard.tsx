@@ -8,11 +8,11 @@ import { HospitalDashboardView, type ThresholdView } from "./HospitalDashboard";
 import { BankDashboardView } from "./BankDashboard";
 import { type RequestRow } from "../lib/requestTypes";
 import { type ForecastView } from "../lib/forecastTypes";
+import { liveSync } from "../lib/liveSyncRuntime";
 
-// Same order of magnitude as AccountMenu's NOTIFICATION_POLL_MS — frequent
-// enough that a status change is visible within one sitting, infrequent
-// enough not to matter for API load.
-const SUMMARY_POLL_MS = 25000;
+// No timers here: the summary, the hospital's unit list and the request list reload when the shared poller (lib/liveSync.ts) says
+// their token moved, about 15 s after another facility changes something and never while the tab is hidden. The forecast is not
+// polled at all: it is cached per Manila day and loaded once (and again, by its own rules, while types are still pending).
 
 type DashboardData = ForecastView | ThresholdView;
 
@@ -51,9 +51,9 @@ export function DashboardScreen({
   useEffect(() => {
     let cancelled = false;
     // latestRequestId guards against response reordering, not just unmount: a slow initial request (Render's cold start)
-    // can resolve AFTER a later 25s-poll response already landed, and would silently revert the numbers.
+    // can resolve AFTER a later refresh already landed, and would silently revert the numbers.
     let latestRequestId = 0;
-    // Silent background refresh (no loading flag on subsequent ticks) so the numbers reflect changes made by other facilities.
+    // Silent background refresh (no loading flag after the first load) so the numbers reflect changes made by other facilities.
     function loadSummary(isFirstLoad: boolean) {
       const requestId = ++latestRequestId;
       apiGet<InventorySummaryRow[]>("/inventory/summary")
@@ -62,8 +62,8 @@ export function DashboardScreen({
         .finally(() => { if (!cancelled && isFirstLoad) setSummaryLoading(false); });
     }
     loadSummary(true);
-    const interval = setInterval(() => loadSummary(false), SUMMARY_POLL_MS);
-    return () => { cancelled = true; clearInterval(interval); };
+    const unsubscribe = liveSync.subscribe("inventory", () => loadSummary(false));
+    return () => { cancelled = true; unsubscribe(); };
   }, []);
 
   useEffect(() => {
@@ -73,11 +73,14 @@ export function DashboardScreen({
       return;
     }
     let cancelled = false;
-    apiGet<InventoryApiRow[]>("/inventory")
-      .then((data) => { if (!cancelled) setExpiryUnits(data.map(toInventoryUnit)); })
-      .catch((err) => { if (!cancelled) setExpiryError(err instanceof Error ? err.message : "Failed to load"); })
-      .finally(() => { if (!cancelled) setExpiryLoading(false); });
-    return () => { cancelled = true; };
+    const load = (first: boolean) =>
+      apiGet<InventoryApiRow[]>("/inventory")
+        .then((data) => { if (!cancelled) { setExpiryUnits(data.map(toInventoryUnit)); setExpiryError(null); } })
+        .catch((err) => { if (!cancelled && first) setExpiryError(err instanceof Error ? err.message : "Failed to load"); })
+        .finally(() => { if (!cancelled) setExpiryLoading(false); });
+    load(true);
+    const unsubscribe = liveSync.subscribe("inventory", () => load(false)); // a hospital's expiring list follows its stock
+    return () => { cancelled = true; unsubscribe(); };
   }, []);
 
   // Shared across every call site (initial mount, post-upload, undo) so a slow earlier request can never clobber a faster
@@ -121,8 +124,8 @@ export function DashboardScreen({
     }
     load();
     // Both sides' request lists change while the page is open: a hospital's statuses, a bank's waiting requests.
-    const interval = setInterval(load, SUMMARY_POLL_MS);
-    return () => { cancelled = true; clearInterval(interval); };
+    const unsubscribe = liveSync.subscribe(dashboardData.view === "threshold_status" ? "requestsOutgoing" : "requestsIncoming", load);
+    return () => { cancelled = true; unsubscribe(); };
   }, [dashboardData?.view]);
 
   const expiringRows = expiryUnits.filter((r) => {
