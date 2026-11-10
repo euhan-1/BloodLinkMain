@@ -681,8 +681,9 @@
    beat anything in @layer base, and the radii cannot be a token (rounded-sm/md/lg read --radius, which would also reshape
    the blood-type badge and every chip; rounded-xl compiles to a literal 1.25rem). Unlayered rules beat the utilities.
 
-   The whole block is inside two nested media queries (a single `not (A or B)` is rewritten into invalid CSS by the minifier): under
-   prefers-contrast: more or forced-colors nothing here applies, so those users get exactly the flat, off-state surfaces. Every selector in this block is scoped by the attribute (it starts with
+   The whole block is inside three nested media queries (a single `not (A or B)` is rewritten into invalid CSS by the minifier): under
+   prefers-contrast: more, forced-colors and print nothing here applies (a printed page has no clay shadow, inner shadow, tinted fill or
+   larger radius), so those users get exactly the flat, off-state surfaces. Every selector in this block is scoped by the attribute (it starts with
    :root[data-surface="clay"], :root:not(.dark)[data-surface="clay"] or .dark[data-surface="clay"]).
 
    Recipe (one soft outer drop + two inner shadows, light from the top left), defined once as the --shadow-clay* tokens and
@@ -694,6 +695,7 @@
    ───────────────────────────────────────────────────────────────────────────────────────────────────────────────── */
 @media not (prefers-contrast: more) {
 @media not (forced-colors: active) {
+@media not print {
   :root[data-surface="clay"] {
     --clay-radius-card: 1.75rem;     /* cards, raised surfaces, modals, popovers */
     --clay-radius-control: 0.875rem; /* buttons, fields, tooltips */
@@ -704,10 +706,16 @@
     /* light theme: a softer card fill (not stark white) and a field fill one step darker so a field reads as pressed in */
     --card: #FDFAF6;
     --clay-field: #F6F2EC;
+    /* A slightly darker page and border keep the surface-versus-page and border contrast at or above the off state (off: card
+       vs page 1.052, border on card 7.80, on page 7.41, on a field 7.80); with the softer card alone the first was 1.011. */
+    --background: #F4F0EA;
+    --border: #4F4842;
 
     --clay-hi: rgba(255, 255, 255, 0.95);       /* inner light, top left */
     --clay-lo: rgba(120, 98, 76, 0.26);         /* inner shade, bottom right */
     --clay-drop: rgba(88, 64, 40, 0.20);        /* the one outer shadow */
+    --clay-drop-lg: rgba(88, 64, 40, 0.14);     /* the same, lighter, for the large containers */
+    --clay-lo-faint: rgba(120, 98, 76, 0.12);   /* the very faint inner shade of a tile inside a card */
     --clay-drop-strong: rgba(88, 64, 40, 0.30); /* the outer shadow of a surface that floats over the page */
     --clay-lo-deep: rgba(120, 98, 76, 0.42);    /* the pressed state's deeper inner shade */
     /* the same recipe on an accent-coloured button: light and shade are white and black, the drop takes the role accent */
@@ -716,6 +724,11 @@
     --clay-accent-lo-deep: rgba(0, 0, 0, 0.42);
     --clay-accent-drop: rgba(var(--role-accent-rgb), 0.40);
   }
+  /* The trend chart's grid lines and hover cursor are drawn with var(--border); a chart colour must not move, so the chart
+     keeps the off-state border value. */
+  :root:not(.dark)[data-surface="clay"] .recharts-wrapper {
+    --border: #58514B;
+  }
   .dark[data-surface="clay"] {
     /* the dark card fill is left as it is (a lighter one would lower contrast figures that are already low in dark); only the
        field fill is one step darker, which raises its border contrast */
@@ -723,6 +736,8 @@
     --clay-hi: rgba(255, 240, 220, 0.07);
     --clay-lo: rgba(0, 0, 0, 0.50);
     --clay-drop: rgba(0, 0, 0, 0.50);
+    --clay-drop-lg: rgba(0, 0, 0, 0.38);
+    --clay-lo-faint: rgba(0, 0, 0, 0.25);
     --clay-drop-strong: rgba(0, 0, 0, 0.65);
     --clay-lo-deep: rgba(0, 0, 0, 0.65);
     --clay-accent-hi: rgba(255, 255, 255, 0.22);
@@ -731,7 +746,12 @@
     --clay-accent-drop: rgba(0, 0, 0, 0.55);
   }
   :root[data-surface="clay"] {
-    --shadow-clay:         10px 14px 30px -10px var(--clay-drop), inset 5px 5px 10px var(--clay-hi), inset -6px -7px 14px var(--clay-lo);
+    /* by size: sm = buttons, fields' neighbours, tooltips; md = cards; lg = the big containers (a tighter, lighter drop and
+       softer inner shade, so a large surface sits on the page rather than floating); float = dialogs and popovers; tile = the
+       very faint inner depth of a tile inside a card (inner shadows only) */
+    --shadow-clay-md:      10px 14px 30px -10px var(--clay-drop), inset 5px 5px 10px var(--clay-hi), inset -6px -7px 14px var(--clay-lo);
+    --shadow-clay-lg:      4px 7px 16px -8px var(--clay-drop-lg), inset 4px 4px 8px var(--clay-hi), inset -4px -5px 10px var(--clay-lo);
+    --shadow-clay-tile:    inset 2px 2px 4px var(--clay-hi), inset -2px -3px 5px var(--clay-lo-faint);
     --shadow-clay-float:   14px 20px 44px -12px var(--clay-drop-strong), inset 5px 5px 10px var(--clay-hi), inset -6px -7px 14px var(--clay-lo);
     --shadow-clay-sm:      5px 7px 14px -5px var(--clay-drop), inset 2px 2px 5px var(--clay-hi), inset -3px -3px 6px var(--clay-lo);
     --shadow-clay-pressed: 0 1px 1px var(--clay-hi), inset 3px 4px 9px var(--clay-lo-deep), inset -2px -2px 5px var(--clay-hi);
@@ -747,9 +767,18 @@
   :root[data-surface="clay"] :is(div, section, aside, form):is(.rounded-xl, .rounded-2xl):not(.max-w-\[80\%\]) {
     border-radius: var(--clay-radius-card);
   }
-  :root[data-surface="clay"] .bg-card.border.border-border.rounded-xl:not(li *),
+  :root[data-surface="clay"] .bg-card.border.border-border.rounded-xl:not(li *) {
+    box-shadow: var(--shadow-clay-md);
+  }
+  /* The big containers: the raised surfaces and the two 600 px panels of Request and chats. */
+  :root[data-surface="clay"] .bg-card.border.border-border.rounded-xl[class*="h-[600px]"],
   :root[data-surface="clay"] [class*="shadow-[var(--shadow-raised)]"]:not([class*="bg-status-"]) {
-    box-shadow: var(--shadow-clay);
+    box-shadow: var(--shadow-clay-lg);
+  }
+  /* The tiles inside a raised card (a blood type's gauge tile) read as part of the same material: a very faint inner depth,
+     no tint, no outer shadow. They keep their border. */
+  :root[data-surface="clay"] [class*="shadow-[var(--shadow-raised)]"] li.rounded-xl.border {
+    box-shadow: var(--shadow-clay-tile);
   }
 
   /* Modals and the two header popovers all come through DialogPanel (role="dialog"); a tooltip is role="tooltip" (the
@@ -806,5 +835,6 @@
     color: var(--muted-foreground);
     opacity: 1;
   }
+}
 }
 }

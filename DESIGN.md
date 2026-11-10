@@ -174,7 +174,11 @@ Elevation is structural, not decorative: every top-level card gets the same soft
 
 **The Two-Raised-Surfaces Rule (hospital dashboard).** The hospital dashboard has exactly two raised surfaces, Action Required and the Your requests column, and they carry no border. Everything else on that screen (the summary line, the stock chart, the expiry list) sits flat on Warm Paper with no card and no shadow. This is a deliberate exception to the Structural Lift Rule: a hospital consumes blood and is on the screen to act, so the page has one place to act and one place to check, and depth marks exactly those two. The hospital Inventory goes further and has no raised surface at all: it is a table of hairline-separated rows on the page background, with Upload History as a flat list. The hospital Emergency Sourcing screen has exactly two: the map and the request panel, with the controls and the ranked list flat on the page. None of this has been rolled out to the blood-bank screens.
 
+The default look above is what ships. An optional second look, **the clay look, enabled by `data-surface="clay"` on `<html>`**, changes the shadows and radii of surfaces only: see "The Clay Look" below. **The default is off**, and with it off nothing in this document changes.
+
 ## Shapes
+
+*(Default look. In the clay look the radii are larger and a button's differs from the controls above: see "The Clay Look".)*
 
 Two radius families with a clear division of labor: a tight `sm`/`md`/`lg` step (2px / 6px / 8px) for controls — buttons, inputs, small badges, table chips — and a distinctly larger, independently-set `xl` (20px) reserved for top-level cards. `xl` is deliberately not derived as "`lg` + a fixed offset," so bumping the card radius never ripples down into every small control's corners. Borders are a uniform `1px solid` in Border Charcoal across cards, inputs, and table dividers — never a two-tone or gradient border.
 
@@ -210,6 +214,35 @@ Sticky top bar, Surface White background, single bottom border (no shadow — th
 
 ### DIN and dates
 A blood-unit ID (DIN) is plain mono text (JetBrains Mono, per the Mono-Means-Physical Rule); a date is plain text in the app's one date format ("30 Oct 2026"). There is no separate "label" or "stamp" component: an earlier design had a wide-tracked uppercase `DinLabel` and a boxed, status-colored `DateStamp` for expiry dates, but no screen used them once the bank screens were rebuilt as tables, and both were removed. An expiring unit is shown by the plain days-left text and the status colour of the row, not a stamp.
+
+## The Clay Look (optional, enabled by `data-surface="clay"`)
+
+**Off by default.** Set `data-surface="clay"` on `<html>` (the one-line change is in `index.html`; `document.documentElement.dataset.surface = "clay"` in DevTools to try it) and surfaces take a soft, pressed-from-clay finish. With the attribute absent no clay rule matches and the compiled CSS is byte-identical to the build without it. It changes **surfaces only**: cards, raised surfaces, buttons, text fields, dialogs and popovers, tooltips. Status and alert colours (safe, watch, critical, info, synthetic), gauge and chart colours, layout, spacing, copy and behaviour are untouched; the hospital's tinted Action Required keeps its default shadow so a shortage reads exactly as before. The rules live in the last block of `src/styles/theme.css`.
+
+**The recipe.** One soft outer drop plus two inner shadows, light from the top left (a light inner shadow top-left, a darker one bottom-right). At most three layers on any element. Defined once as tokens, by size:
+
+| Token | Used for | Notes |
+|---|---|---|
+| `--shadow-clay-sm` | secondary buttons, tooltips | small drop, small inner shadows |
+| `--shadow-clay-md` | cards (`bg-card border rounded-xl`) | the reference recipe |
+| `--shadow-clay-lg` | the big containers: the raised surfaces (the Dashboard's Stock and outlook card and Waiting for you, the Source supply map and Request card) and the 600 px Request and chats panels | a tighter, lighter drop than md (about half the reach below the edge), so a large surface sits on the page instead of floating |
+| `--shadow-clay-float` | dialogs and the two header popovers | a stronger drop: they sit above the page |
+| `--shadow-clay-tile` | a blood type's gauge tile inside a raised card | inner shadows only, very faint, no tint: the tile reads as the same material as its card; it keeps its border |
+| `--shadow-clay-field` | text fields, selects | inset (pressed in); off while the field has focus so the focus ring is unchanged |
+| `--shadow-clay-pressed`, `--shadow-clay-accent`, `-accent-hover`, `-accent-pressed` | buttons | the pressed state moves the shadow inward and nothing else; none under `prefers-reduced-motion: reduce` |
+
+Colours come from `--clay-hi`, `--clay-lo`, `--clay-drop` (and `-lg`, `-faint`, `-deep`, `-accent-*`), with a dark-theme set. Radii: `--clay-radius-card` 1.75rem (cards, raised surfaces, dialogs, popovers) and `--clay-radius-control` 0.875rem (buttons, fields, tooltips).
+
+**Where the clay look departs from the default rules above** (so that nobody reads one as a bug against the other):
+- **Button radius** is 0.875rem, not the 6 px `rounded-md`, and not the card radius either.
+- **Secondary buttons carry a shadow** (`--shadow-clay-sm`); the default look gives elevation only to solid primary buttons. A disabled button carries none in either look.
+- **The blood-type badge's unselected surface** is `#FDFAF6`, not white: `--card` is softened (a field's fill is `#F6F2EC`, one step darker, to read as pressed in). The badge's shape is unchanged. In dark theme `--card` is unchanged.
+- **Modals and dropdowns** use `--shadow-clay-float`, not `shadow-lg`/`shadow-xl`.
+- **The page and the border** are slightly darker in light theme (`#F4F0EA`, `#4F4842`, against `#FAF9F7` and `#58514B`) so that the surface-versus-page and border contrast are at least what the default look has (1.09:1 against 1.05:1 for card against page; the border 8.6:1 on a card against 7.8:1). Without that adjustment the softer card alone was weaker (1.01:1).
+- **Placeholders** in clay fields use the muted text colour (5.2:1 in light, 5.8:1 in dark); the default look's 50%-of-text placeholder is 3.35:1.
+- **Buttons inside a table or list row** keep the default look (no clay shadow, no larger radius); the gauge tiles are the one deliberate exception, with the faint inner depth above.
+
+**Fallbacks.** The clay look switches itself off, leaving exactly the default look, for `prefers-contrast: more`, `forced-colors: active` and **print** (a printed page has no clay shadow, inner shadow, tinted fill or larger radius; the printable Receipt prints byte-for-byte the same with the switch on or off).
 
 ## Do's and Don'ts
 
