@@ -6322,7 +6322,9 @@ def update_password(body: UpdatePasswordBody, request: Request, user: dict = Dep
             raise HTTPException(status_code=404, detail="account not found")
         if not auth.verify_password(body.current_password, row["password_hash"]):
             _record_attempt(_PASSWORD_CHANGE_LIMITER, keys)
-            raise HTTPException(status_code=401, detail="current password is incorrect")
+            # 400, not 401: the session is fine, a field is wrong. The frontend treats every 401 as an expired session and signs the
+            # user out, so a mistyped current password must not be one. 401 stays for an invalid or expired token (get_current_user).
+            raise HTTPException(status_code=400, detail="current password is incorrect")
         _clear_account_attempts(_PASSWORD_CHANGE_LIMITER, keys)
 
         conn.execute(

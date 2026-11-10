@@ -233,13 +233,43 @@ class UpdatePasswordLimitTests(unittest.TestCase):
 
     def test_the_sixth_wrong_current_password_gets_a_429_with_the_wait(self):
         for _ in range(5):
-            self.assertEqual(self.fail().status_code, 401)
+            self.assertEqual(self.fail().status_code, 400)
         blocked = self.fail()
         self.assertEqual(blocked.status_code, 429)
         self.assertEqual(blocked.detail, "Too many failed attempts to confirm your password. Please try again in 15 minutes.")
         self.assertEqual(blocked.headers["Retry-After"], "900")
         self.clock.t = 900
-        self.assertEqual(self.fail().status_code, 401)                 # a real 15-minute window
+        self.assertEqual(self.fail().status_code, 400)                 # a real 15-minute window
+
+    def test_a_wrong_current_password_is_a_400_with_the_same_words_never_a_401(self):
+        # a 401 means "your session is invalid or expired" and makes the frontend sign the user out; this is a wrong field, not that
+        err = self.fail()
+        self.assertEqual((err.status_code, err.detail), (400, "current password is incorrect"))
+
+    def test_a_missing_or_invalid_session_is_still_a_401(self):
+        for header in (None, "Bearer not-a-token"):
+            with self.assertRaises(HTTPException) as ctx:
+                app.get_current_user(authorization=header)   # the dependency every authenticated route, this one included, runs first
+            self.assertEqual(ctx.exception.status_code, 401)
+
+    def test_through_the_real_app_the_statuses_are_400_then_429_and_a_good_change_is_200(self):
+        import asyncio
+        import json
+        from tests.test_upload_endpoints import asgi
+        token = auth.create_access_token(user_id=self.users["a"], email="x@example.com", facility_id=None, role="staff")
+        headers = [("authorization", f"Bearer {token}"), ("content-type", "application/json")]
+
+        def post(current):
+            body = json.dumps({"current_password": current, "new_password": "a brand new pass 1"}).encode()
+            return asyncio.run(asgi("POST", "/auth/update-password", headers, body))
+
+        statuses = [post("wrong password 1")[0] for _ in range(5)]
+        self.assertEqual(statuses, [400] * 5)
+        status, body = post("wrong password 1")
+        self.assertEqual(status, 429)                                   # the sixth
+        self.assertEqual(json.loads(body)["detail"], "Too many failed attempts to confirm your password. Please try again in 15 minutes.")
+        self.clock.t = 901                                              # the window passes
+        self.assertEqual(post(self.password)[0], 200)                   # a correct change succeeds
 
     def test_a_correct_password_before_the_limit_succeeds(self):
         for _ in range(4):
@@ -261,19 +291,19 @@ class UpdatePasswordLimitTests(unittest.TestCase):
             self.fail()                                                # user a: 4, IP_A: 4
         self.change(current=self.password, new="a brand new pass 1")
         # the address counter stands: one more wrong from IP_A is its fifth, then IP_A is blocked even for another user
-        self.assertEqual(self.fail(who="b").status_code, 401)
+        self.assertEqual(self.fail(who="b").status_code, 400)
         self.assertEqual(self.fail(who="b").status_code, 429)
         # the user counter was cleared: user a from other addresses has all five again
         for ip in (IP_B, IP_C, "9.9.9.9", "4.4.4.4", "5.5.5.5"):
             with self.assertRaises(HTTPException) as ctx:
                 self.change(current="wrong password 1", new="x" * 12, ip=ip)
-            self.assertEqual(ctx.exception.status_code, 401)
+            self.assertEqual(ctx.exception.status_code, 400)
 
     def test_counters_do_not_leak_between_users_or_into_login(self):
         for _ in range(5):
             self.fail(who="a", ip=IP_A)                                # user a is spent
         self.assertEqual(self.fail(who="a", ip=IP_A).status_code, 429)
-        self.assertEqual(self.fail(who="b", ip=IP_B).status_code, 401)  # user b, another address: untouched
+        self.assertEqual(self.fail(who="b", ip=IP_B).status_code, 400)  # user b, another address: untouched
         self.assertEqual(self.change(who="b", current=self.password, ip=IP_B), {"detail": "password updated"})
         # the login limiter is separate: nothing counted there, so a's own sign-in still works from this address
         with engine.connect() as c:
