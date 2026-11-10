@@ -298,14 +298,23 @@ requests, SARIMAX demand forecasting, donor broadcast.
   hash over `OFFERABLE_UNITS_SQL`'s units inside `NOTIFY_EXPIRY_NEAR_DAYS`, plus the date. **notifications** are two numbers, not a token;
   they replace the unread-count polling, and `_STALE_NOTIFICATION_SQL` is the one definition of "resolved" for the sweep, the count and
   `/sync`. The 12 hex characters are not secret, only unreadable. **Frontend**: `LiveSync` (pure, injected network, clock and visibility)
-  has exactly one pending timer for the whole app (the check script asserts it); the first answer is a baseline and notifies nobody (each
-  screen loads its own data on mount), every later answer notifies only the sections whose token changed, and a screen reloads silently
+  has exactly one pending timer for the whole app (the check script asserts it). **Each subscription carries its own baseline**, the
+  token its screen last saw for its section, so nothing is lost between a screen's first fetch and the poller's first answer:
+  `subscribe()` records the poller's current token for the section (it fetches and polls nothing), and a screen subscribes just before
+  its first fetch (or in the same synchronous turn: a poll answer cannot land in between). If the poller has no answer yet the baseline
+  is "unknown" and the first answer counts as a change, so a screen that fetched before that answer refetches once; a screen that
+  mounts after the first answer records that token and is told nothing until a later answer differs, so it is not fetched twice. After
+  that only a moved token notifies, once per subscription. `stop()` forgets every subscription's baseline (a restart may be another
+  session). The fix is in `LiveSync.subscribe`/`notify`, so every screen has it through the shared code. A screen reloads silently
   through `apiGet`, so the shared request layer still de-duplicates and the TTL cache still applies; hidden tab: the pending poll is
   dropped; visible or window focus: poll at once; errors double the interval up to 120 s; **401 and 403 stop it** until `start()` is
   called again (TopNav mounts it, so signing in does); sign-out and `SESSION_EXPIRED_EVENT` stop it. Forecasts are not polled (cached per
   Manila day; the Dashboard loads them and asks again only while types are pending). The open request's chat keeps its own 4 s poll (only
-  while a thread is open). Known limits: a change landing between a screen's mount fetch and the first poll's baseline is missed until
-  the next change; a facility's own write moves its own token, so it costs one extra silent refetch; `latest_id` is `max(id)` over the
+  while a thread is open). Cost and limits: the first-answer refetch above is the one added fetch, at page load only and only when `/sync`
+  answers after the screens have mounted (measured in a headless browser against a mock API, 2026-11-10: a bank's Dashboard added 3
+  reads, expiring, summary and incoming requests, about 4 statements, when `/sync` answered 1.5 s late; none when it answered first);
+  a token the poller reported moments ago can be stale when a screen subscribes, which costs one redundant refetch at the next answer,
+  never a lost update; a facility's own write moves its own token, so it costs one extra silent refetch; `latest_id` is `max(id)` over the
   facility's notifications, which scans more as history grows (an `(facility_id, id DESC)` index would make it a lookup: not added);
   the admin screens, the donor list and the hospital sourcing search are not covered.
 - **The transfer history** (`GET /transfers`, the third Requests tab): a transfer is an accepted request, so finished ones

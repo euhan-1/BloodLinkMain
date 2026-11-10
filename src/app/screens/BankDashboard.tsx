@@ -63,8 +63,8 @@ export function BankDashboardView(p: BankDashboardProps) {
       getExpiringInventory()
         .then((d) => { if (!cancelled) { setExpiring(d); setExpiringError(null); } })
         .catch((e) => { if (!cancelled && first) setExpiringError(e instanceof Error ? e.message : "Failed to load"); }); // a failed refresh keeps what is shown
-    load(true);
     const unsubscribe = liveSync.subscribe("expiring", () => load(false)); // reloads when the shared poller says the expiring token moved
+    load(true);
     return () => { cancelled = true; unsubscribe(); };
   }, []);
 

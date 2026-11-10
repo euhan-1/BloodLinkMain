@@ -95,8 +95,8 @@ export function InventoryScreen() {
   }
 
   useEffect(() => {
-    const cancelFirst = loadInventory();
     const unsubscribe = liveSync.subscribe("inventory", () => { loadInventory(undefined, true); });
+    const cancelFirst = loadInventory();
     return () => { cancelFirst(); unsubscribe(); };
   }, []);
 
@@ -113,8 +113,8 @@ export function InventoryScreen() {
         .finally(() => {
           if (!cancelled) setSummaryLoading(false);
         });
-    load(true);
     const unsubscribe = liveSync.subscribe("inventory", () => load(false)); // thresholds and counts follow the same token
+    load(true);
     return () => {
       cancelled = true;
       unsubscribe();

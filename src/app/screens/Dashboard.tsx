@@ -61,8 +61,8 @@ export function DashboardScreen({
         .catch((err) => { if (!cancelled && isFirstLoad) setSummaryError(err instanceof Error ? err.message : "Failed to load"); })
         .finally(() => { if (!cancelled && isFirstLoad) setSummaryLoading(false); });
     }
+    const unsubscribe = liveSync.subscribe("inventory", () => loadSummary(false)); // before the first fetch: see lib/liveSync.ts
     loadSummary(true);
-    const unsubscribe = liveSync.subscribe("inventory", () => loadSummary(false));
     return () => { cancelled = true; unsubscribe(); };
   }, []);
 
@@ -78,8 +78,8 @@ export function DashboardScreen({
         .then((data) => { if (!cancelled) { setExpiryUnits(data.map(toInventoryUnit)); setExpiryError(null); } })
         .catch((err) => { if (!cancelled && first) setExpiryError(err instanceof Error ? err.message : "Failed to load"); })
         .finally(() => { if (!cancelled) setExpiryLoading(false); });
-    load(true);
     const unsubscribe = liveSync.subscribe("inventory", () => load(false)); // a hospital's expiring list follows its stock
+    load(true);
     return () => { cancelled = true; unsubscribe(); };
   }, []);
 
@@ -122,9 +122,9 @@ export function DashboardScreen({
         .then((rows) => { if (!cancelled) { setRequestRows(rows); setRequestsFailed(false); } })
         .catch(() => { if (!cancelled) setRequestsFailed(true); }); // a failed refresh keeps what is already on screen
     }
-    load();
     // Both sides' request lists change while the page is open: a hospital's statuses, a bank's waiting requests.
     const unsubscribe = liveSync.subscribe(dashboardData.view === "threshold_status" ? "requestsOutgoing" : "requestsIncoming", load);
+    load();
     return () => { cancelled = true; unsubscribe(); };
   }, [dashboardData?.view]);
 

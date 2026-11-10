@@ -50,10 +50,10 @@ export function TransferHistory({ isBloodBank, onOpenThread }: { isBloodBank: bo
         .catch((e) => { if (!silent && mine === seq.current) setError(e instanceof Error ? e.message : "Failed to load"); })
         .finally(() => { if (mine === seq.current) setLoading(false); });
     };
-    load(false);
     const reload = () => load(true);
-    const offIncoming = liveSync.subscribe("requestsIncoming", reload);
+    const offIncoming = liveSync.subscribe("requestsIncoming", reload); // before the first fetch: see lib/liveSync.ts
     const offOutgoing = liveSync.subscribe("requestsOutgoing", reload);
+    load(false);
     return () => { offIncoming(); offOutgoing(); };
   }, [filters]);
 

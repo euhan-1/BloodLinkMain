@@ -216,6 +216,17 @@ export function RequestsScreen({
       .finally(() => { if (requestId === requestsRequestIdRef.current) setRequestsLoading(false); });
   }
 
+  // Both lists reload when the shared poller (lib/liveSync.ts) says their token moved: about 15 s after the other facility acts, never
+  // while the tab is hidden, and at once when it becomes visible again. The requester's own list and the supplier's incoming list
+  // (only blood banks have one) are separate tokens, so the tab badge's incoming part is as fresh as its outgoing part on every tab.
+  // Declared before the two first-load effects below on purpose: a screen subscribes just before its first fetch (see liveSync.ts).
+  useEffect(() => {
+    const offOutgoing = liveSync.subscribe("requestsOutgoing", () => fetchRequests(true));
+    const offIncoming = isBloodBankRequester ? liveSync.subscribe("requestsIncoming", () => fetchIncoming(true)) : () => {};
+    return () => { offOutgoing(); offIncoming(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBloodBankRequester, actingFacilityId]);
+
   useEffect(() => {
     fetchRequests();
   }, []);
@@ -240,16 +251,6 @@ export function RequestsScreen({
   useEffect(() => {
     fetchIncoming();
   }, [actingFacilityId]);
-
-  // Both lists reload when the shared poller (lib/liveSync.ts) says their token moved: about 15 s after the other facility acts, never
-  // while the tab is hidden, and at once when it becomes visible again. The requester's own list and the supplier's incoming list
-  // (only blood banks have one) are separate tokens, so the tab badge's incoming part is as fresh as its outgoing part on every tab.
-  useEffect(() => {
-    const offOutgoing = liveSync.subscribe("requestsOutgoing", () => fetchRequests(true));
-    const offIncoming = isBloodBankRequester ? liveSync.subscribe("requestsIncoming", () => fetchIncoming(true)) : () => {};
-    return () => { offOutgoing(); offIncoming(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isBloodBankRequester, actingFacilityId]);
 
   async function performRequestAction(requestId: number, action: RequestAction) {
     if (actingFacilityId === null) return;

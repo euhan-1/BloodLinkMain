@@ -1,6 +1,6 @@
 // Asserts the one poller behind live updates (src/app/lib/liveSync.ts). Run: node scripts/check_live_sync.ts
 import {
-  LiveSync, SYNC_INTERVAL_MS, SYNC_MAX_BACKOFF_MS, changedSections, nextDelay,
+  LiveSync, SYNC_INTERVAL_MS, SYNC_MAX_BACKOFF_MS, nextDelay, tokenOf,
   type PollResult, type SyncPayload,
 } from "../src/app/lib/liveSync.ts";
 
@@ -42,29 +42,86 @@ function world() {
 const ok = (data: SyncPayload, etag = "e"): PollResult => ({ status: 200, data, etag });
 
 // ── pure helpers
-eq(changedSections(payload(), payload()), [], "same tokens: nothing changed");
-eq(changedSections(payload(), payload({ inventory: "v1", expiring: "e1" })), ["inventory", "expiring"], "the sections that moved, no others");
-eq(changedSections(payload(), payload({ incoming: "i1" })), ["requestsIncoming"], "incoming and outgoing are separate sections");
-eq(changedSections(payload(), payload({ unread: 5, latest: 99 })), [], "notifications are numbers for the bell, not a section to refetch");
+eq((["requestsIncoming", "requestsOutgoing", "inventory", "expiring"] as const).map((x) => tokenOf(payload(), x)), ["i0", "o0", "v0", "e0"], "each section reads its own token; incoming and outgoing are separate");
 eq([nextDelay(0, () => 0.5), nextDelay(1, () => 0.5), nextDelay(2, () => 0.5)], [SYNC_INTERVAL_MS, SYNC_INTERVAL_MS * 2, SYNC_INTERVAL_MS * 4], "interval, then doubling");
 eq(nextDelay(20, () => 0.5), SYNC_MAX_BACKOFF_MS, "the backoff is capped");
 eq([nextDelay(0, () => 0), nextDelay(0, () => 1)], [13500, 16500], "jitter is +/-10%");
 eq(SYNC_INTERVAL_MS, 15000, "about every 15 seconds");
 
-// ── the first answer is the baseline; a later change notifies only its own section
+// ── a later change notifies only its own section (screens that subscribed before the first answer are told once at it: see the gap block above)
 {
   const w = world();
   const seen: string[] = [];
-  w.sync.subscribe("inventory", () => seen.push("inventory"));
-  w.sync.subscribe("expiring", () => seen.push("expiring"));
-  w.sync.subscribe("requestsIncoming", () => seen.push("incoming"));
   w.script.push(ok(payload()), ok(payload({ inventory: "v1" })));
   w.sync.start();
   await w.settle();
-  eq(seen, [], "the first answer notifies nobody");
-  eq(w.calls, [null], "and it was asked with no validator yet");
+  w.sync.subscribe("inventory", () => seen.push("inventory"));
+  w.sync.subscribe("expiring", () => seen.push("expiring"));
+  w.sync.subscribe("requestsIncoming", () => seen.push("incoming"));
+  eq(w.calls, [null], "the first poll was asked with no validator yet");
   w.fire(); await w.settle();
   eq(seen, ["inventory"], "only the section whose token moved is told");
+}
+
+// ── the first-load gap: a change that lands after a screen's first fetch but before the poller's first answer must not be lost
+{
+  const w = world();
+  const told: string[] = [];
+  w.sync.subscribe("inventory", () => told.push("inventory"));   // the screen subscribes just before its first fetch; the poller knows nothing yet
+  w.sync.subscribe("expiring", () => told.push("expiring"));
+  w.script.push(ok(payload({ inventory: "after-the-change" })), { status: 304 }, ok(payload({ inventory: "after-the-change", expiring: "e1" })));
+  w.sync.start(); await w.settle();
+  eq(told.length > 0, true, "REPRODUCTION: a screen that subscribed before the first answer is told to refetch, because its data may predate that answer");
+  eq(told, ["inventory", "expiring"], "each such screen refetches once, even though no token 'moved' (there was nothing to compare with)");
+  w.fire(); await w.settle();
+  eq(told.length, 2, "a 304 afterwards adds nothing");
+  w.fire(); await w.settle();
+  eq(told, ["inventory", "expiring", "expiring"], "and from then on only a moved token notifies, once");
+}
+
+// ── a screen that loads AFTER the first answer is not double-fetched: it records the poller's token and compares later answers with it
+{
+  const w = world();
+  const told: string[] = [];
+  w.script.push(ok(payload({ inventory: "v0" })), { status: 304 }, ok(payload({ inventory: "v1" })), ok(payload({ inventory: "v1" })), ok(payload({ inventory: "v2" })));
+  w.sync.start(); await w.settle();
+  const callsBefore = w.calls.length;
+  w.sync.subscribe("inventory", () => told.push("late"));
+  eq(w.calls.length, callsBefore, "subscribing never polls");
+  eq(told, [], "a screen that loaded after the answer is not told to fetch again");
+  w.fire(); await w.settle();
+  eq(told, [], "an unchanged poll (304) tells it nothing");
+  w.fire(); await w.settle();
+  eq(told, ["late"], "the next answer with a different token tells it once, against the token it recorded at subscribing");
+  w.fire(); await w.settle();
+  eq(told, ["late"], "the same token again: not told twice");
+  w.fire(); await w.settle();
+  eq(told, ["late", "late"], "a later move tells it again");
+}
+
+// ── the poller's token may be stale when a screen subscribes (a change landed since the last poll): that is one harmless refetch at the next
+// answer, never a lost update
+{
+  const w = world();
+  const told: string[] = [];
+  w.script.push(ok(payload({ inventory: "v0" })), ok(payload({ inventory: "v1" })));
+  w.sync.start(); await w.settle();
+  w.sync.subscribe("inventory", () => told.push("x"));            // fetched just now, so it already shows v1's data, but the poller still says v0
+  w.fire(); await w.settle();
+  eq(told, ["x"], "told once at the next answer; a redundant refetch is the price of never losing a change");
+}
+
+// ── subscriptions are independent: a re-subscribing screen (a changed filter) gets a fresh baseline, others are not disturbed
+{
+  const w = world();
+  const a: string[] = [], b: string[] = [];
+  w.script.push(ok(payload({ inventory: "v0" })), ok(payload({ inventory: "v1" })));
+  w.sync.start(); await w.settle();
+  w.sync.subscribe("inventory", () => a.push("a"));
+  w.fire(); await w.settle();
+  const off = w.sync.subscribe("inventory", () => b.push("b"));   // subscribed after v1 was reported: baseline v1
+  off();
+  eq([a, b], [["a"], []], "one told once; an unsubscribed one never");
 }
 
 // ── 304: nothing changed, nobody told, the next poll still scheduled; the ETag is sent back
@@ -74,10 +131,11 @@ eq(SYNC_INTERVAL_MS, 15000, "about every 15 seconds");
   w.sync.subscribe("inventory", () => told++);
   w.script.push(ok(payload(), "etag-1"), { status: 304 }, { status: 304 });
   w.sync.start(); await w.settle();
+  eq(told, 1, "the first answer tells a screen that subscribed before it, once");
   w.fire(); await w.settle();
   w.fire(); await w.settle();
   eq(w.calls, [null, "etag-1", "etag-1"], "each poll sends the last ETag");
-  eq(told, 0, "304: no callbacks");
+  eq(told, 1, "304: no further callbacks");
   eq(w.timers.length, 1, "and the next poll is scheduled");
 }
 
@@ -104,7 +162,7 @@ eq(SYNC_INTERVAL_MS, 15000, "about every 15 seconds");
   w.script.push(ok(payload()), ok(payload({ inventory: "v1" })));
   w.sync.start(); await w.settle();
   w.fire(); await w.settle();
-  eq(log, ["second"], "the others still run, and an unsubscribed listener does not");
+  eq(log, ["second", "second"], "the others still run (at the first answer and at the change), and an unsubscribed listener does not");
   eq(w.timers.length, 1, "and polling carried on");
 }
 
@@ -127,6 +185,7 @@ eq(SYNC_INTERVAL_MS, 15000, "about every 15 seconds");
   let told = 0;
   w.sync.subscribe("requestsOutgoing", () => told++);
   w.sync.start(); await w.settle();
+  told = 0;                                              // (the first answer told it once; what follows is about visibility)
   w.visible = false;
   w.sync.visibilityChanged();
   eq(w.timers.length, 0, "hiding the tab drops the pending poll");
@@ -197,11 +256,12 @@ for (const status of [401, 403]) {
   w.sync.subscribe("inventory", () => told++);
   w.script.push(ok(payload(), "old"), ok(payload({ inventory: "other-account" }), "new"));
   w.sync.start(); await w.settle();
+  eq(told, 1, "the first answer tells the screen that was already subscribed");
   w.sync.stop();
   eq(w.timers.length, 0, "stop() clears the timer");
   w.sync.start(); await w.settle();
   eq(w.calls, [null, null], "a restart sends no validator from the previous session");
-  eq(told, 0, "and the first answer after a restart is a baseline again, not a change");
+  eq(told, 2, "and the first answer after a restart tells it again: its data may belong to another session");
 }
 
 console.log("ok");

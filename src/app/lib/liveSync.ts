@@ -3,8 +3,16 @@
 // its token moved. There is exactly one timer for the whole app (this class), no matter how many screens subscribe.
 //
 //   - Visible tab only: nothing is polled while the tab is hidden, and becoming visible (or the window gaining focus) polls at once.
-//   - The first answer is the baseline: it notifies nobody (each screen loads its own data when it mounts); every later answer is
-//     compared with the one before it.
+//   - Every subscription carries its own baseline, the token its screen last saw for its section, so no change is lost between a
+//     screen's first fetch and the poller's first answer:
+//       * subscribing records the poller's current token for the section (nothing is fetched or polled by subscribing);
+//       * if the poller has no answer yet the baseline is "unknown", and the first answer counts as a change (the screen's data may
+//         be older than that answer): one refetch, at page load only;
+//       * a screen that subscribes after an answer has arrived records that token and is told nothing until a later answer differs,
+//         so it is never fetched twice for the same load.
+//     Subscribe BEFORE the first fetch, or in the same synchronous turn (a poll answer cannot land in between). A token the poller
+//     reported a moment ago can already be stale when a screen subscribes; the cost is one redundant refetch at the next answer,
+//     never a lost update.
 //   - A 304 (If-None-Match matched) means nothing changed: no callbacks, and the next poll is scheduled as usual.
 //   - Errors back off (the interval doubles per consecutive failure, up to two minutes) and a success resets it. 401 (the session is
 //     gone) and 403 (the account may not use the app: deactivated, or an admin) stop polling for good.
@@ -37,13 +45,11 @@ export const SYNC_INTERVAL_MS = 15_000;
 export const SYNC_MAX_BACKOFF_MS = 120_000;
 export const SYNC_JITTER = 0.1; // +/-10%, so tabs opened together do not poll in step
 
-const tokenOf = (p: SyncPayload, section: SyncSection): string =>
+export const tokenOf = (p: SyncPayload, section: SyncSection): string =>
   section === "requestsIncoming" ? p.requests.incoming : section === "requestsOutgoing" ? p.requests.outgoing : p[section];
 
-/** The sections whose token differs between two answers. */
-export function changedSections(before: SyncPayload, after: SyncPayload): SyncSection[] {
-  return (["requestsIncoming", "requestsOutgoing", "inventory", "expiring"] as SyncSection[]).filter((s) => tokenOf(before, s) !== tokenOf(after, s));
-}
+/** One screen's interest in a section: what to call, and the token that screen last saw (null = unknown: nothing to compare with yet). */
+type Subscription = { listener: () => void; seen: string | null };
 
 /** How long to wait before the next poll: the interval after a success, doubling per consecutive failure up to the cap. */
 export function nextDelay(failures: number, random: () => number = Math.random): number {
@@ -55,7 +61,7 @@ type NotificationListener = (n: SyncPayload["notifications"]) => void;
 
 export class LiveSync {
   private deps: LiveSyncDeps;
-  private sections = new Map<SyncSection, Set<() => void>>();
+  private sections = new Map<SyncSection, Set<Subscription>>();
   private notificationListeners = new Set<NotificationListener>();
   private timer: unknown = null;
   private etag: string | null = null;
@@ -80,12 +86,14 @@ export class LiveSync {
     if (this.deps.isVisible()) this.pollNow();
   }
 
-  /** End polling and forget the last answer (sign-out, or the nav unmounting). Subscribers stay registered. */
+  /** End polling and forget the last answer (sign-out, or the nav unmounting). Subscribers stay registered, but what they last saw is
+   *  forgotten too: after a restart their data may belong to another session, so the first answer tells each one to refetch. */
   stop(): void {
     this.started = false;
     this.cancelTimer();
     this.etag = null;
     this.last = null;
+    for (const set of this.sections.values()) for (const sub of set) sub.seen = null;
   }
 
   /** Call when the page's visibility or focus changed. Hidden: the pending poll is dropped. Visible: poll now. */
@@ -95,12 +103,14 @@ export class LiveSync {
     else this.cancelTimer();
   }
 
-  /** Be told when the token of `section` changes between two answers. Returns the unsubscribe function. */
+  /** Be told to refetch `section`: when an answer's token differs from the one this subscription last saw (see the header for what it
+   *  starts from). Call it just before the screen's first fetch. Returns the unsubscribe function. */
   subscribe(section: SyncSection, listener: () => void): () => void {
     let set = this.sections.get(section);
     if (!set) this.sections.set(section, (set = new Set()));
-    set.add(listener);
-    return () => { set!.delete(listener); };
+    const sub: Subscription = { listener, seen: this.last ? tokenOf(this.last, section) : null };
+    set.add(sub);
+    return () => { set!.delete(sub); };
   }
 
   /** The bell's two numbers: called with the latest ones at once if known, then on every answer that carries them. */
@@ -127,10 +137,9 @@ export class LiveSync {
       const result = await this.deps.poll(this.etag);
       this.failures = 0;
       if (result.status === 200) {
-        const previous = this.last;
         this.last = result.data;
         this.etag = result.etag;
-        if (previous) for (const section of changedSections(previous, result.data)) this.notify(section);
+        for (const section of this.sections.keys()) this.notify(section, tokenOf(result.data, section));
         for (const l of [...this.notificationListeners]) this.safely(() => l(result.data.notifications));
       }
     } catch (error) {
@@ -157,8 +166,13 @@ export class LiveSync {
     this.timer = null;
   }
 
-  private notify(section: SyncSection): void {
-    for (const l of [...(this.sections.get(section) ?? [])]) this.safely(l);
+  /** Tell each subscription of `section` whose last-seen token is not `token`, once, and record it as seen. */
+  private notify(section: SyncSection, token: string): void {
+    for (const sub of [...(this.sections.get(section) ?? [])]) {
+      if (sub.seen === token) continue;
+      sub.seen = token;
+      this.safely(sub.listener);
+    }
   }
 
   private safely(fn: () => void): void {
