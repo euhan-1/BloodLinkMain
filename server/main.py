@@ -2408,6 +2408,7 @@ app.add_middleware(
 # server_timing.py. SERVER_TIMING=false turns it off.
 if server_timing.enabled():
     server_timing.install_db_timing(engine)
+    server_timing.install_db_timing(read_engine)  # the read-only endpoints' statements, so `db` is not 0 for them
     app.add_middleware(server_timing.ServerTimingMiddleware)
 
 
@@ -3408,8 +3409,84 @@ def _write_inventory_snapshots(conn, today: date, facility_id: Optional[int] = N
     return [(r.facility_id, r.inserted) for r in rows]
 
 
+def _warm_forecasts_enabled() -> bool:
+    """Whether the nightly job also warms every bank's forecast cache afterwards. OFF unless WARM_FORECASTS_AFTER_SNAPSHOT is
+    true/1/yes/on. Read on every call, like the other switches."""
+    return os.environ.get("WARM_FORECASTS_AFTER_SNAPSHOT", "false").strip().lower() in ("true", "1", "yes", "on")
+
+
+# A pause between get_forecast calls leaves the single instance's CPU to real requests.
+WARM_FORECAST_PAUSE_SECONDS = 1.0
+
+
+def _warm_max_rounds() -> int:
+    """One call of get_forecast fits at most MAX_SARIMAX_FITS_PER_REQUEST types, so a bank with every type missing needs
+    ceil(types / 2) calls; one more round is allowed for a type a user's load was still fitting."""
+    return math.ceil(len(VALID_BLOOD_TYPES) / MAX_SARIMAX_FITS_PER_REQUEST) + 1
+
+
+@retry_read
+def _facilities_to_warm() -> list[int]:
+    """Active blood banks with enough recorded days for a SARIMAX fit (the only ones with anything to cache). Hospitals are never
+    forecast, and a bank below SARIMAX_MIN_DAYS_REQUIRED days is served the linear trend or the stand-in, which are not cached."""
+    with read_engine.connect() as conn:
+        return list(conn.execute(
+            text(
+                """
+                SELECT f.id FROM facilities f
+                WHERE f.facility_type = 'bloodbank' AND f.is_active
+                  AND (SELECT count(DISTINCT s.snapshot_date) FROM inventory_snapshots s WHERE s.facility_id = f.id) >= :min_days
+                ORDER BY f.id
+                """
+            ),
+            {"min_days": SARIMAX_MIN_DAYS_REQUIRED},
+        ).scalars().all())
+
+
+def _warm_one_facility(facility_id: int) -> str:
+    """Loads this bank's forecast exactly as its dashboard does, by calling get_forecast itself, until nothing is pending. That one
+    function is the whole path, so the snapshot write, the cache write, the advisory lock, the 2-fits-per-call cap, the order
+    resolution (and its log lines, including the weekday-guard refusals) and the shortage notifications are all the endpoint's own.
+    Stops early if a round made no progress, which means another request holds this facility's fit lock: that load will finish it."""
+    previous: Optional[list[str]] = None
+    max_rounds = _warm_max_rounds()
+    for round_number in range(1, max_rounds + 1):
+        pending = list(get_forecast(facility_id=facility_id).get("pending_types") or [])
+        if not pending:
+            return f"complete after {round_number} call{'s' if round_number != 1 else ''}"
+        if pending == previous:
+            return f"stopped with {len(pending)} type(s) still pending (another request is fitting this facility)"
+        previous = pending
+        time.sleep(WARM_FORECAST_PAUSE_SECONDS)
+    return f"stopped after {max_rounds} calls with {len(previous or [])} type(s) still pending"
+
+
+def _warm_all_forecasts() -> None:
+    """The background task behind WARM_FORECASTS_AFTER_SNAPSHOT: one bank after another, one fit at a time, never raising (a failure
+    is logged and the next bank goes on). Runs after the cron request has been answered. It only helps a load on the SAME business
+    date it runs on: the cache is valid for trained_through_date == business_today(), so a run at 23:30 Manila warms a day that is
+    about to end (see DEPLOYMENT.md for the second, after-midnight call)."""
+    started, today = time.monotonic(), business_today()
+    try:
+        facility_ids = _facilities_to_warm()
+    except Exception as exc:
+        print(f"[warm] could not list the banks to warm: {type(exc).__name__}: {exc}")
+        return
+    print(f"[warm] warming {len(facility_ids)} bank(s) for {today.isoformat()}")
+    for facility_id in facility_ids:
+        try:
+            print(f"[warm] facility {facility_id}: {_warm_one_facility(facility_id)}")
+        except Exception as exc:
+            print(f"[warm] facility {facility_id}: failed, {type(exc).__name__}: {exc}")
+    print(f"[warm] done in {time.monotonic() - started:.1f} s")
+
+
 @app.post("/internal/daily-snapshot", include_in_schema=False)
-def daily_snapshot(x_cron_secret: Optional[str] = Header(default=None)):
+def daily_snapshot(
+    x_cron_secret: Optional[str] = Header(default=None),
+    # Defaulted for direct callers (tests); a real request always gets FastAPI's own, as in upload_historical_inventory_snapshots.
+    background_tasks: BackgroundTasks = None,
+):
     """Nightly job (scheduled externally, 23:30 Manila): records today's inventory
     snapshot for EVERY active facility, hospitals included, so a day nobody opened
     the dashboard still gets an observation (a real 0 when the shelf is empty).
@@ -3422,7 +3499,10 @@ def daily_snapshot(x_cron_secret: Optional[str] = Header(default=None)):
     still reserved for a request skipped, exactly as the manual action). If the archive fails
     the snapshot is already safe and the call returns 500, so the cron history shows it.
     business_today() is read once and used for every write. Idempotent, so a retry (e.g. after
-    a cold-start timeout) is safe: a second run archives nothing."""
+    a cold-start timeout) is safe: a second run archives nothing.
+
+    With WARM_FORECASTS_AFTER_SNAPSHOT=true it also schedules _warm_all_forecasts as a background task (after the response); the
+    response is the same either way."""
     expected = os.environ.get("CRON_SECRET", "").strip()
     if not expected:
         raise HTTPException(status_code=503, detail="daily snapshot job is not configured")
@@ -3447,6 +3527,9 @@ def daily_snapshot(x_cron_secret: Optional[str] = Header(default=None)):
             {"today": today},
         ).all()
     facility_ids = sorted({fid for fid, _ in written})
+    # After the response: the cron service's timeout is short and a warm-up takes minutes on this instance.
+    if background_tasks is not None and _warm_forecasts_enabled():
+        background_tasks.add_task(_warm_all_forecasts)
     return {
         "snapshot_date": today.isoformat(),
         "facilities": len(facility_ids),

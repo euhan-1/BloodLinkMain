@@ -58,7 +58,16 @@ requests, SARIMAX demand forecasting, donor broadcast.
   zone resolves at import — a missing zone fails the deploy on purpose.
 - **Forecast requests are bounded.** Max 2 SARIMAX fits per request, per-type
   cache commits, non-blocking advisory lock per facility. A second concurrent
-  request returns cached results plus `pending_types`; it must not refit.
+  request returns cached results plus `pending_types`; it must not refit. **The cache key is the Manila business date**: a row
+  is a hit only when `trained_through_date == business_today()`, so every bank's first dashboard load after midnight Manila is cold
+  (12-20 s per type deployed, two types per call, the dashboard asking again until nothing is pending), and so is the first load
+  after an upload, an undo or an order selection clears it. A type whose fit is rejected (the soundness guard) is never cached;
+  only the in-process `_SARIMAX_FIT_FAILED` set stops it being refitted, so a restart or deploy retries it once. With
+  `WARM_FORECASTS_AFTER_SNAPSHOT=true` (default false) the nightly job schedules `_warm_all_forecasts` after its response: it calls
+  `get_forecast` itself for each active bank with 30+ recorded days until nothing is pending (so the lock, the 2-fit cap, the snapshot
+  write, the weekday-guard log lines and the shortage notifications are the endpoint's own: a shortage a user load would have
+  announced is announced at the warm-up instead, once). **It only helps a load on the date it runs**, so the 23:30 Manila run
+  warms a day that is about to end; call the job again after midnight (see DEPLOYMENT.md). It runs no order selection.
 - **Order selection runs offline**, never in a request: `server/select_orders.py`
   is the primary path. Grid is 72 candidates (p,q ∈ {0,1,2}, d ∈ {0,1},
   seasonal P,Q ∈ {0,1}, D=0, s=7), selected on the training window only
@@ -262,7 +271,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (691 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (710 tests plus
   160 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`

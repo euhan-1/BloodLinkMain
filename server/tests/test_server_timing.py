@@ -95,3 +95,36 @@ class ServerTimingTests(unittest.TestCase):
                 self.assertEqual(server_timing.enabled(), expected, value)
         with mock.patch.dict("os.environ", clear=True):
             self.assertTrue(server_timing.enabled(), "unset means on")
+
+
+class ReadEngineCountsTowardDbTests(unittest.TestCase):
+    """The read-only endpoints run on the read engine; its statements must count, or `db` reads 0 for them (it did)."""
+
+    def get(self, path):
+        import main as app
+
+        async def call():
+            sent = []
+
+            async def receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            async def send(message):
+                sent.append(message)
+
+            scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "GET", "path": path, "raw_path": path.encode(),
+                     "query_string": b"", "root_path": "", "scheme": "http", "server": ("test", 80), "client": ("test", 1),
+                     "headers": [(b"host", b"test")]}
+            await app.app(scope, receive, send)
+            return next(m for m in sent if m["type"] == "http.response.start")
+
+        start = asyncio.run(call())
+        return start["status"], {k.decode(): v.decode() for k, v in start["headers"]}
+
+    def test_health_runs_on_the_read_engine_and_reports_a_db_share(self):
+        status, headers = self.get("/health")
+        self.assertEqual(status, 200)
+        self.assertRegex(headers["server-timing"], SHAPE)
+        app_ms, db_ms = (float(x) for x in re.findall(r"dur=(\d+\.\d)", headers["server-timing"]))
+        self.assertGreater(db_ms, 0.0)          # was 0.0 before the read engine was instrumented
+        self.assertLessEqual(db_ms, app_ms)

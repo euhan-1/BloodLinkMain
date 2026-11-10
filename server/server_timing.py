@@ -6,9 +6,10 @@ Durations in milliseconds and nothing else: no query text, no counts, no table n
 
   app  the whole time this process spent on the request, from receiving it to starting the response (routing, auth, the handler,
        its queries, building the JSON).
-  db   the part of that spent waiting on database statements. It adds up the statement round trips only: opening a connection from
-       the pool (the pre-ping), BEGIN, COMMIT and ROLLBACK are separate round trips that are NOT counted here, so `app - db`
-       includes them as well as the Python work.
+  db   the part of that spent waiting on database statements, on BOTH engines (the normal one and the autocommit read engine). It adds
+       up the statement round trips only: opening a connection from the pool (the pre-ping), BEGIN, COMMIT and ROLLBACK are separate
+       round trips that are NOT counted here, so `app - db` includes them as well as the Python work. A read-only endpoint has none of
+       those extras, so its `db` is nearly all of its time.
 
 On by default; SERVER_TIMING=false (or 0, no, off) turns it off. Importing this module has no side effects: main.py calls
 install_db_timing() and adds the middleware only when enabled().
