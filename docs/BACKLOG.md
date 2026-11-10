@@ -3,6 +3,38 @@
 Things noticed and deliberately not built yet. Each says why it is wanted and what a sensible version looks like, so it can be picked up cold.
 Remove an entry when it ships.
 
+## Consent for accounts that existed before the Privacy Notice
+
+**Where it comes from.** The Register form now records consent (version and time) on the new account. Every account that exists today (9 on
+2026-11-10: 8 staff and 1 admin) and every account an administrator creates without the Register form has `users.privacy_consented_at`
+NULL, meaning "not recorded". The notice itself says so. Proposed here, not built.
+
+**The version.** A one-time acknowledgement at the next load of the app, for any account whose consent is NULL or older than
+`PRIVACY_NOTICE_VERSION`: a full-screen step like the complete-profile one (the notice, or a link to it, plus the same unticked box and
+"Continue"), then `POST /auth/acknowledge-privacy {privacy_notice_version}` sets the version and `now()` on the caller's `users` row.
+Raising the version constant later re-asks everyone through the same path, which is the other thing it is for.
+
+**What it touches.**
+- Server: `_user_response` (used by `/auth/login` and `/auth/me`) gains `privacy_consent_required`, computed from the two columns that
+  `GET /auth/me` and login already read (no extra statement); one new write endpoint on `engine`, rate-limited like `update-password`;
+  `test_privacy_consent.py` and the check script grow to cover it. No new schema beyond `migrate_add_privacy_consent.sql`.
+- Frontend: `SessionUser` (`lib/session.ts`) gains the flag; `App.tsx` gets a branch after sign-in and before `CompleteProfile`; one new
+  screen; `api.ts` one function. A session already open is caught at its next load, because `App` re-reads `/auth/me` on mount.
+- Not touched: the SMS and donor-blast code, the live poller, any forecast or stock path.
+
+**Decisions first.**
+- **Soft or hard gate.** Soft (the frontend shows the step; the server only records) is small and enough to hold a consent record. Hard (the
+  server refuses every other endpoint with 403 until acknowledged) would also stop the live poller and every polling screen for an
+  unacknowledged account, and needs `get_current_user` to read the column on the cached active-account check. Recommended: soft first.
+- **The admin account.** Its email is personal data too, but it is a team member and the author of the notice. Recommended: ask it as well,
+  so "every account" is true.
+- **Order with the forced password change.** An admin-created account has no access token until it changes its temporary password, so the
+  acknowledgement can only come after that step.
+- **What this does not fix.** The contact persons named on registrations (their name and phone) never see a consent screen; the line by
+  that field on the Register form is the only measure. The 4 existing registration rows (1 approved, 3 rejected) hold a contact person's
+  name and phone with no consent on file, and rejected ones are kept indefinitely. Removing them is a delete or an anonymise, which the
+  archive-don't-delete rule does not currently allow: a decision for the team, not something this can assume.
+
 ## A release reminder for the supplier
 
 **Where it comes from.** When a bank accepts a request it used to be sent "Confirm release for X's request", a notice telling it to do the next

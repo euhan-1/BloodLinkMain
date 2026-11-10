@@ -334,6 +334,10 @@ export type RegisterFacilityBody = {
   email: string;
   phone: string;
   password: string;
+  // Consent to the Privacy Notice (lib/privacyNotice.ts): the server refuses a registration without a true value for the version it
+  // knows, and stores the version and the time.
+  privacy_consent: boolean;
+  privacy_notice_version: string;
 };
 
 // Same identical-response-regardless-of-outcome shape as requestPasswordReset

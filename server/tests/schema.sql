@@ -289,6 +289,8 @@ CREATE TABLE public.facility_registration_requests (
     reviewed_at timestamp with time zone,
     archived_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
+    privacy_consent_version text,
+    privacy_consented_at timestamp with time zone,
     CONSTRAINT facility_registration_requests_status_valid CHECK ((status = ANY (ARRAY['submitted'::text, 'email_verified'::text, 'approved'::text, 'rejected'::text]))),
     CONSTRAINT facility_registration_requests_type_valid CHECK ((facility_type = ANY (ARRAY['hospital'::text, 'bloodbank'::text])))
 );
@@ -819,7 +821,9 @@ CREATE TABLE public.users (
     facility_id bigint,
     role text DEFAULT 'staff'::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    must_change_password boolean DEFAULT false NOT NULL
+    must_change_password boolean DEFAULT false NOT NULL,
+    privacy_consent_version text,
+    privacy_consented_at timestamp with time zone
 );
 
 

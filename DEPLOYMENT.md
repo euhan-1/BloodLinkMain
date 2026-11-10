@@ -60,6 +60,12 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 
 `VITE_API_BASE_URL` is read only by the local dev server (`.env.local`, pointing at the local backend). Production builds ignore it and use `/api`.
 
+`VITE_PRIVACY_CONTACT_EMAIL` is the address shown on the Privacy Notice (`/privacy`) for questions and data requests. Set it in the Vercel project's environment variables (and in `.env.local` to see it locally). **Unset, the page shows a warning banner** and `node scripts/check_privacy.ts` fails, so check it before publishing. It is baked into the build: change it, redeploy.
+
+## The privacy-consent migration
+
+`server/migrate_add_privacy_consent.sql` adds four nullable columns (the consent version and time, on `users` and `facility_registration_requests`). It is not run by anything in the repository: run it yourself in the Supabase SQL editor. **Run it before deploying the code that records consent.** The new code also works without it (registrations succeed, and the server logs `[consent] the privacy-consent columns are missing ... consent is NOT being recorded`), but any registration made in that gap has no consent on file. The migration is idempotent and a plain add-column (no rewrite, no backfill); its CHECK query and rollback are at the bottom of the file.
+
 ## The nightly snapshot job
 
 `POST /internal/daily-snapshot` records today's stock for **every active facility, hospitals included**, writing an explicit 0 for a blood type with none in stock. It fits no forecast. After the snapshot commits it also **archives every active facility's expired units** (`archived_at` is set, nothing is deleted; a unit still reserved for a request is skipped; a unit expiring today stays until tomorrow's run). It is safe to retry: a second run the same day archives nothing. The response is the cron history's record of what it did: `snapshot_date`, `facilities`, `rows_inserted`, `rows_updated`, `archived_expired` (`total` and `by_facility`, every active facility listed, 0 meaning none found) and `expired_still_reserved` (expired units left because a request holds them). If the archive step fails the call returns 500 after the snapshot has already been saved, so a retry finishes it. **The first run after this change archives each facility's whole existing expired backlog at once.**

@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, StrictBool, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
@@ -4164,6 +4164,38 @@ def geocode_facility_address(address: str, request: Request):
     return {"latitude": result[0], "longitude": result[1]}
 
 
+# The version of the Privacy Notice (the /privacy page) a registrant consents to, stored with the account. It must equal
+# PRIVACY_NOTICE_VERSION in src/app/lib/privacyNotice.ts (scripts/check_privacy.ts fails if the two differ). Raise both when the notice
+# changes in a way that needs fresh consent.
+PRIVACY_NOTICE_VERSION = "1.0"
+
+# The four columns of server/migrate_add_privacy_consent.sql. Until it has been applied the app still registers people (see
+# _consent_columns_ready), it just cannot record the consent.
+_CONSENT_COLUMNS = {("users", "privacy_consent_version"), ("users", "privacy_consented_at"),
+                    ("facility_registration_requests", "privacy_consent_version"), ("facility_registration_requests", "privacy_consented_at")}
+_consent_columns_seen = False
+
+
+def _consent_columns_ready(conn) -> bool:
+    """True once the consent migration has been applied. Positive answers are remembered for the life of the process; a negative one
+    is asked again at the next registration or approval (rare events: one extra statement each) and logged, so a deploy that went out
+    before the migration says so in the log instead of failing."""
+    global _consent_columns_seen
+    if _consent_columns_seen:
+        return True
+    found = conn.execute(
+        text(
+            "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' "
+            "AND table_name IN ('users', 'facility_registration_requests') AND column_name IN ('privacy_consent_version', 'privacy_consented_at')"
+        )
+    ).all()
+    if {(r[0], r[1]) for r in found} >= _CONSENT_COLUMNS:
+        _consent_columns_seen = True
+        return True
+    print("[consent] the privacy-consent columns are missing (run server/migrate_add_privacy_consent.sql): consent is NOT being recorded")
+    return False
+
+
 class RegisterFacilityBody(BaseModel):
     facility_name: str
     facility_type: str
@@ -4174,6 +4206,10 @@ class RegisterFacilityBody(BaseModel):
     email: EmailStr
     phone: str
     password: str
+    # Strict on purpose: only a JSON true is consent ("yes" or 1 must not count). Both default to "not given", so a client that
+    # does not send them (an old page, a script) is refused by _require_privacy_consent rather than by a validation error.
+    privacy_consent: StrictBool = False
+    privacy_notice_version: str = ""
 
     @field_validator("facility_name", "address", "contact_person", "phone")
     @classmethod
@@ -4252,6 +4288,19 @@ def _send_registration_existing_account_email(to_email: str) -> None:
     email_service.send_email(to=to_email, subject="BloodLink registration — account already exists", html=html)
 
 
+def _require_privacy_consent(body) -> None:
+    """400 unless the body carries an explicit consent to the notice version this server knows. A version the server does not know
+    (a page loaded before the notice changed, or a frontend and a backend deployed out of step) is refused too: nobody consents to
+    a text the server cannot say it showed them."""
+    if body.privacy_consent is not True:
+        raise HTTPException(status_code=400, detail="Please read the Privacy Notice and tick the consent box to register.")
+    if body.privacy_notice_version != PRIVACY_NOTICE_VERSION:
+        raise HTTPException(
+            status_code=400,
+            detail="The Privacy Notice has changed since this page was loaded. Reload the page, read it again and give your consent again.",
+        )
+
+
 @app.post("/facilities/register")
 def register_facility(body: RegisterFacilityBody, request: Request):
     """Starts self-registration: stores a pending
@@ -4266,12 +4315,18 @@ def register_facility(body: RegisterFacilityBody, request: Request):
     Same identical-response-regardless-of-outcome shape as
     POST /auth/forgot-password, and the same rate limiter — one abuse
     concern (don't let this become a way to mail strangers), shared budget.
+
+    Consent is enforced here, not only by the form's checkbox: a registration without a true `privacy_consent` for the CURRENT
+    notice version is refused with a 400 and writes nothing. The version and the moment (the database clock) are stored on the
+    registration row and copied to the account at approval, when the consent columns exist (_consent_columns_ready).
     """
+    _require_privacy_consent(body)
     keys = _attempt_keys(request, body.email)
     _raise_if_limited(_FORGOT_LIMITER, keys, "Too many email requests.")
     _record_attempt(_FORGOT_LIMITER, keys)
 
     with engine.begin() as conn:
+        record_consent = _consent_columns_ready(conn)
         existing_user = conn.execute(text("SELECT 1 FROM users WHERE email = :email"), {"email": body.email}).first()
         if existing_user is not None:
             try:
@@ -4297,15 +4352,16 @@ def register_facility(body: RegisterFacilityBody, request: Request):
             {"email": body.email},
         ).mappings().first()
 
+        params["consent_version"] = PRIVACY_NOTICE_VERSION  # unused by the statements below until the migration has been applied
         if existing_request is not None:
             registration_id = conn.execute(
                 text(
-                    """
+                    f"""
                     UPDATE facility_registration_requests SET
                         facility_name = :facility_name, facility_type = :facility_type, address = :address,
                         latitude = :latitude, longitude = :longitude,
                         contact_person = :contact_person, phone = :phone, password_hash = :password_hash,
-                        status = 'submitted'
+                        status = 'submitted'{", privacy_consent_version = :consent_version, privacy_consented_at = now()" if record_consent else ""}
                     WHERE id = :id
                     RETURNING id
                     """
@@ -4315,13 +4371,13 @@ def register_facility(body: RegisterFacilityBody, request: Request):
         else:
             registration_id = conn.execute(
                 text(
-                    """
+                    f"""
                     INSERT INTO facility_registration_requests
                         (facility_name, facility_type, address, latitude, longitude,
-                         contact_person, email, phone, password_hash)
+                         contact_person, email, phone, password_hash{", privacy_consent_version, privacy_consented_at" if record_consent else ""})
                     VALUES
                         (:facility_name, :facility_type, :address, :latitude, :longitude,
-                         :contact_person, :email, :phone, :password_hash)
+                         :contact_person, :email, :phone, :password_hash{", :consent_version, now()" if record_consent else ""})
                     RETURNING id
                     """
                 ),
@@ -6847,15 +6903,21 @@ def admin_approve_registration(registration_id: int, admin: dict = Depends(requi
             ],
         )
 
+        # The consent given on the registration form becomes the account's own record. NULL (a registration made before the consent
+        # existed, or while the migration was not applied) means "not recorded", never "refused".
+        copy_consent = _consent_columns_ready(conn)
         user = conn.execute(
             text(
-                """
-                INSERT INTO users (email, password_hash, facility_id, role, must_change_password)
-                VALUES (:email, :password_hash, :facility_id, 'staff', false)
+                f"""
+                INSERT INTO users (email, password_hash, facility_id, role, must_change_password{", privacy_consent_version, privacy_consented_at" if copy_consent else ""})
+                VALUES (:email, :password_hash, :facility_id, 'staff', false{", :consent_version, :consented_at" if copy_consent else ""})
                 RETURNING id, email, facility_id, role, created_at
                 """
             ),
-            {"email": registration["email"], "password_hash": registration["password_hash"], "facility_id": facility["id"]},
+            {
+                "email": registration["email"], "password_hash": registration["password_hash"], "facility_id": facility["id"],
+                "consent_version": registration.get("privacy_consent_version"), "consented_at": registration.get("privacy_consented_at"),
+            },
         ).mappings().first()
 
         conn.execute(

@@ -68,9 +68,10 @@ node scripts/check_bank_inventory.ts
 node scripts/check_notifications.ts
 node scripts/check_request_cache.ts
 node scripts/check_live_sync.ts
+VITE_PRIVACY_CONTACT_EMAIL=you@your-domain node scripts/check_privacy.ts
 ```
 
-Each script prints `ok` when it passes.
+Each script prints `ok` when it passes. `check_privacy.ts` **fails until `VITE_PRIVACY_CONTACT_EMAIL` is set** (in the environment, `.env.local` or `.env.production`): that is deliberate, see `DEPLOYMENT.md`.
 
 ## Where the documentation is
 

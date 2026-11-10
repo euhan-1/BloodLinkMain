@@ -78,6 +78,7 @@ class RegisterFacilityBody:
             latitude=14.5, longitude=121.0,
             contact_person="Juan Dela Cruz", email="", phone="09170000000",
             password="Sup3rSecret!",
+            privacy_consent=True, privacy_notice_version=main.PRIVACY_NOTICE_VERSION,  # consent has its own tests: test_privacy_consent.py
         )
         defaults.update(kwargs)
         for k, v in defaults.items():

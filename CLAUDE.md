@@ -317,6 +317,34 @@ requests, SARIMAX demand forecasting, donor broadcast.
   never a lost update; a facility's own write moves its own token, so it costs one extra silent refetch; `latest_id` is `max(id)` over the
   facility's notifications, which scans more as history grows (an `(facility_id, id DESC)` index would make it a lookup: not added);
   the admin screens, the donor list and the hospital sourcing search are not covered.
+- **Privacy notice and consent (RA 10173)** (`/privacy`, `screens/PrivacyNotice.tsx`, text as data in `lib/privacyNotice.ts`,
+  `scripts/check_privacy.ts`, `tests/test_privacy_consent.py`, `server/migrate_add_privacy_consent.sql`). `/privacy` is handled in `App.tsx`
+  before the signed-in branches (works signed out and signed in) and is linked from sign-in, Register and the account menu. **Every
+  statement in the notice was checked against the code, the schema or the running system on 2026-11-10; when one stops being true
+  (a retention job, an anonymise function, a new third party, a changed provider), change the text AND raise the version.** The check
+  script forbids claims the code does not back (encryption at rest, "compliant", retention periods, guarantees) and requires the ones
+  it must make. What the notice says is deliberately plain about the gaps: nothing is deleted automatically and there is no retention
+  period; deactivating a facility only blocks sign-in (no delete or anonymise function exists, only the `is_active` flag and
+  `archived_at`); erasure, access and portability requests are done by hand; BloodLink does not itself encrypt stored data and nobody
+  has verified the hosts' encryption; the donor feature is simulated and records no donor consent. The notice names its third
+  parties: Brevo (email; the code's default, `EMAIL_PROVIDER` in production not verified), OpenStreetMap Nominatim (the Register form
+  geocodes through our server, the profile screens straight from the browser) and OSM map tiles (the browser's address and map area),
+  Supabase (Tokyo per these notes, not independently verified), Render, Vercel. Fonts are self-hosted, so Google receives nothing.
+  **The contact address is `VITE_PRIVACY_CONTACT_EMAIL`**, baked into the build. Unset or a placeholder (`@example.com`, `.test`, ...),
+  the page shows a red banner and `check_privacy.ts` **fails by design**; no address is written in the source. **Consent**: the Register
+  form has a required, unticked checkbox, and `POST /facilities/register` enforces it itself (`_require_privacy_consent`): a missing or
+  false `privacy_consent` (a strict JSON boolean, so "yes" or 1 does not count) is a 400 that writes nothing and does not use the email
+  budget, and so is a `privacy_notice_version` other than `PRIVACY_NOTICE_VERSION` in `main.py`, which must equal the constant in
+  `privacyNotice.ts` (the check script compares them). The version and the database clock's time go on the registration row (re-recorded
+  if the form is resubmitted before verification) and are copied to `users` at approval; **NULL means "not recorded", never "refused"**,
+  and it is what every account has today and every admin-created account will have. The four columns come from the migration, **which
+  is a file only and is run by hand**; until it has been, `_consent_columns_ready` makes registration and approval work without
+  recording anything and logs `[consent] ... consent is NOT being recorded` (a positive answer is cached, a negative one re-asked at
+  the next registration). Run the migration before deploying the code that records consent; its test runs it twice against the scratch
+  database. `docs/build_data_dictionary.py` already describes the four columns. Not built (proposal in `docs/BACKLOG.md`): asking the
+  accounts that existed before. Not touched, by rule: the donor roster upload and the SMS-blast code, so the donor screen carries no
+  notice line yet; and profile editing has no contact-person field (that is only collected at registration), so the one line about
+  another person's data is by the contact person's name and phone on the Register form.
 - **The transfer history** (`GET /transfers`, the third Requests tab): a transfer is an accepted request, so finished ones
   (completed, failed) by default and accepted ones with `include_active`; pending never; declined and cancelled only when
   chosen as the outcome (dated by when requested, no units, so received is null, not 0). Filtering
@@ -330,7 +358,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (757 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (769 tests plus
   160 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
@@ -354,6 +382,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `node scripts/check_bank_inventory.ts` (the blood bank Inventory's notes, filters, search, paging and backlog) and
   `node scripts/check_notifications.ts` (the bell's badge, times and paging) and
   `node scripts/check_live_sync.ts` (the shared poller: baseline, 304, one timer, hidden tab, backoff, 401/403 stop, restart) and
+  `node scripts/check_privacy.ts` (the Privacy Notice: contact address set, version equals the server's, required wording and forbidden claims, the `/privacy` route and its links; **it fails until `VITE_PRIVACY_CONTACT_EMAIL` is set**, e.g. `VITE_PRIVACY_CONTACT_EMAIL=you@your-domain node scripts/check_privacy.ts`) and
   `node scripts/check_request_cache.ts` (the shared request layer under `apiGet`: in-flight sharing, the short cache, invalidation), each printing `ok`, plus
   `npm run typecheck`. The frontend has no component test runner.
   A red suite is a finding, not a footnote — "known failure" is how a real

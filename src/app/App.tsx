@@ -23,6 +23,7 @@ const ChatScreen = lazy(() => import("./screens/Donors").then((m) => ({ default:
 const AdminDashboardScreen = lazy(() => import("./screens/Admin").then((m) => ({ default: m.AdminDashboardScreen })));
 const ResetPasswordScreen = lazy(() => import("./screens/ResetPassword").then((m) => ({ default: m.ResetPasswordScreen })));
 const RegisterFacilityScreen = lazy(() => import("./screens/RegisterFacility").then((m) => ({ default: m.RegisterFacilityScreen })));
+const PrivacyNoticeScreen = lazy(() => import("./screens/PrivacyNotice").then((m) => ({ default: m.PrivacyNoticeScreen })));
 const ReceiptScreen = lazy(() => import("./screens/Receipt").then((m) => ({ default: m.ReceiptScreen })));
 const CompleteProfileScreen = lazy(() => import("./screens/CompleteProfile").then((m) => ({ default: m.CompleteProfileScreen })));
 import { LoginScreen } from "./screens/Login";
@@ -258,6 +259,17 @@ export default function App() {
       <div style={{ fontFamily: "var(--font-body)" }} className="animate-page-enter">
         <Suspense fallback={<ScreenFallback />}>
           <ResetPasswordScreen />
+        </Suspense>
+      </div>
+    );
+  }
+
+  // The Privacy Notice is for everyone: signed out (sign-in and Register link to it) or signed in (the account menu does).
+  if (window.location.pathname === "/privacy" || window.location.pathname === "/privacy/") {
+    return (
+      <div style={{ fontFamily: "var(--font-body)" }} className="animate-page-enter">
+        <Suspense fallback={<ScreenFallback />}>
+          <PrivacyNoticeScreen />
         </Suspense>
       </div>
     );

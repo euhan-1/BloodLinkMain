@@ -4,6 +4,7 @@ import { registerFacility, geocodeAddress, verifyFacilityRegistrationEmail, type
 import { BloodDropLogo } from "../components/BloodTypeBadge";
 import { FacilityLocationFields, EMPTY_ADDRESS_PARTS, type AddressParts } from "../components/FacilityLocationPicker";
 import { FOCUS } from "../lib/formStyles";
+import { CONSENT_LABEL, CONTACT_PERSON_NOTICE, PRIVACY_NOTICE_VERSION } from "../lib/privacyNotice";
 
 // The same field and focus treatment as the sign-in screen (see lib/formStyles.ts).
 const FIELD = `w-full h-10 px-3 text-sm border border-border rounded-md bg-card focus:border-primary transition-colors ${FOCUS}`;
@@ -30,6 +31,8 @@ export function RegisterFacilityScreen() {
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  // Never ticked for the person: the box starts empty, the browser blocks submit until it is ticked, and the server checks again.
+  const [consented, setConsented] = useState(false);
 
   const [address, setAddress] = useState("");
   // The four parts the picker shows; `address` is their joined string. Held here so they survive the form remounting.
@@ -52,6 +55,10 @@ export function RegisterFacilityScreen() {
       setSubmitError("Passwords don't match");
       return;
     }
+    if (!consented) {
+      setSubmitError("Please read the Privacy Notice and tick the consent box to register.");
+      return;
+    }
     if (!position) {
       setSubmitError("Confirm this facility's location on the map before continuing");
       return;
@@ -68,6 +75,8 @@ export function RegisterFacilityScreen() {
         email,
         phone,
         password,
+        privacy_consent: consented,
+        privacy_notice_version: PRIVACY_NOTICE_VERSION,
       };
       await registerFacility(body);
       setSubmitted(true);
@@ -215,24 +224,31 @@ export function RegisterFacilityScreen() {
                 addressParts={addressParts} onAddressPartsChange={setAddressParts}
               />
 
-              <div className="grid sm:grid-cols-2 gap-4">
-                <div>
-                  <label htmlFor={`${uid}-contact`} className="text-[14px] font-semibold text-foreground block mb-1.5">Contact person</label>
-                  <input
-                    id={`${uid}-contact`}
-                    type="text" required value={contactPerson} onChange={(e) => setContactPerson(e.target.value)}
-                    className={FIELD}
-                  />
+              <div>
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <div>
+                    <label htmlFor={`${uid}-contact`} className="text-[14px] font-semibold text-foreground block mb-1.5">Contact person</label>
+                    <input
+                      id={`${uid}-contact`}
+                      type="text" required value={contactPerson} onChange={(e) => setContactPerson(e.target.value)}
+                      className={FIELD}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor={`${uid}-phone`} className="text-[14px] font-semibold text-foreground block mb-1.5">Phone</label>
+                    <input
+                      id={`${uid}-phone`}
+                      type="tel" required value={phone} onChange={(e) => setPhone(e.target.value)}
+                      placeholder="09XXXXXXXXX"
+                      className={FIELD}
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label htmlFor={`${uid}-phone`} className="text-[14px] font-semibold text-foreground block mb-1.5">Phone</label>
-                  <input
-                    id={`${uid}-phone`}
-                    type="tel" required value={phone} onChange={(e) => setPhone(e.target.value)}
-                    placeholder="09XXXXXXXXX"
-                    className={FIELD}
-                  />
-                </div>
+                <p className="text-[12px] text-muted-foreground mt-1.5">
+                  {CONTACT_PERSON_NOTICE.before}
+                  <a href="/privacy" target="_blank" rel="noopener" className={`text-primary font-semibold underline underline-offset-2 rounded-sm ${FOCUS}`}>{CONTACT_PERSON_NOTICE.link}</a>
+                  {CONTACT_PERSON_NOTICE.after}
+                </p>
               </div>
 
               <div>
@@ -271,6 +287,19 @@ export function RegisterFacilityScreen() {
                     className={FIELD}
                   />
                 </div>
+              </div>
+
+              <div className="flex items-start gap-3">
+                <input
+                  id={`${uid}-consent`}
+                  type="checkbox" required checked={consented} onChange={(e) => setConsented(e.target.checked)}
+                  className={`mt-0.5 h-4 w-4 shrink-0 accent-primary ${FOCUS}`}
+                />
+                <label htmlFor={`${uid}-consent`} className="text-[14px] text-foreground leading-snug">
+                  {CONSENT_LABEL.before}
+                  <a href="/privacy" target="_blank" rel="noopener" className={`text-primary font-semibold underline underline-offset-2 rounded-sm ${FOCUS}`}>{CONSENT_LABEL.link}</a>
+                  {CONSENT_LABEL.after}
+                </label>
               </div>
 
               {submitError && (

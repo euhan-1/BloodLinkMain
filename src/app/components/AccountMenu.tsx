@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, useRef, useEffect } from "react";
-import { Bell, Building2, CheckCircle, ChevronDown, KeyRound, LogOut, Moon, RefreshCw, Sun, User } from "lucide-react";
+import { Bell, Building2, CheckCircle, ChevronDown, KeyRound, LogOut, Moon, RefreshCw, ShieldCheck, Sun, User } from "lucide-react";
 import {
   updatePassword as apiUpdatePassword,
   requestPasswordReset,
@@ -448,6 +448,12 @@ export function AccountMenu({ user, onLogout }: { user: SessionUser; onLogout: (
                 <Building2 size={15} className="text-muted-foreground" /> Edit facility profile
               </button>
             )}
+            <a
+              href="/privacy" target="_blank" rel="noopener" onClick={() => setOpen(false)}
+              className="w-full flex items-center gap-2.5 px-4 py-2 text-[14px] font-semibold text-foreground hover:bg-secondary transition-colors"
+            >
+              <ShieldCheck size={15} className="text-muted-foreground" /> Privacy notice
+            </a>
           </div>
 
           <div className="border-t border-border py-1.5">

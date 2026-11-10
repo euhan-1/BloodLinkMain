@@ -399,6 +399,12 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                   Register here
                 </a>
               </p>
+
+              <p className="mt-3 text-[13px] font-[500] text-muted-foreground">
+                <a href="/privacy" className={`hover:underline hover:underline-offset-2 rounded-sm ${FOCUS}`}>
+                  Privacy Notice
+                </a>
+              </p>
             </>
           )}
         </div>

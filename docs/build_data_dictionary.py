@@ -72,6 +72,8 @@ D = {
         "role": "Account role: 'staff' (facility user) or 'admin'. Free text; no database CHECK.",
         "created_at": "When the account was created.",
         "must_change_password": "True when the account was issued with a temporary password and must set its own on first login.",
+        "privacy_consent_version": "The version of the Privacy Notice the account holder consented to on the Register form (copied from the registration at approval). NULL means no consent is on file (an account made before the notice existed, or one an administrator created), never that consent was refused.",
+        "privacy_consented_at": "When that consent was given (the database clock at registration); NULL when privacy_consent_version is NULL.",
     },
     "facility_registration_requests": {
         "id": "Unique identifier of the registration request.",
@@ -90,6 +92,8 @@ D = {
         "reviewed_at": "When the decision was made; NULL while undecided.",
         "archived_at": "When the request was archived (set on approval or rejection, so a later application with the same email starts a fresh row); NULL while live.",
         "created_at": "When the request was first submitted.",
+        "privacy_consent_version": "The version of the Privacy Notice ticked on the Register form; re-recorded if the form is resubmitted before verification. NULL for requests made before the notice existed or while the consent migration was not applied.",
+        "privacy_consented_at": "When that consent was given (the database clock at submission); NULL when privacy_consent_version is NULL.",
     },
     "otp_codes": {
         "id": "Unique identifier of the code.",

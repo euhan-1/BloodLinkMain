@@ -81,7 +81,8 @@ class RegistrationTests(unittest.TestCase):
 
     def fields(self, **extra):
         return dict(facility_name="No Licence Hospital", facility_type="hospital", address="1 Test St", latitude=14.5, longitude=121.0,
-                    contact_person="Juan Dela Cruz", email=self.email, phone="09170000000", password="Sup3rSecret!", **extra)
+                    contact_person="Juan Dela Cruz", email=self.email, phone="09170000000", password="Sup3rSecret!",
+                    privacy_consent=True, privacy_notice_version=app.PRIVACY_NOTICE_VERSION, **extra)
 
     def register(self, **extra):
         with mock.patch.object(app, "_send_registration_otp_email"):
