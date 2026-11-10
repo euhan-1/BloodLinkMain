@@ -130,7 +130,11 @@ requests, SARIMAX demand forecasting, donor broadcast.
   behind Vercel it finds the visitor as the entry before that peer, and an address that is not a plain public IP is "unknown", never a
   shared key). Sign-in and the email-sending endpoints (forgot-password, OTP, registration) count under **two keys, the account
   (`acct:<email>`, which cannot be spoofed) and the sender (`ip:<address>`)**, and block when either is full; login is 5 *failed* tries per
-  15 minutes and a success resets nothing; the error says how long to wait. In process memory, so a restart clears it. **Every
+  15 minutes, and a success clears the **account's** counter only, never the address's (so someone who knows one valid login cannot reset
+  their address counter by signing in between guesses); the error says how long to wait. **`POST /auth/update-password`** has its own
+  limiter of the same design (`_PASSWORD_CHANGE_LIMITER`, key `acct:user:<id>` plus `ip:<address>`): 5 failed current-password checks per
+  15 minutes, a success clears the user's counter only, and the 429 does not say which key was full; it is separate from the login
+  counters, so a typo in the account menu cannot lock someone out of signing in. In process memory, so a restart clears it. **Every
   authenticated request checks that the user still exists and its facility is active** (`_assert_account_active`; a pass is remembered
   30 s, never more than 60; a rejection is never remembered; the admin deactivation clears it), so deactivating a facility ends its
   sessions. `GET /facilities` needs a login. `/health` is `{"status":"ok"}` or a bare 503 (the error goes to the log), and `/docs`,
@@ -271,7 +275,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (710 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (720 tests plus
   160 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`

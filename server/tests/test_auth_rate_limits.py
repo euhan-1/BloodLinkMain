@@ -97,13 +97,52 @@ class LoginLimitTests(unittest.TestCase):
             self.fail()
         self.assertEqual(self.fail(ip=IP_B, email=f"  {self.email.upper()} ").status_code, 429)
 
-    def test_only_failures_count_and_a_success_resets_nothing(self):
+    def test_a_success_clears_the_account_counter_and_not_the_address_counter(self):
         for _ in range(4):
-            self.fail()
-        ok = self.attempt(password=self.password)                      # a good sign-in in between
+            self.fail()                                               # acct: 4, ip IP_A: 4
+        ok = self.attempt(password=self.password)                     # a good sign-in from the same address
         self.assertFalse(ok["must_change_password"])
-        self.assertEqual(self.fail().status_code, 401)                 # the fifth failure still counts: success did not wipe four
-        self.assertEqual(self.fail().status_code, 429)
+        # the address counter was not reset by it: one more failure from IP_A is the fifth, and IP_A is now blocked...
+        self.assertEqual(self.fail(email=f"guess-{self.tag}@example.com").status_code, 401)
+        blocked = self.fail(email=f"another-{self.tag}@example.com")
+        self.assertEqual(blocked.status_code, 429)
+        self.assertEqual(blocked.detail, "Too many failed sign-in attempts. Please try again in 15 minutes.")
+        # ...while the account counter WAS cleared: from another address, four more failures on that account are still allowed
+        for _ in range(4):
+            self.assertEqual(self.fail(ip=IP_B).status_code, 401)
+
+    def test_someone_who_knows_one_valid_login_cannot_reset_their_address_counter_by_signing_in(self):
+        mine = f"mine-{self.tag}@example.com"
+        with engine.begin() as c:
+            c.execute(text("INSERT INTO users (email, password_hash, role) VALUES (:e, :h, 'staff')"), {"e": mine, "h": auth.hash_password("my own pass 12")})
+        self.addCleanup(self.drop_extra, mine)
+        for i in range(4):
+            self.fail(email=f"victim{i}-{self.tag}@example.com")      # four guesses at four different accounts from IP_A
+        self.attempt(email=mine, password="my own pass 12")           # a valid sign-in to their own account in between
+        self.assertEqual(self.fail(email=f"victim4-{self.tag}@example.com").status_code, 401)   # the fifth guess
+        self.assertEqual(self.fail(email=f"victim5-{self.tag}@example.com").status_code, 429)   # the address is blocked: no reset bought
+
+    def drop_extra(self, email):
+        with engine.begin() as c:
+            c.execute(text("DELETE FROM users WHERE email = :e"), {"e": email})
+
+    def test_a_success_only_clears_that_accounts_counter(self):
+        other = f"other-{self.tag}@example.com"
+        with engine.begin() as c:
+            c.execute(text("INSERT INTO users (email, password_hash, role) VALUES (:e, :h, 'staff')"), {"e": other, "h": auth.hash_password("other pass 1234")})
+        self.addCleanup(self.drop_extra, other)
+        for ip in ("2.2.2.2", "3.3.3.3", "7.7.7.7"):
+            self.fail(ip=ip)                                          # three failures on the target, from three addresses
+        for ip in ("2.2.2.2", "3.3.3.3", "7.7.7.7"):
+            self.fail(email=other, ip=ip, password="wrong")           # and three on the other account
+        self.attempt(ip="9.9.9.9", password=self.password)            # the target's owner signs in: THAT account's counter clears
+        for ip in ("4.4.4.4", "5.5.5.5", "6.6.6.6", "8.8.4.4", "1.0.0.1"):
+            self.assertEqual(self.fail(ip=ip).status_code, 401)       # five fresh failures on the target are allowed again
+        self.assertEqual(self.fail(ip="9.9.9.8").status_code, 429)    # the sixth is not
+        # the other account was not cleared: it has used 3, so two more are allowed and then it is limited
+        for ip in ("4.4.4.5", "5.5.5.6"):
+            self.assertEqual(self.fail(email=other, ip=ip, password="wrong").status_code, 401)
+        self.assertEqual(self.fail(email=other, ip="6.6.6.7", password="wrong").status_code, 429)
 
     def test_successful_sign_ins_never_use_up_the_budget(self):
         for _ in range(8):
@@ -160,3 +199,101 @@ class WaitTextTests(unittest.TestCase):
     def test_wait_text(self):
         for seconds, words in ((1, "1 second"), (45, "45 seconds"), (60, "1 minute"), (61, "2 minutes"), (900, "15 minutes")):
             self.assertEqual(app._wait_text(seconds), words)
+
+
+class UpdatePasswordLimitTests(unittest.TestCase):
+    """POST /auth/update-password: 5 failed current-password checks per 15 minutes, under the signed-in user and the address."""
+
+    def setUp(self):
+        self.tag = uuid.uuid4().hex[:8]
+        self.password = "correct horse 99"
+        self.users = {}
+        with engine.begin() as c:
+            for name in ("a", "b"):
+                self.users[name] = c.execute(text("INSERT INTO users (email, password_hash, role) VALUES (:e, :h, 'staff') RETURNING id"),
+                                             {"e": f"pw-{name}-{self.tag}@example.com", "h": auth.hash_password(self.password)}).scalar()
+        self.addCleanup(self.drop)
+        self.clock = Clock()
+        patcher = mock.patch.object(app, "_PASSWORD_CHANGE_LIMITER", auth.AttemptLimiter(limit=5, window=900, clock=self.clock))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def drop(self):
+        with engine.begin() as c:
+            c.execute(text("DELETE FROM users WHERE id = ANY(:ids)"), {"ids": list(self.users.values())})
+
+    def change(self, who="a", current="wrong password 1", new="a brand new pass 1", ip=IP_A):
+        user = {"sub": str(self.users[who])}
+        return app.update_password(app.UpdatePasswordBody(current_password=current, new_password=new), request_from(ip), user=user)
+
+    def fail(self, who="a", ip=IP_A):
+        with self.assertRaises(HTTPException) as ctx:
+            self.change(who=who, ip=ip)
+        return ctx.exception
+
+    def test_the_sixth_wrong_current_password_gets_a_429_with_the_wait(self):
+        for _ in range(5):
+            self.assertEqual(self.fail().status_code, 401)
+        blocked = self.fail()
+        self.assertEqual(blocked.status_code, 429)
+        self.assertEqual(blocked.detail, "Too many failed attempts to confirm your password. Please try again in 15 minutes.")
+        self.assertEqual(blocked.headers["Retry-After"], "900")
+        self.clock.t = 900
+        self.assertEqual(self.fail().status_code, 401)                 # a real 15-minute window
+
+    def test_a_correct_password_before_the_limit_succeeds(self):
+        for _ in range(4):
+            self.fail()
+        self.assertEqual(self.change(current=self.password, new="a brand new pass 1"), {"detail": "password updated"})
+        with engine.connect() as c:
+            stored = c.execute(text("SELECT password_hash FROM users WHERE id = :i"), {"i": self.users["a"]}).scalar()
+        self.assertTrue(auth.verify_password("a brand new pass 1", stored))
+
+    def test_a_correct_one_after_the_limit_is_still_refused(self):
+        for _ in range(5):
+            self.fail()
+        with self.assertRaises(HTTPException) as ctx:
+            self.change(current=self.password)                         # right password, but the guesses ran out first
+        self.assertEqual(ctx.exception.status_code, 429)
+
+    def test_a_success_clears_the_user_counter_and_not_the_address_counter(self):
+        for _ in range(4):
+            self.fail()                                                # user a: 4, IP_A: 4
+        self.change(current=self.password, new="a brand new pass 1")
+        # the address counter stands: one more wrong from IP_A is its fifth, then IP_A is blocked even for another user
+        self.assertEqual(self.fail(who="b").status_code, 401)
+        self.assertEqual(self.fail(who="b").status_code, 429)
+        # the user counter was cleared: user a from other addresses has all five again
+        for ip in (IP_B, IP_C, "9.9.9.9", "4.4.4.4", "5.5.5.5"):
+            with self.assertRaises(HTTPException) as ctx:
+                self.change(current="wrong password 1", new="x" * 12, ip=ip)
+            self.assertEqual(ctx.exception.status_code, 401)
+
+    def test_counters_do_not_leak_between_users_or_into_login(self):
+        for _ in range(5):
+            self.fail(who="a", ip=IP_A)                                # user a is spent
+        self.assertEqual(self.fail(who="a", ip=IP_A).status_code, 429)
+        self.assertEqual(self.fail(who="b", ip=IP_B).status_code, 401)  # user b, another address: untouched
+        self.assertEqual(self.change(who="b", current=self.password, ip=IP_B), {"detail": "password updated"})
+        # the login limiter is separate: nothing counted there, so a's own sign-in still works from this address
+        with engine.connect() as c:
+            email = c.execute(text("SELECT email FROM users WHERE id = :i"), {"i": self.users["a"]}).scalar()
+        result = app.login(app.LoginBody(email=email, password=self.password), request_from(IP_A))
+        self.assertFalse(result["must_change_password"])
+
+    def test_the_message_does_not_say_which_counter_tripped(self):
+        for _ in range(5):
+            self.fail(who="a", ip=IP_A)
+        by_user = self.fail(who="a", ip=IP_B)                          # the user counter is full, this address is new
+        by_address = self.fail(who="b", ip=IP_A)                       # the address counter is full, this user is new
+        self.assertEqual((by_user.status_code, by_address.status_code), (429, 429))
+        self.assertEqual(by_user.detail, by_address.detail)
+        self.assertEqual(by_user.headers, by_address.headers)
+
+    def test_a_caller_whose_address_cannot_be_told_is_limited_by_the_user_alone(self):
+        bare = Request({"type": "http", "method": "POST", "path": "/", "headers": [], "client": ("127.0.0.1", 1)})
+        self.assertEqual(app._user_attempt_keys(bare, 7), ["acct:user:7"])
+
+    def test_only_failed_checks_count(self):
+        for _ in range(8):                                             # eight successful changes in a row never use the budget
+            self.change(current=self.password, new=self.password)

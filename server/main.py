@@ -5767,8 +5767,12 @@ def _user_response(user: dict, facility: Optional[dict]) -> dict:
 #                  goes straight to the Render URL can still choose that address, so this key is the second line, not the first.
 # Before this, the one key was "<leftmost X-Forwarded-For>|<email>": changing the header gave a fresh budget on every request, so
 # nothing stopped a guessing run against any account, and no key ever added up per account or per address.
-#   login: only FAILED attempts count, 5 per 15 minutes per key; a success clears nothing (so a failed run cannot be reset by
-#   someone else signing in). The error says how long to wait.
+#   login: only FAILED attempts count, 5 per 15 minutes per key. A success clears the ACCOUNT's counter only, never the address's:
+#   someone who knows one valid login could otherwise reset their address counter by signing in between guesses. The error says
+#   how long to wait.
+#   change of password (POST /auth/update-password): its own limiter, the same two-key design with the signed-in user as the account
+#   key, 5 failed current-password checks per 15 minutes; a success clears the user's counter only, and the 429 does not say which
+#   key tripped.
 #   forgot-password / OTP issuance / registration (resend included): every request counts (the response must look identical
 #   either way), 5 per 10 min per key. OTP issuance is deliberately the SAME limiter as forgot-password's link flow rather
 #   than a third instance — both exist to stop the same abuse (mailing strangers from our sender identity), and email
@@ -5779,6 +5783,8 @@ LOGIN_FAILURE_LIMIT = 5
 LOGIN_FAILURE_WINDOW_SECONDS = 15 * 60
 _LOGIN_LIMITER = auth.AttemptLimiter(limit=LOGIN_FAILURE_LIMIT, window=LOGIN_FAILURE_WINDOW_SECONDS)
 _FORGOT_LIMITER = auth.AttemptLimiter(limit=5, window=600)
+# Kept apart from the login counters so a typo in the account menu cannot lock the same person out of signing in, or the reverse.
+_PASSWORD_CHANGE_LIMITER = auth.AttemptLimiter(limit=LOGIN_FAILURE_LIMIT, window=LOGIN_FAILURE_WINDOW_SECONDS)
 
 
 def _request_ip(request: Request) -> Optional[str]:
@@ -5791,6 +5797,23 @@ def _attempt_keys(request: Request, email: str) -> list[str]:
     if ip is not None:
         keys.append(f"ip:{ip}")
     return keys
+
+
+def _user_attempt_keys(request: Request, user_id: int) -> list[str]:
+    """Like _attempt_keys, for a request that is already signed in: the account key is the signed-in user (an id, not something the
+    caller sends)."""
+    keys = [f"acct:user:{user_id}"]
+    ip = _request_ip(request)
+    if ip is not None:
+        keys.append(f"ip:{ip}")
+    return keys
+
+
+def _clear_account_attempts(limiter: "auth.AttemptLimiter", keys: list[str]) -> None:
+    """Forget the account's failures (after a success) and nothing else: the address's stay, whoever signs in from it."""
+    for k in keys:
+        if k.startswith("acct:"):
+            limiter.clear(k)
 
 
 def _wait_text(seconds: int) -> str:
@@ -5920,6 +5943,7 @@ def login(body: LoginBody, request: Request):
     if user is None or not auth.verify_password(body.password, user["password_hash"]):
         _record_attempt(_LOGIN_LIMITER, keys)
         raise HTTPException(status_code=401, detail="invalid email or password")
+    _clear_account_attempts(_LOGIN_LIMITER, keys)  # the account's failures only; the address's stay
 
     # Only ever false for a facility-linked account (facility_is_active is
     # NULL, not False, for admins — who have no facility row to deactivate).
@@ -6275,15 +6299,21 @@ class UpdatePasswordBody(BaseModel):
 
 
 @app.post("/auth/update-password")
-def update_password(body: UpdatePasswordBody, user: dict = Depends(get_current_user)):
+def update_password(body: UpdatePasswordBody, request: Request, user: dict = Depends(get_current_user)):
     """Self-service password change (Account menu) — distinct from
     POST /auth/change-password, which only ever handles the forced-reset
     flow off a narrowly-scoped reset_token. This one requires a normal
     access token (meaning must_change_password is already false — that
     token literally can't exist otherwise) plus proof of the current
     password, since the account is already logged in and choosing to
-    change it, not being forced to."""
+    change it, not being forced to.
+
+    A stolen 24-hour token must not be able to guess the current password, so failed current-password checks are limited: 5 per 15
+    minutes under the signed-in user and under the sender's address (_PASSWORD_CHANGE_LIMITER). Only a failed check counts; a
+    success clears the user's counter, not the address's. The 429 says how long to wait and not which key was full."""
     user_id = int(user["sub"])
+    keys = _user_attempt_keys(request, user_id)
+    _raise_if_limited(_PASSWORD_CHANGE_LIMITER, keys, "Too many failed attempts to confirm your password.")
     with engine.begin() as conn:
         row = conn.execute(
             text("SELECT password_hash FROM users WHERE id = :id"), {"id": user_id}
@@ -6291,7 +6321,9 @@ def update_password(body: UpdatePasswordBody, user: dict = Depends(get_current_u
         if row is None:
             raise HTTPException(status_code=404, detail="account not found")
         if not auth.verify_password(body.current_password, row["password_hash"]):
+            _record_attempt(_PASSWORD_CHANGE_LIMITER, keys)
             raise HTTPException(status_code=401, detail="current password is incorrect")
+        _clear_account_attempts(_PASSWORD_CHANGE_LIMITER, keys)
 
         conn.execute(
             text("UPDATE users SET password_hash = :password_hash WHERE id = :id"),
