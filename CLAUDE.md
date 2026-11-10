@@ -62,6 +62,41 @@ requests, SARIMAX demand forecasting, donor broadcast.
   Fontsource packages (5.3.0), so no request goes to Google Fonts. All four families are SIL OFL 1.1: the `OFL-*.txt` files beside the
   fonts must stay with them. `index.html` preloads four (Plex Sans 400 and 600, Archivo 700, and Plex Serif 700 only at
   `min-width: 1024px`); adding a family means a `@font-face`, the file, its licence text, and a preload only if it is used above the fold.
+- **Clay surfaces: a design experiment, OFF by default** (the last block of `src/styles/theme.css`; asserted by nothing in the repo, checked by
+  a throwaway headless-Chrome probe). **`<html data-surface="clay">` turns it on**; with the attribute absent no rule in the block matches
+  and the compiled CSS is byte-identical to the build without it (proved by stripping the block and diffing; 21 screenshots (ten screen
+  states at 1280 and 390 px, plus one in dark) were byte-identical to the pre-change build). To try it locally without editing anything, run `document.documentElement.dataset.surface = "clay"`
+  in DevTools; to ship it, add `data-surface="clay"` to the `<html>` tag in `index.html`. **Surfaces only**: cards (`.rounded-xl`/`.rounded-2xl`
+  divs, sections, asides), the Dashboard's raised surfaces, buttons, text fields, `role="dialog"` (Modal and both header popovers, all through
+  `DialogPanel`) and `role="tooltip"` get a larger radius (`--clay-radius-card` 1.75rem, `--clay-radius-control` 0.875rem) and the clay shadow;
+  status and alert colours, gauge and chart colours, layout, spacing and copy are untouched. **Why selectors and not a token**: the clay rules
+  are unlayered because Tailwind utilities beat `@layer base`, and the radii cannot be a token: `rounded-sm/md/lg` read `--radius` (changing it
+  would reshape the blood-type badge and every chip) and `rounded-xl` compiles to a literal `1.25rem` (`@theme inline`). **The recipe**, one
+  soft outer drop plus two inner shadows (light top-left, shade bottom-right), is defined once as `--shadow-clay` (cards), `--shadow-clay-float`
+  (dialogs), `--shadow-clay-sm` (buttons, tooltips), `--shadow-clay-field` (fields, inset), `--shadow-clay-pressed` and the `-accent`,
+  `-accent-hover`, `-accent-pressed` set for solid primary buttons, from the colour tokens `--clay-hi/lo/drop/...`; **at most three layers on any
+  element**. Things to keep true when editing it: (1) **A button inside a `<li>`, `<td>` or `<th>` gets neither the clay shadow nor the larger radius, and a
+  field there gets the radius and fill but no shadow** (the per-type tiles are `li`, so they are not cards and keep today's look; a selector that would
+  reach a row needs `:not(li *, td *, th *)`); the exception is a tooltip, which is clay wherever it is anchored (one is open at a time, a table cell
+  included; the probe's row check only ran at rest, when a tooltip is screen-reader-only, so it does not cover this). (2) **A surface
+  tinted with a status colour keeps its off-state shadow** (the hospital's Action Required: `:not([class*="bg-status-"])`), so a shortage reads as
+  before. (3) **A field's clay shadow is off while it has focus** (`:not(:focus)`), because Tailwind's `focus:ring-*` is a box-shadow and the global
+  `:focus-visible` outline in the base layer is untouched. (4) **The light colours (`--card` #FDFAF6, `--clay-field` #F6F2EC) live under
+  `:root:not(.dark)[data-surface="clay"]`**: at equal specificity they would otherwise out-rank the plain `.dark` token block and turn dark cards
+  cream (this happened once; the dark card fill is deliberately left alone, a lighter one lowers dark contrast figures that are already low).
+  (5) **The whole block sits in two nested media queries, `not (prefers-contrast: more)` and `not (forced-colors: active)`**, so those users get
+  exactly the off state; do not merge them into `not (A or B)`: the build's minifier rewrites that into invalid CSS and the block silently never
+  applies. (6) **The pressed state** (shadow inward, no transform, no layout shift) is inside `(prefers-reduced-motion: no-preference)`; under
+  reduce a held button looks as it does hovered. (7) Placeholders in clay fields use `--muted-foreground` (5.2:1 light, 5.8:1 dark); Preflight's
+  50%-of-text placeholder is 3.35:1 off and was already below AA. **Colours that move, measured on four screens in light theme:** `--card` is a token, so
+  every `bg-card` element softens from white to #FDFAF6, not only the surfaces: 29 unselected blood-type badges (20 of them inside rows; DESIGN.md
+  defines the badge as a "white surface"), the header, the cards, the buttons; fields go to #F6F2EC; and the gauge's tick halo
+  (`stroke="var(--card)"`) follows from white to #FDFAF6. In dark theme nothing moves except field fills (checked on three screens). **Not changed, by design of this experiment**: DESIGN.md still says
+  "button radius never the card radius", "secondary buttons carry no shadow" and "modals use `shadow-lg`/`shadow-xl`", all of which clay
+  departs from; if clay is adopted, DESIGN.md has to be rewritten, not just this note. **Measured** (headless Chrome, local, 4x CPU throttle, median of 7, the bank
+  Dashboard against a mock API; not a device): paint+raster 13.5 ms off, 13.6 ms on in light, 13.4 vs 14.2 ms in dark, inside the run-to-run spread;
+  a real phone's GPU was not measured. **Not looked at**: the Donors screen (donor-blast code, untouched) picks up clay through the shared
+  selectors; the printable Receipt page, the Admin screens and the map screens were not screenshotted with it on.
 
 ## Conventions that bite
 
