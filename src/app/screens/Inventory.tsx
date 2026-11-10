@@ -7,6 +7,7 @@ import { StockByTypeTable } from "./HospitalInventory";
 import { BankInventoryView } from "./BankInventory";
 import { BLOOD_TYPE_ORDER, getExpiryStatus } from "../lib/statusTokens";
 import { Modal } from "../components/Modal";
+import { Tip } from "../components/Tip";
 import { UploadHistoryPanel } from "../components/UploadHistoryPanel";
 import { type InventoryUnit, type InventoryApiRow, type InventorySummaryRow, toInventoryUnit } from "../lib/inventoryTypes";
 
@@ -266,15 +267,16 @@ export function InventoryScreen() {
 
   // The page-level actions, shared by both layouts so they cannot drift apart.
   const clearExpiredButton = expiredUnits.length > 0 && (
+            <Tip text="Archives every expired unit on file — soft-delete only, nothing is permanently removed.">
             <button
               onClick={handleArchiveExpired}
               disabled={archivingExpired}
-              title="Archives every expired unit on file — soft-delete only, nothing is permanently removed."
               className="flex items-center gap-1.5 h-8 px-3 bg-card border border-status-critical-border text-status-critical-text rounded-lg text-[13px] font-semibold hover:bg-status-critical-tint transition-colors disabled:opacity-60"
             >
               <Archive size={14} />
               {archivingExpired ? "Clearing…" : `Clear expired backlog (${expiredUnits.length})`}
             </button>
+            </Tip>
   );
   const importButtons = (
     <>
@@ -285,14 +287,15 @@ export function InventoryScreen() {
             onChange={handleFileSelected}
             className="hidden"
           />
+          <Tip text="Columns: din, blood_type, component, location, volume_ml, collected_date, expires_date. Re-uploading a DIN already on file at this facility updates it as a correction.">
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={uploading}
-            title="Columns: din, blood_type, component, location, volume_ml, collected_date, expires_date. Re-uploading a DIN already on file at this facility updates it as a correction."
             className="flex items-center gap-1.5 h-8 px-3 bg-card border border-border rounded-lg text-[13px] font-semibold text-foreground hover:bg-secondary transition-colors disabled:opacity-60"
           >
             <Upload size={14} /> {uploading ? "Uploading…" : "Upload CSV"}
           </button>
+          </Tip>
           <button
             onClick={openAddUnit}
             className="flex items-center gap-1.5 h-8 px-3 bg-primary text-white rounded-lg text-[13px] font-semibold hover:bg-primary-hover transition-colors"
@@ -311,7 +314,7 @@ export function InventoryScreen() {
       {(
         <div className={`${hospital ? "max-w-5xl " : ""}flex flex-wrap items-end justify-between gap-x-6 gap-y-3`}>
           <div>
-            <h2 className="font-display font-bold text-2xl tracking-tight text-foreground">Blood inventory</h2>
+            <h1 className="font-display font-bold text-2xl tracking-tight text-foreground">Blood inventory</h1>
             <p className="text-[15px] text-foreground mt-1">
               <span className="mr-4">{usableUnits} {usableUnits === 1 ? "unit" : "units"} on hand</span>
               {hospital && expiredUnits.length > 0 && (
@@ -393,8 +396,8 @@ export function InventoryScreen() {
             </p>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-[13px] font-semibold text-muted-foreground block mb-1.5">Minimum units</label>
-                <input
+                <label htmlFor="thr-min" className="text-[13px] font-semibold text-muted-foreground block mb-1.5">Minimum units</label>
+                <input id="thr-min"
                   type="number"
                   min={0}
                   value={editMin}
@@ -403,8 +406,8 @@ export function InventoryScreen() {
                 />
               </div>
               <div>
-                <label className="text-[13px] font-semibold text-muted-foreground block mb-1.5">Maximum units</label>
-                <input
+                <label htmlFor="thr-max" className="text-[13px] font-semibold text-muted-foreground block mb-1.5">Maximum units</label>
+                <input id="thr-max"
                   type="number"
                   min={0}
                   value={editMax}
@@ -476,8 +479,8 @@ export function InventoryScreen() {
         <Modal title="Add unit" onClose={() => setShowAddUnit(false)}>
           <div className="space-y-4">
             <div>
-              <label className="text-[13px] font-semibold text-muted-foreground block mb-1.5">DIN</label>
-              <input
+              <label htmlFor="add-din" className="text-[13px] font-semibold text-muted-foreground block mb-1.5">DIN</label>
+              <input id="add-din"
                 type="text"
                 value={unitForm.din}
                 onChange={(e) => setUnitForm((f) => ({ ...f, din: e.target.value }))}
@@ -487,11 +490,12 @@ export function InventoryScreen() {
             </div>
 
             <div>
-              <label className="text-[13px] font-semibold text-muted-foreground block mb-1.5">Blood type</label>
-              <div className="grid grid-cols-4 gap-1.5">
+              <label id="add-bloodtype" className="text-[13px] font-semibold text-muted-foreground block mb-1.5">Blood type</label>
+              <div role="group" aria-labelledby="add-bloodtype" className="grid grid-cols-4 gap-1.5">
                 {BLOOD_TYPE_ORDER.map((bt) => (
                   <button
                     key={bt}
+                    aria-pressed={unitForm.bloodType === bt}
                     onClick={() => setUnitForm((f) => ({ ...f, bloodType: bt }))}
                     className={`py-2 text-[14px] font-display font-bold rounded-lg border transition-all duration-200 ease-out ${
                       unitForm.bloodType === bt
@@ -507,8 +511,8 @@ export function InventoryScreen() {
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-[13px] font-semibold text-muted-foreground block mb-1.5">Component</label>
-                <input
+                <label htmlFor="add-component" className="text-[13px] font-semibold text-muted-foreground block mb-1.5">Component</label>
+                <input id="add-component"
                   type="text"
                   value={unitForm.component}
                   onChange={(e) => setUnitForm((f) => ({ ...f, component: e.target.value }))}
@@ -516,8 +520,8 @@ export function InventoryScreen() {
                 />
               </div>
               <div>
-                <label className="text-[13px] font-semibold text-muted-foreground block mb-1.5">Location</label>
-                <input
+                <label htmlFor="add-location" className="text-[13px] font-semibold text-muted-foreground block mb-1.5">Location</label>
+                <input id="add-location"
                   type="text"
                   value={unitForm.location}
                   onChange={(e) => setUnitForm((f) => ({ ...f, location: e.target.value }))}
@@ -529,8 +533,8 @@ export function InventoryScreen() {
 
             <div className="grid grid-cols-3 gap-3">
               <div>
-                <label className="text-[13px] font-semibold text-muted-foreground block mb-1.5">Volume (mL)</label>
-                <input
+                <label htmlFor="add-volume" className="text-[13px] font-semibold text-muted-foreground block mb-1.5">Volume (mL)</label>
+                <input id="add-volume"
                   type="number"
                   min={1}
                   value={unitForm.volumeMl}
@@ -539,8 +543,8 @@ export function InventoryScreen() {
                 />
               </div>
               <div>
-                <label className="text-[13px] font-semibold text-muted-foreground block mb-1.5">Collected</label>
-                <input
+                <label htmlFor="add-collected" className="text-[13px] font-semibold text-muted-foreground block mb-1.5">Collected</label>
+                <input id="add-collected"
                   type="date"
                   value={unitForm.collectedDate}
                   onChange={(e) => setUnitForm((f) => ({ ...f, collectedDate: e.target.value }))}
@@ -548,8 +552,8 @@ export function InventoryScreen() {
                 />
               </div>
               <div>
-                <label className="text-[13px] font-semibold text-muted-foreground block mb-1.5">Expires</label>
-                <input
+                <label htmlFor="add-expires" className="text-[13px] font-semibold text-muted-foreground block mb-1.5">Expires</label>
+                <input id="add-expires"
                   type="date"
                   value={unitForm.expiresDate}
                   onChange={(e) => setUnitForm((f) => ({ ...f, expiresDate: e.target.value }))}

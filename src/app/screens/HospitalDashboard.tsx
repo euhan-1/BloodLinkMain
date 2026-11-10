@@ -65,7 +65,10 @@ export function HospitalDashboardView(p: HospitalDashboardProps) {
   const outstanding = p.requests?.filter(isOutstandingRequest) ?? null;
   return (
     <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
-      <SummaryLine {...p} openRequests={outstanding?.length ?? null} />
+      <div>
+        <h1 className="sr-only">Dashboard</h1>
+        <SummaryLine {...p} openRequests={outstanding?.length ?? null} />
+      </div>
 
       {/* Phone order is DOM order (action, requests, chart, expiry). From lg the requests column spans the three
           rows on the right; the last row is 1fr so a tall column never opens a gap between the left sections. */}

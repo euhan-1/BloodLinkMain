@@ -113,7 +113,7 @@ export function RegisterFacilityScreen() {
           <>
             <div className="flex items-center gap-2 mb-2">
               <CheckCircle size={22} className="text-status-safe-text" />
-              <h2 className="font-display text-2xl font-bold text-foreground">Email verified</h2>
+              <h1 className="font-display text-2xl font-bold text-foreground">Email verified</h1>
             </div>
             <p className="text-muted-foreground text-sm mb-6">
               An administrator will review your application and confirm your access. You'll be notified once it's approved.
@@ -127,7 +127,7 @@ export function RegisterFacilityScreen() {
           </>
         ) : submitted ? (
           <>
-            <h2 className="font-display text-2xl font-bold text-foreground mb-1">Check your email</h2>
+            <h1 className="font-display text-2xl font-bold text-foreground mb-1">Check your email</h1>
             <p className="text-muted-foreground text-sm mb-6">
               We've sent a 6-digit verification code to <strong className="text-foreground">{email}</strong>. Enter it below to confirm this address.
             </p>
@@ -178,7 +178,7 @@ export function RegisterFacilityScreen() {
           </>
         ) : (
           <>
-            <h2 className="font-display text-2xl font-bold text-foreground mb-1">Register your facility</h2>
+            <h1 className="font-display text-2xl font-bold text-foreground mb-1">Register your facility</h1>
             <p className="text-muted-foreground text-sm mb-6">
               Submit your facility's details for review. An administrator reviews every registration before approving access.
             </p>
@@ -271,11 +271,12 @@ export function RegisterFacilityScreen() {
                   <input
                     id={`${uid}-password`}
                     type="password" required autoComplete="new-password" value={password}
+                    aria-describedby={`${uid}-password-hint`}
                     onChange={(e) => setPassword(e.target.value)}
                     className={FIELD}
                   />
-                  <p className="text-[12px] text-muted-foreground mt-1.5">
-                    At least 8 characters.
+                  <p id={`${uid}-password-hint`} className="text-[12px] text-muted-foreground mt-1.5">
+                    At least 10 characters, with at least one letter and one digit. Very common passwords are not accepted.
                   </p>
                 </div>
                 <div>

@@ -115,6 +115,7 @@ function TypeRow({
           <div role="cell" className="ml-auto md:ml-0">
             <button
               onClick={(e) => { e.stopPropagation(); onEditThresholds(type); }}
+              aria-label={`Set minimum and maximum stock thresholds for ${type}`}
               title="Set minimum and maximum stock thresholds"
               className="flex items-center gap-1.5 h-8 px-2.5 -mr-2.5 rounded-md text-[13px] font-semibold text-foreground hover:bg-secondary transition-colors"
             >

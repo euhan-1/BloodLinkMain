@@ -109,7 +109,7 @@ function FacilityTable({
                 <button
                   onClick={() => onAddAccount(f)}
                   disabled={addAccountBusyId === f.id}
-                  title="Add account"
+                  aria-label={`Add account for ${f.name}`}
                   className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-semibold text-muted-foreground hover:text-primary hover:bg-primary-tint transition-colors disabled:opacity-60"
                 >
                   <UserPlus size={11} /> {addAccountBusyId === f.id ? "…" : "Add account"}
@@ -126,6 +126,7 @@ function FacilityTable({
                     <button
                       onClick={() => onResetPassword(a)}
                       disabled={resetBusyId === a.id}
+                      aria-label={`Reset password for ${a.email}`}
                       title="Reset password"
                       className="shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-semibold text-muted-foreground hover:text-primary hover:bg-primary-tint transition-colors disabled:opacity-60"
                     >
@@ -340,13 +341,13 @@ export function AdminDashboardScreen({ user, onLogout }: { user: SessionUser; on
   return (
     <div className="min-h-screen bg-background">
       <div className="border-b border-border bg-card px-6 h-14 flex items-center justify-between">
-        <div className="flex items-center gap-2">
+        <h1 className="flex items-center gap-2 text-base font-normal">
           <BloodDropLogo size={24} />
           <span className="font-bold">Blood<span className="text-primary">Link</span></span>
           <span className="ml-2 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[12px] font-bold uppercase tracking-wide">
             Admin
           </span>
-        </div>
+        </h1>
         <div className="flex items-center gap-3">
           <AccountMenu user={user} onLogout={onLogout} />
         </div>
@@ -355,7 +356,7 @@ export function AdminDashboardScreen({ user, onLogout }: { user: SessionUser; on
       <div className="max-w-screen-2xl mx-auto px-6 py-6 space-y-6">
         <div className="bg-card border border-border rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-border flex items-center justify-between">
-            <h3 className="font-semibold text-foreground">Pending Registrations</h3>
+            <h2 className="text-lg leading-normal font-semibold text-foreground">Pending Registrations</h2>
             <span className="text-[13px] text-muted-foreground">{registrations.length} awaiting review</span>
           </div>
           {regLoading && <div className="p-8 text-center text-[14px] text-muted-foreground">Loading…</div>}
@@ -385,7 +386,7 @@ export function AdminDashboardScreen({ user, onLogout }: { user: SessionUser; on
         </div>
 
         <div className="bg-card border border-border rounded-xl p-5">
-          <h3 className="font-semibold text-foreground mb-4">Create Facility Account</h3>
+          <h2 className="text-lg leading-normal font-semibold text-foreground mb-4">Create Facility Account</h2>
           <form onSubmit={handleCreate} className="grid sm:grid-cols-4 gap-3 items-end">
             <div>
               <label className="text-[13px] font-semibold text-foreground block mb-1.5">Facility name</label>
@@ -446,7 +447,7 @@ export function AdminDashboardScreen({ user, onLogout }: { user: SessionUser; on
 
         <div className="bg-card border border-border rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-border flex items-center justify-between">
-            <h3 className="font-semibold text-foreground">Facilities</h3>
+            <h2 className="text-lg leading-normal font-semibold text-foreground">Facilities</h2>
             <span className="text-[13px] text-muted-foreground">{activeFacilities.length} active</span>
           </div>
 
@@ -532,7 +533,7 @@ export function AdminDashboardScreen({ user, onLogout }: { user: SessionUser; on
               onClick={() => setShowArchived((v) => !v)}
               className="w-full px-5 py-4 flex items-center justify-between hover:bg-secondary transition-colors"
             >
-              <h3 className="font-semibold text-foreground">Deactivated Facilities</h3>
+              <h2 className="text-lg leading-normal font-semibold text-foreground">Deactivated Facilities</h2>
               <span className="flex items-center gap-2 text-[13px] text-muted-foreground">
                 {archivedFacilities.length} deactivated
                 <ChevronDown size={16} className={`transition-transform ${showArchived ? "rotate-180" : ""}`} />

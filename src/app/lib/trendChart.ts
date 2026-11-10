@@ -136,3 +136,61 @@ export function buildTrendChart(input: { history?: HistoryPoint[]; series?: Seri
     historyTone: input.standIn ? "neutral" : "accent",
   };
 }
+
+
+// ── A text version of the chart, for screen readers (the chart itself is a drawing). It says only what the points already hold: the
+// latest recorded total and its range, the projection, and whether the projection stays at or above the combined minimum. Pure, so
+// scripts/check_trend_chart.ts checks it.
+const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
+
+export function describeTrendChart(
+  chart: TrendChart,
+  opts: { totalMinimum: number; standIn?: boolean; hasInterval?: boolean },
+): string {
+  const where = (p: TrendPoint) => (p.date ? shortDate(p.date) : p.t === 0 ? "today" : `day ${p.t}`);
+  const parts: string[] = ["Total stock across every blood type, recorded and projected."];
+
+  const recorded = chart.points.filter((p) => p.observedUnits !== null);
+  if (recorded.length === 0) {
+    parts.push("No recorded days yet.");
+  } else {
+    const values = recorded.map((p) => p.observedUnits as number);
+    const last = recorded[recorded.length - 1];
+    parts.push(
+      `Recorded on ${recorded.length} ${plural(recorded.length, "day", "days")}` +
+        (recorded.length > 1 ? `, ${where(recorded[0])} to ${where(last)}` : `, ${where(last)}`) +
+        `: latest ${last.observedUnits} ${plural(last.observedUnits as number, "unit", "units")}` +
+        (recorded.length > 1 ? `, lowest ${Math.min(...values)}, highest ${Math.max(...values)}.` : "."),
+    );
+    if (chart.mode === "dots") parts.push("Too few days to draw a line, so only the recorded days are shown.");
+    if (chart.filledRuns.length > 0) parts.push("Days nobody recorded are shaded and carry the last recorded value.");
+  }
+
+  if (!chart.hasForecast) {
+    parts.push("The projection is still being calculated.");
+    return parts.join(" ");
+  }
+
+  const ahead = chart.points.filter((p) => p.forecastUnits !== null && p.t > 0);
+  if (ahead.length > 0) {
+    parts.push(
+      "Projected total: " +
+        ahead.map((p) => `${p.forecastUnits} ${plural(p.forecastUnits as number, "unit", "units")} by ${where(p)}`).join(", ") +
+        ".",
+    );
+    const end = ahead[ahead.length - 1];
+    if (opts.hasInterval && end.lower !== null && end.band !== null) {
+      parts.push(`The shaded range for ${where(end)} runs from ${end.lower} to ${end.lower + end.band}.`);
+    }
+  }
+  if (opts.totalMinimum > 0) {
+    const breach = ahead.find((p) => (p.forecastUnits as number) < opts.totalMinimum);
+    parts.push(
+      breach
+        ? `Status: projected to fall below the combined minimum of ${opts.totalMinimum} units by ${where(breach)}.`
+        : `Status: stays at or above the combined minimum of ${opts.totalMinimum} units throughout the projection.`,
+    );
+  }
+  if (opts.standIn) parts.push("The projection comes from a reference model, not this facility's own stock history.");
+  return parts.join(" ");
+}

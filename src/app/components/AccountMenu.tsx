@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useRef, useEffect } from "react";
+import { lazy, Suspense, useState, useRef, useEffect, useId, type RefObject } from "react";
 import { Bell, Building2, CheckCircle, ChevronDown, KeyRound, LogOut, Moon, RefreshCw, ShieldCheck, Sun, User } from "lucide-react";
 import {
   updatePassword as apiUpdatePassword,
@@ -12,6 +12,7 @@ import { formatDateTime } from "../lib/dateFormat";
 import { type SessionUser } from "../lib/session";
 import { getStoredTheme, setTheme, type Theme } from "../lib/theme";
 import { Modal } from "./Modal";
+import { DialogPanel } from "./DialogPanel";
 import { liveSync } from "../lib/liveSyncRuntime";
 
 // Lazy on purpose: the edit-profile form embeds the map picker, and Leaflet would otherwise ride along in the first chunk and be
@@ -20,7 +21,8 @@ const EditFacilityProfileModal = lazy(() => import("./EditFacilityProfileModal")
 
 // ─── Account Menu (Change Password / Edit Facility Profile / Log out) ─────
 
-function ChangePasswordModal({ email, onClose }: { email: string; onClose: () => void }) {
+function ChangePasswordModal({ email, onClose, returnFocusRef }: { email: string; onClose: () => void; returnFocusRef?: RefObject<HTMLElement | null> }) {
+  const uid = useId(); // ties each label to its field, so the fields have names for assistive technology
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -67,7 +69,7 @@ function ChangePasswordModal({ email, onClose }: { email: string; onClose: () =>
   }
 
   return (
-    <Modal title="Change Password" onClose={onClose}>
+    <Modal title="Change Password" onClose={onClose} returnFocusRef={returnFocusRef}>
       {success ? (
         <div className="text-center py-3">
           <div className="w-12 h-12 rounded-full bg-status-safe-tint flex items-center justify-center mx-auto mb-3">
@@ -86,7 +88,7 @@ function ChangePasswordModal({ email, onClose }: { email: string; onClose: () =>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <label className="text-[14px] font-semibold text-foreground">Current password</label>
+              <label htmlFor={`${uid}-current`} className="text-[14px] font-semibold text-foreground">Current password</label>
               {forgotSent ? (
                 <span className="text-[12.5px] text-status-safe font-semibold">Check your email</span>
               ) : (
@@ -101,6 +103,8 @@ function ChangePasswordModal({ email, onClose }: { email: string; onClose: () =>
               )}
             </div>
             <input
+              id={`${uid}-current`}
+              data-autofocus
               type="password"
               required
               autoComplete="current-password"
@@ -115,8 +119,9 @@ function ChangePasswordModal({ email, onClose }: { email: string; onClose: () =>
             )}
           </div>
           <div>
-            <label className="text-[14px] font-semibold text-foreground block mb-1.5">New password</label>
+            <label htmlFor={`${uid}-new`} className="text-[14px] font-semibold text-foreground block mb-1.5">New password</label>
             <input
+              id={`${uid}-new`}
               type="password"
               required
               autoComplete="new-password"
@@ -126,8 +131,9 @@ function ChangePasswordModal({ email, onClose }: { email: string; onClose: () =>
             />
           </div>
           <div>
-            <label className="text-[14px] font-semibold text-foreground block mb-1.5">Confirm new password</label>
+            <label htmlFor={`${uid}-confirm`} className="text-[14px] font-semibold text-foreground block mb-1.5">Confirm new password</label>
             <input
+              id={`${uid}-confirm`}
               type="password"
               required
               autoComplete="new-password"
@@ -138,7 +144,7 @@ function ChangePasswordModal({ email, onClose }: { email: string; onClose: () =>
           </div>
 
           {error && (
-            <div className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
+            <div role="alert" className="text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">
               {error}
             </div>
           )}
@@ -179,6 +185,8 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
   const [loadingMore, setLoadingMore] = useState(false);
   const [justArrived, setJustArrived] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const headingId = useId();
   // null until the first answer: nothing to compare against yet, so the first load never pulses.
   const knownLatestIdRef = useRef<number | null>(null);
   const openRef = useRef(false);
@@ -277,8 +285,10 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
   return (
     <div className="relative" ref={menuRef}>
       <button
+        ref={triggerRef}
         onClick={() => setOpen((o) => !o)}
         aria-label={unread > 0 ? `Notifications, ${unread} unread` : "Notifications"}
+        aria-haspopup="dialog"
         aria-expanded={open}
         className="relative p-1.5 text-muted-foreground hover:text-foreground rounded transition-colors"
       >
@@ -291,10 +301,13 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-80 bg-card border border-border rounded-xl shadow-lg z-50 overflow-hidden">
+        <DialogPanel
+          labelledBy={headingId} onClose={() => setOpen(false)} returnFocusRef={triggerRef}
+          className="absolute right-0 top-full mt-2 w-80 bg-card border border-border rounded-xl shadow-lg z-50 overflow-hidden"
+        >
           <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
             <div>
-              <h3 className="font-display font-bold text-[15px] text-foreground">Notifications</h3>
+              <h2 id={headingId} className="font-display font-bold text-[15px] text-foreground">Notifications</h2>
               <div className="text-[12px] text-foreground" role="status">{unreadText(unread)}</div>
             </div>
             {unread > 0 && (
@@ -326,6 +339,7 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
                   </div>
                   <time dateTime={n.created_at} title={formatDateTime(n.created_at)} className="block text-[12px] text-muted-foreground mt-0.5 tabular-nums">
                     {agoText(n.created_at)}
+                    <span className="sr-only">, {formatDateTime(n.created_at)}</span>
                   </time>
                 </div>
               </button>
@@ -340,7 +354,7 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
               </button>
             )}
           </div>
-        </div>
+        </DialogPanel>
       )}
     </div>
   );
@@ -355,6 +369,8 @@ export function AccountMenu({ user, onLogout }: { user: SessionUser; onLogout: (
   const [showEditProfile, setShowEditProfile] = useState(false);
   const [theme, setThemeState] = useState<Theme>(() => getStoredTheme());
   const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const headingId = useId();
   const isAdmin = user.role === "admin";
 
   function handleThemeChange(next: Theme) {
@@ -374,7 +390,11 @@ export function AccountMenu({ user, onLogout }: { user: SessionUser; onLogout: (
   return (
     <div className="relative" ref={menuRef}>
       <button
+        ref={triggerRef}
         onClick={() => setOpen((o) => !o)}
+        aria-label={`Account menu, ${user.email}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
         className="flex items-center gap-2 pl-3 pr-2 py-1 border-l border-border rounded-lg hover:bg-secondary transition-colors"
       >
         <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
@@ -396,8 +416,12 @@ export function AccountMenu({ user, onLogout }: { user: SessionUser; onLogout: (
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-72 bg-card border border-border rounded-xl shadow-lg z-50 overflow-hidden">
+        <DialogPanel
+          labelledBy={headingId} onClose={() => setOpen(false)} returnFocusRef={triggerRef}
+          className="absolute right-0 top-full mt-2 w-72 bg-card border border-border rounded-xl shadow-lg z-50 overflow-hidden"
+        >
           <div className="px-4 py-3 border-b border-border">
+            <h2 id={headingId} className="sr-only">Account menu</h2>
             <div className="text-[14px] font-bold text-foreground">{user.email}</div>
             {!isAdmin && <div className="text-[13px] text-muted-foreground mt-0.5">{user.facility_name}</div>}
             <span className="inline-flex items-center mt-1.5 px-2 py-0.5 rounded-full text-[11.5px] font-bold uppercase tracking-wide bg-primary-tint text-primary">
@@ -464,16 +488,16 @@ export function AccountMenu({ user, onLogout }: { user: SessionUser; onLogout: (
               <LogOut size={15} /> Log out
             </button>
           </div>
-        </div>
+        </DialogPanel>
       )}
 
       {showChangePassword && (
-        <ChangePasswordModal email={user.email} onClose={() => setShowChangePassword(false)} />
+        <ChangePasswordModal email={user.email} onClose={() => setShowChangePassword(false)} returnFocusRef={triggerRef} />
       )}
       {showEditProfile && !isAdmin && (
         <Suspense
           fallback={
-            <Modal title="Edit facility profile" onClose={() => setShowEditProfile(false)} wide>
+            <Modal title="Edit facility profile" onClose={() => setShowEditProfile(false)} wide returnFocusRef={triggerRef}>
               <div className="py-8 text-center text-[15px] text-muted-foreground">Loading…</div>
             </Modal>
           }
@@ -481,6 +505,7 @@ export function AccountMenu({ user, onLogout }: { user: SessionUser; onLogout: (
           <EditFacilityProfileModal
             facilityName={user.facility_name}
             onClose={() => setShowEditProfile(false)}
+            returnFocusRef={triggerRef}
             onSaved={() => {}}
           />
         </Suspense>

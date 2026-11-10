@@ -345,6 +345,38 @@ requests, SARIMAX demand forecasting, donor broadcast.
   accounts that existed before. Not touched, by rule: the donor roster upload and the SMS-blast code, so the donor screen carries no
   notice line yet; and profile editing has no contact-person field (that is only collected at registration), so the one line about
   another person's data is by the contact person's name and phone on the Register form.
+- **Accessibility** (`scripts/check_accessibility.ts`; behaviour in a browser is checked by hand, see below). **One `<h1>` per screen
+  state**, naming the page: sign-in, Register, reset-password and complete-profile put their visible title in it (one per state: the
+  count in the script is the number of states, not headings on a page); the two Dashboards carry an `sr-only` "Dashboard" (their
+  headline is a sentence, not a title); Inventory, Transfer history, Source supply / Find blood supply and the Requests list use their
+  visible title; Admin's is the header's "BloodLink Admin"; `/privacy` has one. A dialog's title is an h2, its panels' sections h2/h3
+  below the page h1, and the receipt inline in a chat is level 3. **`theme.css` gives h1, h2 and h3 different default sizes (2xl, xl,
+  lg) and a line height of 1.5, so a tag change on a heading with no size class of its own resizes it**: every h1/h2 in a screen names
+  its size (the script enforces it), and the ones that were h3 are `text-lg leading-normal`. The Donors screen has no h1 (donor-blast
+  code, left alone by rule). **Dialogs**: every centred dialog is `Modal` and both header popovers (notifications, account menu) are
+  the same `DialogPanel` (`components/DialogPanel.tsx`; the pure Tab-wrap rule is `lib/dialogFocus.ts`, tested under Node): role
+  `dialog`, `aria-modal`, `aria-labelledby`; focus moves in on open (the first control that is not the close button, or the element
+  marked `data-autofocus`, which the Change Password dialog uses because a "Forgot your current password?" button precedes its first
+  field; `focusKey` re-focuses when a dialog opens on "Loading…" and its form arrives, as Edit facility profile does); Tab and
+  Shift+Tab wrap inside; Escape closes the topmost one; focus returns to the opener, or to `returnFocusRef` when the opener is gone
+  (the account menu's items are, by the time their dialog opens). **Never build an overlay by hand** (the script fails on a
+  `fixed inset-0` outside `Modal`) and give every `<Modal>` a title. A field in a dialog needs its `<label htmlFor>`; the Change
+  Password, Thresholds and Add unit dialogs have them. **A `title` attribute alone carries nothing** (mouse hover only: not keyboard
+  focus, not touch): the script fails on any element with `title=` and no `aria-label`/`aria-labelledby`/`aria-describedby`, except a
+  reviewed list of two (the notification `<time>`, whose date is also in hidden text, and the Leaflet marker, whose title is its
+  accessible name). Explanations that matter use `components/Tip.tsx` (opens on hover, keyboard focus and tap, Escape closes, text
+  always in the page via `aria-describedby`): the order button's sentence, "Limited history", "At risk", "Not enough history", the
+  forecast basis tags, a unit's "Not released" note, the Expiring column, Upload CSV's columns and Clear expired. **Charts**: the gauge
+  (`StockDial`) is `role="img"` with value, scale and status word; the trend chart is `role="img"` labelled by `describeTrendChart`
+  (`lib/trendChart.ts`, checked in `check_trend_chart.ts`): latest recorded total and range, the projection by date, the shaded range,
+  and in words whether it stays above the combined minimum or falls below it by a date. **Status is never colour alone**: every
+  `StatusDot` has its word beside it (the script checks the three places). **The Register password hint is the server's rule** (10
+  characters, a letter and a digit, no very common password; the other password forms say 8, as their endpoints do), and the script
+  compares both to `server/auth.py` and `main.py`. Known gaps, not fixed: `<label>`s with no `htmlFor` remain in the Admin create-facility
+  form, ResetPassword, the location picker's map label and the Donors screen; the printable Receipt page was not browser-checked; the
+  sign-in tab order has "Forgot password?" between the email and password fields. The headless-Chrome check (headings in every
+  state, dialog focus, tooltips, keyboard-only sign-in and Register, computed heading styles against the previous build) is a throwaway
+  script against a mock API, not in the repo (it needs `puppeteer-core`); it ran 91 checks on 2026-11-10.
 - **The transfer history** (`GET /transfers`, the third Requests tab): a transfer is an accepted request, so finished ones
   (completed, failed) by default and accepted ones with `include_active`; pending never; declined and cancelled only when
   chosen as the outcome (dated by when requested, no units, so received is null, not 0). Filtering
@@ -382,6 +414,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `node scripts/check_bank_inventory.ts` (the blood bank Inventory's notes, filters, search, paging and backlog) and
   `node scripts/check_notifications.ts` (the bell's badge, times and paging) and
   `node scripts/check_live_sync.ts` (the shared poller: baseline, 304, one timer, hidden tab, backoff, 401/403 stop, restart) and
+  `node scripts/check_accessibility.ts` (one h1 per screen state, headings keep their size, no title-only controls, dialog focus rules and wiring, chart text alternatives, status never colour alone, the password rule the forms state) and
   `node scripts/check_privacy.ts` (the Privacy Notice: contact address set, version equals the server's, required wording and forbidden claims, the `/privacy` route and its links; **it fails until `VITE_PRIVACY_CONTACT_EMAIL` is set**, e.g. `VITE_PRIVACY_CONTACT_EMAIL=you@your-domain node scripts/check_privacy.ts`) and
   `node scripts/check_request_cache.ts` (the shared request layer under `apiGet`: in-flight sharing, the short cache, invalidation), each printing `ok`, plus
   `npm run typecheck`. The frontend has no component test runner.

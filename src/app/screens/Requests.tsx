@@ -509,7 +509,7 @@ export function RequestsScreen({
               until a request is opened, then the thread replaces it (with a way back); from lg up the two sit side by side. */}
           <div className={`lg:col-span-2 bg-card border border-border rounded-xl flex-col lg:h-[600px] ${selectedRequestId !== null ? "hidden lg:flex" : "flex"}`}>
             <div className="px-5 py-4 border-b border-border">
-              <h3 className="font-semibold text-foreground">Requests</h3>
+              <h1 className="text-lg leading-normal font-semibold text-foreground">Requests</h1>
               <p className="text-[13px] text-muted-foreground mt-0.5">
                 <span className="font-semibold text-foreground">{counts.action} {counts.action === 1 ? "needs" : "need"} your action · {counts.other} waiting on the other facility</span>
                 <br />
@@ -528,7 +528,7 @@ export function RequestsScreen({
               )}
               {inbox.length === 0 && !inboxLoading && !requestsError && !incomingError && (
                 <div className="text-center px-4 py-10">
-                  <h4 className="text-[14px] font-semibold text-foreground mb-1">No requests in progress</h4>
+                  <h2 className="text-[14px] font-semibold text-foreground mb-1">No requests in progress</h2>
                   <p className="text-[13px] text-muted-foreground leading-relaxed">
                     Send one from {isBloodBankRequester ? "Source supply" : "Emergency sourcing"}. Finished requests are in Transfer history.
                   </p>
@@ -569,7 +569,7 @@ export function RequestsScreen({
                           <ArrowLeft size={14} aria-hidden="true" /> Requests
                         </button>
                       )}
-                      <h3 className="font-semibold text-foreground">Coordination chat</h3>
+                      <h2 className="text-lg leading-normal font-semibold text-foreground">Coordination chat</h2>
                     </div>
                     {selectedRequestId !== null && (
                       <div className="flex items-center gap-4">
@@ -626,7 +626,7 @@ export function RequestsScreen({
                           Open it to print
                         </a>
                       </p>
-                      <ReceiptRecord data={detail} showPrintedLine={false} showChatLocation={false} headingLevel={4} />
+                      <ReceiptRecord data={detail} showPrintedLine={false} showChatLocation={false} headingLevel={3} />
                     </div>
                   ) : (
                   <div ref={chatRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
@@ -635,7 +635,7 @@ export function RequestsScreen({
                         <div className="w-14 h-14 rounded-full bg-secondary flex items-center justify-center mb-4">
                           <MessageSquare size={22} className="text-muted-foreground" />
                         </div>
-                        <h3 className="font-semibold text-foreground mb-1">Open a request</h3>
+                        <h2 className="text-lg leading-normal font-semibold text-foreground mb-1">Open a request</h2>
                         <p className="text-[14px] text-muted-foreground max-w-xs leading-relaxed">
                           Choose one from the list to see its history and talk to the other facility.
                         </p>
@@ -652,7 +652,7 @@ export function RequestsScreen({
                         <div className="w-14 h-14 rounded-full bg-primary-tint flex items-center justify-center mb-4">
                           <MessageSquare size={22} className="text-primary" />
                         </div>
-                        <h3 className="font-semibold text-foreground mb-1">No messages yet</h3>
+                        <h2 className="text-lg leading-normal font-semibold text-foreground mb-1">No messages yet</h2>
                         <p className="text-[14px] text-muted-foreground max-w-xs leading-relaxed">
                           Say hello below to get coordination started with the other facility.
                         </p>

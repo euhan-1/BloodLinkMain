@@ -64,7 +64,7 @@ export function TransferHistory({ isBloodBank, onOpenThread }: { isBloodBank: bo
 
   return (
     <section aria-labelledby="history-heading">
-      <h2 id="history-heading" className="font-display font-bold text-2xl tracking-tight text-foreground">Transfer history</h2>
+      <h1 id="history-heading" className="font-display font-bold text-2xl tracking-tight text-foreground">Transfer history</h1>
       <p className="mt-1 text-[15px] text-foreground">
         {isBloodBank ? "Every transfer this blood bank has supplied or requested." : "Every transfer this hospital has received."}{" "}
         Finished transfers are shown unless you include those still in progress. Declined and cancelled requests are not

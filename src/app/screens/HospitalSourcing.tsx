@@ -134,9 +134,9 @@ function Controls(p: HospitalSourcingProps) {
   const nobodyHasIt = !p.loading && !p.error && !p.banks.some((b) => b.available);
   return (
     <section aria-labelledby="sourcing-heading">
-      <h2 id="sourcing-heading" className="font-display font-bold text-2xl tracking-tight text-foreground">
+      <h1 id="sourcing-heading" className="font-display font-bold text-2xl tracking-tight text-foreground">
         {p.role === "bloodbank" ? "Source supply" : "Find blood supply"}
-      </h2>
+      </h1>
       <div className="mt-4 flex flex-wrap items-end gap-x-10 gap-y-4">
         <ComponentPicker value={p.component} onChange={p.onComponent} />
         <fieldset>

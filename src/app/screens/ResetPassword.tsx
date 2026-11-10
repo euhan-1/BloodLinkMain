@@ -51,7 +51,7 @@ export function ResetPasswordScreen() {
 
         {!token ? (
           <>
-            <h2 className="font-display text-2xl font-bold text-foreground mb-2">Invalid reset link</h2>
+            <h1 className="font-display text-2xl font-bold text-foreground mb-2">Invalid reset link</h1>
             <p className="text-muted-foreground text-sm mb-6">
               This link is missing its reset token. Request a new one from the sign-in page.
             </p>
@@ -66,7 +66,7 @@ export function ResetPasswordScreen() {
           <>
             <div className="flex items-center gap-2 mb-2">
               <CheckCircle size={22} className="text-status-safe-text" />
-              <h2 className="font-display text-2xl font-bold text-foreground">Password updated</h2>
+              <h1 className="font-display text-2xl font-bold text-foreground">Password updated</h1>
             </div>
             <p className="text-muted-foreground text-sm mb-6">
               You can now log in with your new password.
@@ -80,7 +80,7 @@ export function ResetPasswordScreen() {
           </>
         ) : (
           <>
-            <h2 className="font-display text-2xl font-bold text-foreground mb-1">Set a new password</h2>
+            <h1 className="font-display text-2xl font-bold text-foreground mb-1">Set a new password</h1>
             <p className="text-muted-foreground text-sm mb-6">
               Choose a new password for your account.
             </p>

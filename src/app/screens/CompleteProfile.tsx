@@ -44,7 +44,7 @@ export function CompleteProfileScreen({ user, onComplete }: { user: SessionUser;
           <BloodDropLogo size={32} />
           <span className="text-lg font-bold">Blood<span className="text-primary">Link</span></span>
         </div>
-        <h2 className="font-display text-2xl font-bold text-foreground mb-1">Complete your facility profile</h2>
+        <h1 className="font-display text-2xl font-bold text-foreground mb-1">Complete your facility profile</h1>
         <p className="text-muted-foreground text-sm mb-6">
           {user.facility_name} — one last step before you can access the dashboard.
         </p>

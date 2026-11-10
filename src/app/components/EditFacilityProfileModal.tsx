@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type RefObject } from "react";
 import { CheckCircle, RefreshCw } from "lucide-react";
 import { completeFacilityProfile, getMyFacilityProfile } from "../lib/api";
 import { Modal } from "./Modal";
@@ -6,10 +6,11 @@ import { FacilityLocationFields, EMPTY_ADDRESS_PARTS, splitSavedAddress, type Ad
 
 // Its own file so AccountMenu (which every signed-in screen, and the app's first chunk, includes) can load this lazily: the form
 // embeds the map picker, and the map libraries (Leaflet) should only be fetched when someone opens it.
-export function EditFacilityProfileModal({ facilityName, onClose, onSaved }: {
+export function EditFacilityProfileModal({ facilityName, onClose, onSaved, returnFocusRef }: {
   facilityName: string | null;
   onClose: () => void;
   onSaved: () => void;
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -65,7 +66,7 @@ export function EditFacilityProfileModal({ facilityName, onClose, onSaved }: {
   }
 
   return (
-    <Modal title="Edit facility profile" onClose={onClose} wide>
+    <Modal title="Edit facility profile" onClose={onClose} wide returnFocusRef={returnFocusRef} focusKey={loading}>
       {loading && <div className="py-8 text-center text-[15px] text-muted-foreground">Loading…</div>}
       {!loading && loadError && (
         <div className="text-[14px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">

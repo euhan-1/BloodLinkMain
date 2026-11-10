@@ -12,11 +12,12 @@ import { BloodTypeBadge, StatusDot } from "../components/BloodTypeBadge";
 import { ReasonTag } from "../components/ReasonTag";
 import { Skeleton } from "../components/Skeleton";
 import { StockDial } from "../components/StockDial";
+import { Tip } from "../components/Tip";
 import { UploadHistoryPanel } from "../components/UploadHistoryPanel";
 import { type InventorySummaryRow } from "../lib/inventoryTypes";
 import { isRealForecastSource, type ForecastView } from "../lib/forecastTypes";
 import { BLOOD_TYPE_ORDER, STATUS_STYLES, STOCK_LABELS, isNotStocked, stockStatus } from "../lib/statusTokens";
-import { buildTrendChart, shortDate, tickLabel, type TrendPoint } from "../lib/trendChart";
+import { buildTrendChart, describeTrendChart, shortDate, tickLabel, type TrendPoint } from "../lib/trendChart";
 import { manilaToday } from "../lib/transfers";
 import { formatDayMonth } from "../lib/dateFormat";
 import { requestUnitsText, type RequestRow } from "../lib/requestTypes";
@@ -71,7 +72,10 @@ export function BankDashboardView(p: BankDashboardProps) {
   const waiting = waitingRequests(p.requests);
   return (
     <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-8">
-      <SupplyLine {...p} waiting={waiting} expiring={expiring} expiringError={expiringError} />
+      <div>
+        <h1 className="sr-only">Dashboard</h1>
+        <SupplyLine {...p} waiting={waiting} expiring={expiring} expiringError={expiringError} />
+      </div>
 
       {/* DOM order is the phone order, so tab order matches what is on screen: "Waiting for you" above the table. From lg the
           table is the wide left column and the requests sit beside it, placed explicitly (as in HospitalDashboard). */}
@@ -233,26 +237,27 @@ function OutlookCell({
     <div className="text-[14px] leading-snug">
       {outlook.kind === "order" && (
         <>
-          <button
-            type="button"
-            title={outlook.sentence}
-            aria-label={`${orderLabel(outlook, today)} ${blood_type} Packed RBC. Opens Source supply with these filled in.`}
-            onClick={() => { const t = orderPrefill(blood_type, outlook); onOrder(t.bloodType, t.quantity, t.component); }}
-            className="font-semibold text-primary text-left rounded-sm hover:underline hover:underline-offset-2"
-          >
-            {orderLabel(outlook, today)}
-          </button>
+          <Tip text={outlook.sentence}>
+            <button
+              type="button"
+              aria-label={`${orderLabel(outlook, today)} ${blood_type} Packed RBC. Opens Source supply with these filled in.`}
+              onClick={() => { const t = orderPrefill(blood_type, outlook); onOrder(t.bloodType, t.quantity, t.component); }}
+              className="font-semibold text-primary text-left rounded-sm hover:underline hover:underline-offset-2"
+            >
+              {orderLabel(outlook, today)}
+            </button>
+          </Tip>
           {outlook.projectedLow !== null && <div className="text-foreground tabular-nums">Projected low {outlook.projectedLow}</div>}
           {outlook.limited && (
-            <div className="text-foreground" title={limitedHistoryNote(outlook.limited.have, outlook.limited.need)}>
+            <Tip focusable className="block text-foreground" text={limitedHistoryNote(outlook.limited.have, outlook.limited.need)}>
               Limited history <span className="tabular-nums">({outlook.limited.have} of {outlook.limited.need} days)</span>
-            </div>
+            </Tip>
           )}
         </>
       )}
       {outlook.kind === "at_risk" && (
         <>
-          <span title={outlook.sentence} className={`font-semibold ${STATUS_STYLES.watch.text}`}>At risk</span>
+          <Tip focusable text={outlook.sentence} className={`inline-block font-semibold ${STATUS_STYLES.watch.text}`}>At risk</Tip>
           <div className="text-foreground">
             Could fall below {outlook.minimum ?? "its minimum"} by {formatDayMonth(outlook.byDate)}
           </div>
@@ -260,12 +265,13 @@ function OutlookCell({
         </>
       )}
       {outlook.kind === "thin_history" && (
-        <span
-          title="Too few recorded days to say whether this type is on track or at risk: the range around the forecast is wider than the stock itself."
-          className="text-foreground"
+        <Tip
+          focusable
+          text="Too few recorded days to say whether this type is on track or at risk: the range around the forecast is wider than the stock itself."
+          className="inline-block text-foreground"
         >
           <span className="font-semibold">Not enough history</span> <span className="tabular-nums">({outlook.have} of {outlook.need} days)</span>
-        </span>
+        </Tip>
       )}
       {outlook.kind === "calculating" && <span className="font-semibold text-foreground">Calculating</span>}
       {outlook.kind === "collecting" && (
@@ -473,6 +479,7 @@ function TotalStockChart({ f, totalMinimum }: { f: ForecastView; totalMinimum: n
         Total units across every blood type combined. A steady total doesn't mean every type is steady; see the cards above.
       </p>
       {!chart.hasForecast && <p className="text-[14px] font-semibold text-foreground mb-2">The forecast is still calculating. Recorded stock so far is shown.</p>}
+      <div role="img" aria-label={describeTrendChart(chart, { totalMinimum, standIn: isStandIn, hasInterval })}>
       <ResponsiveContainer width="100%" height={220}>
         <ComposedChart data={chart.points} margin={{ top: 8, right: chart.hasForecast ? 8 : 22, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.35} vertical={false} />
@@ -511,6 +518,7 @@ function TotalStockChart({ f, totalMinimum }: { f: ForecastView; totalMinimum: n
           <Line type="monotone" dataKey="forecastUnits" stroke={forecastColor} strokeWidth={3} dot={{ r: 3.5, strokeWidth: 0, fill: forecastColor }} activeDot={{ r: 5 }} isAnimationActive={false} />
         </ComposedChart>
       </ResponsiveContainer>
+      </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] font-semibold text-foreground mt-1 mb-1">
         {chart.observedCount > 0 && <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 rounded-full inline-block" style={{ backgroundColor: historyColor }} /> Recorded</span>}
         {chart.filledRuns.length > 0 && (
@@ -535,7 +543,7 @@ function TotalStockChart({ f, totalMinimum }: { f: ForecastView; totalMinimum: n
           {hasInterval && (
             <button
               type="button" onClick={() => setShowInterval((v) => !v)} aria-expanded={showInterval}
-              aria-label="What does the shaded band mean, technically?" title="What does the shaded band mean, technically?"
+              aria-label="What does the shaded band mean, technically?"
               className="shrink-0 w-4 h-4 rounded-full border border-border text-[10px] font-bold text-muted-foreground hover:text-foreground hover:border-foreground flex items-center justify-center leading-none"
             >
               ?
@@ -572,7 +580,7 @@ function MethodByType({ f }: { f: ForecastView }) {
           {fitted.map((r) => (
             <li key={r.type} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5">
               <span className="w-10 shrink-0"><BloodTypeBadge type={r.type} size="sm" /></span>
-              <span title={r.basis!.title} className="w-48 shrink-0 font-semibold">{r.basis!.text}</span>
+              <Tip focusable text={r.basis!.title} className="inline-block w-48 shrink-0 font-semibold">{r.basis!.text}</Tip>
               <span className="text-gray-700 break-words flex-1 min-w-[14rem]">{r.label ?? r.basis!.title}</span>
             </li>
           ))}

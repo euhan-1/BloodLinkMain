@@ -1,6 +1,6 @@
 // Asserts the trend chart's data builder in trendChart.ts. Run: node scripts/check_trend_chart.ts
 import { readFileSync } from "node:fs";
-import { buildTrendChart, dateAtOffset, shortDate, tickLabel, MIN_OBSERVED_FOR_LINES, type HistoryPoint, type SeriesPoint } from "../src/app/lib/trendChart.ts";
+import { buildTrendChart, dateAtOffset, describeTrendChart, shortDate, tickLabel, MIN_OBSERVED_FOR_LINES, type HistoryPoint, type SeriesPoint } from "../src/app/lib/trendChart.ts";
 
 const eq = (a: unknown, b: unknown, m: string) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m}: ${JSON.stringify(a)} !== ${JSON.stringify(b)}`); };
 
@@ -117,4 +117,25 @@ const src = readFileSync(new URL("../src/app/lib/trendChart.ts", import.meta.url
 const words = /(better|best|worse|optimi[sz]|improv|accura|reliab|quality|good|great|superior|precise|robust)/i;
 const hit = src.match(words);
 if (hit) throw new Error(`accuracy wording in trendChart.ts: ${hit[0]}`);
+// ---- the text alternative (describeTrendChart): what a screen reader gets in place of the drawing
+{
+  const say = (c: ReturnType<typeof buildTrendChart>, o: Parameters<typeof describeTrendChart>[1]) => describeTrendChart(c, o);
+  const healthy = say(buildTrendChart({ history: northside, series: series(400) }), { totalMinimum: 300, hasInterval: true });
+  for (const part of ["Total stock across every blood type", "Recorded on 65 days", "latest 300 units", "lowest", "highest", "Days nobody recorded", "Projected total: 405 units by Nov 3", "430 units by Nov 28", "The shaded range for Nov 28 runs from 420 to 440", "Status: stays at or above the combined minimum of 300 units"]) {
+    if (!healthy.includes(part)) throw new Error(`chart description is missing "${part}": ${healthy}`);
+  }
+  // the below-minimum status is said in words, with the date: colour is not the only thing carrying it
+  const breach = say(buildTrendChart({ history: northside, series: series(250) }), { totalMinimum: 300, hasInterval: false });
+  if (!breach.includes("Status: projected to fall below the combined minimum of 300 units by Nov 3")) throw new Error(`a projected breach must be stated, with its date: ${breach}`);
+  if (breach.includes("shaded range") || breach.includes("stays at or above")) throw new Error(`no interval and no breach-free claim when there is none: ${breach}`);
+  const thin = say(buildTrendChart({ history: history(-3, () => true), series: series(400) }), { totalMinimum: 0 });
+  if (!thin.includes("Too few days to draw a line") || thin.includes("Status:")) throw new Error(`dots mode says so, and no minimum means no status claim: ${thin}`);
+  const calculating = say(buildTrendChart({ history: northside }), { totalMinimum: 300 });
+  if (!calculating.includes("still being calculated") || calculating.includes("Projected total")) throw new Error(`no forecast yet: ${calculating}`);
+  const standIn = say(buildTrendChart({ history: northside, series: series(400), standIn: true }), { totalMinimum: 300, standIn: true });
+  if (!standIn.includes("reference model, not this facility's own stock history")) throw new Error(`a stand-in projection says what it is: ${standIn}`);
+  const none = say(buildTrendChart({ series: series(400) }), { totalMinimum: 300 });
+  if (!none.includes("No recorded days yet")) throw new Error(`nothing recorded: ${none}`);
+}
+
 console.log("ok");

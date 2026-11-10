@@ -142,9 +142,9 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
         </div>
 
         <div>
-          <h1 className="font-login-serif text-[clamp(1.75rem,2.4vw,2.5rem)] font-bold leading-[1.1] tracking-[-0.02em] text-balance mb-8">
+          <p className="font-login-serif text-[clamp(1.75rem,2.4vw,2.5rem)] font-bold leading-[1.1] tracking-[-0.02em] text-balance mb-8">
             An AI-Powered Blood Supply Management and Emergency Response System
-          </h1>
+          </p>
           <div className="max-w-[34ch]">
             <p className="text-white text-[16px] font-[500] leading-[1.7]">
               Real-time inventory management, demand forecasting and emergency sourcing — unified for blood banks and hospitals across the network.
@@ -179,7 +179,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
               <>
                 <div className="flex items-center gap-2 mb-2">
                   <CheckCircle size={22} className="text-status-safe-text" />
-                  <h2 className="font-display text-2xl font-bold text-foreground">Password updated</h2>
+                  <h1 className="font-display text-2xl font-bold text-foreground">Password updated</h1>
                 </div>
                 <p className="text-muted-foreground text-sm mb-6">
                   You can now log in with your new password.
@@ -198,7 +198,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
               </>
             ) : forgotSent ? (
               <>
-                <h2 className="font-display text-2xl font-bold text-foreground mb-1">Enter your reset code</h2>
+                <h1 className="font-display text-2xl font-bold text-foreground mb-1">Enter your reset code</h1>
                 <p className="text-muted-foreground text-sm mb-6">
                   If an account exists for <strong className="text-foreground">{forgotEmail}</strong>, we've sent a
                   6-digit code to it. Enter it below along with your new password. The code expires in 10 minutes.
@@ -277,7 +277,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
               </>
             ) : (
               <>
-                <h2 className="font-display text-2xl font-bold text-foreground mb-1">Reset your password</h2>
+                <h1 className="font-display text-2xl font-bold text-foreground mb-1">Reset your password</h1>
                 <p className="text-muted-foreground text-sm mb-6">
                   Enter the email address on your facility's account and we'll send you a code to reset your password.
                 </p>
@@ -327,7 +327,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
             )
           ) : (
             <>
-              <h2 className="font-display text-2xl font-bold text-foreground mb-1">Sign in</h2>
+              <h1 className="font-display text-2xl font-bold text-foreground mb-1">Sign in</h1>
               <p className="text-muted-foreground text-sm font-[500] mb-8">
                 Access your facility's blood management dashboard.
               </p>
@@ -452,7 +452,7 @@ function ForcePasswordChangeForm({
 
   return (
     <>
-      <h2 className="font-display text-2xl font-bold text-foreground mb-1">Set a new password</h2>
+      <h1 className="font-display text-2xl font-bold text-foreground mb-1">Set a new password</h1>
       <p className="text-muted-foreground text-sm mb-1">
         {pendingReset.facilityName} — {pendingReset.email}
       </p>

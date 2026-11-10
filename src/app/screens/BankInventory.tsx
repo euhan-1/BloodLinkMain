@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Archive, ChevronDown, Search, SlidersHorizontal, Trash2 } from "lucide-react";
 import { BloodTypeBadge, StatusDot } from "../components/BloodTypeBadge";
+import { Tip } from "../components/Tip";
 import { Skeleton } from "../components/Skeleton";
 import { formatCalendarDate } from "../lib/dateFormat";
 import { type InventorySummaryRow, type InventoryUnit } from "../lib/inventoryTypes";
@@ -167,7 +168,7 @@ function TypeTable(p: BankInventoryProps) {
         <div role="columnheader">Type</div>
         <div role="columnheader" className="text-right">Units</div>
         <div role="columnheader">Status</div>
-        <div role="columnheader" className="text-right" title={`Units that expire within ${EXPIRY_NEAR_DAYS} days, not counting any reserved for a request`}>Expiring</div>
+        <div role="columnheader" className="text-right"><Tip focusable align="end" text={`Units that expire within ${EXPIRY_NEAR_DAYS} days, not counting any reserved for a request`}>Expiring</Tip></div>
         <div role="columnheader" className="text-right">Expired</div>
         <div role="columnheader"><span className="sr-only">Thresholds</span></div>
       </div>
@@ -220,6 +221,7 @@ function TypeRow({
         <div role="cell" className="order-8 lg:order-none ml-auto lg:ml-0 lg:text-right">
           <button
             onClick={(e) => { e.stopPropagation(); onEditThresholds(r.type); }}
+            aria-label={`Set minimum and maximum stock thresholds for ${r.type}`}
             title="Set minimum and maximum stock thresholds"
             className="inline-flex items-center gap-1.5 h-8 px-2.5 -mr-2.5 rounded-md text-[13px] font-semibold text-foreground hover:bg-secondary transition-colors"
           >
@@ -368,7 +370,9 @@ function UnitRow({ u, showType, columns, onRemoveUnit }: { u: InventoryUnit; sho
       <div role="cell" className="order-7 lg:order-none text-[14px] text-foreground tabular-nums"><span className="lg:hidden text-gray-600">Expires </span>{formatCalendarDate(u.expires)}</div>
       <div role="cell" className={`order-2 lg:order-none ml-auto lg:ml-0 text-[14px] font-semibold tabular-nums ${tone}`}>{timeLeftText(u.daysLeft)}</div>
       <div role="cell" className="order-8 basis-full lg:basis-auto lg:order-none text-[13.5px] text-foreground">
-        {note && <span title={note.title} className={reserved ? "font-semibold" : ""}>{note.text}</span>}
+        {note && (note.title
+          ? <Tip focusable align="end" text={note.title} className={reserved ? "font-semibold" : ""}>{note.text}</Tip>
+          : <span className={reserved ? "font-semibold" : ""}>{note.text}</span>)}
       </div>
       <div role="cell" className="order-9 lg:order-none ml-auto lg:ml-0 text-right">
         <button
