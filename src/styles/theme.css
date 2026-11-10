@@ -716,6 +716,12 @@
     --clay-drop: rgba(88, 64, 40, 0.20);        /* the one outer shadow */
     --clay-drop-lg: rgba(88, 64, 40, 0.14);     /* the same, lighter, for the large containers */
     --clay-lo-faint: rgba(120, 98, 76, 0.12);   /* the very faint inner shade of a tile inside a card */
+    /* the stock gauge (StockDial): how much white or black is mixed into the arc's or the track's own colour for the tube's
+       highlight and shade and the groove's shade and lip; the colours themselves are never replaced */
+    --clay-dial-hi: 38%;
+    --clay-dial-lo: 18%;
+    --clay-dial-groove: 13%;
+    --clay-dial-lip: 55%;
     --clay-drop-strong: rgba(88, 64, 40, 0.30); /* the outer shadow of a surface that floats over the page */
     --clay-lo-deep: rgba(120, 98, 76, 0.42);    /* the pressed state's deeper inner shade */
     /* the same recipe on an accent-coloured button: light and shade are white and black, the drop takes the role accent */
@@ -737,6 +743,10 @@
     --clay-lo: rgba(0, 0, 0, 0.50);
     --clay-drop: rgba(0, 0, 0, 0.50);
     --clay-drop-lg: rgba(0, 0, 0, 0.38);
+    --clay-dial-hi: 26%;
+    --clay-dial-lo: 30%;
+    --clay-dial-groove: 32%;
+    --clay-dial-lip: 8%;
     --clay-lo-faint: rgba(0, 0, 0, 0.25);
     --clay-drop-strong: rgba(0, 0, 0, 0.65);
     --clay-lo-deep: rgba(0, 0, 0, 0.65);
@@ -834,6 +844,26 @@
   :root[data-surface="clay"] :is(input, textarea)::placeholder {
     color: var(--muted-foreground);
     opacity: 1;
+  }
+
+  /* The stock gauge (components/StockDial.tsx): its hidden decoration groups are shown, and each is stroked with a mix of the
+     colour the group already carries (`color`: the status colour for the arc, --dial-track for the track), so a highlight or
+     shade can never read as another status. Plain strokes, no blur or filter: eight gauges repaint on every Dashboard load.
+     The arc's body colour, the tick, the badge and the number are not touched. */
+  :root[data-surface="clay"] .dial-clay {
+    display: inline;
+  }
+  :root[data-surface="clay"] .dial-clay-hi circle {
+    stroke: color-mix(in srgb, white var(--clay-dial-hi), currentColor);
+  }
+  :root[data-surface="clay"] .dial-clay-lo circle {
+    stroke: color-mix(in srgb, black var(--clay-dial-lo), currentColor);
+  }
+  :root[data-surface="clay"] .dial-clay-groove circle {
+    stroke: color-mix(in srgb, black var(--clay-dial-groove), currentColor);
+  }
+  :root[data-surface="clay"] .dial-clay-lip circle {
+    stroke: color-mix(in srgb, white var(--clay-dial-lip), currentColor);
   }
 }
 }

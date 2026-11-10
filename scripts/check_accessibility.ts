@@ -143,6 +143,14 @@ for (const file of sources) {
 // ── charts have a text alternative, and status is never colour alone
 const dial = read("src/app/components/StockDial.tsx");
 yes(dial.includes('role="img"') && dial.includes("aria-label={label}") && dial.includes("status ${STOCK_LABELS[level]}"), "the gauge is an image whose label says the value, the scale and the status word");
+// The clay look's extra gauge strokes (tube highlight and shade, groove and lip) are hidden groups that only the clay CSS shows: display="none" is
+// the presentation attribute that keeps the off, print, prefers-contrast and forced-colors renders what they were, and the rules that show them
+// must sit inside the [data-surface="clay"] block, so the groups are never visible without the switch.
+yes(/<g key=\{kind\} className=\{`dial-clay dial-clay-\$\{kind\}`\} display="none"/.test(dial), "the gauge's clay decoration groups are hidden by a display=\"none\" attribute");
+const themeCss = read("src/styles/theme.css");
+const dialRules = themeCss.split(/\r?\n/).filter((l) => l.includes(".dial-clay") && !/^\s*(\/\*|\*)/.test(l));
+yes(dialRules.length >= 5 && dialRules.every((l) => l.includes('[data-surface="clay"]')), `every .dial-clay rule in theme.css is scoped by [data-surface="clay"] (${dialRules.length} rules)`);
+yes(/@media not print \{/.test(themeCss) && /@media not \(prefers-contrast: more\) \{/.test(themeCss) && /@media not \(forced-colors: active\) \{/.test(themeCss), "the clay block sits inside the print, prefers-contrast: more and forced-colors fallbacks");
 const bank = read("src/app/screens/BankDashboard.tsx");
 yes(/role="img" aria-label=\{describeTrendChart\(/.test(bank), "the trend chart is an image labelled by describeTrendChart (its data as text)");
 for (const file of ["src/app/screens/BankDashboard.tsx", "src/app/screens/HospitalDashboard.tsx", "src/app/screens/BankInventory.tsx"]) {

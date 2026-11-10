@@ -71,7 +71,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
   in DevTools (again after each reload); to ship it, add `data-surface="clay"` to the `<html>` tag in `index.html`, which has not been edited.
   **Surfaces only**: cards, raised surfaces, buttons, text fields, `role="dialog"` (Modal and both header popovers, through `DialogPanel`) and
   `role="tooltip"` get a larger radius (`--clay-radius-card` 1.75rem, `--clay-radius-control` 0.875rem) and a clay shadow; status and alert colours,
-  gauge and chart colours, layout, spacing and copy are untouched. **Why selectors and not a token**: the clay rules are unlayered because
+  the gauges' arc and track colours, chart colours, layout, spacing and copy are untouched. **Why selectors and not a token**: the clay rules are unlayered because
   Tailwind utilities beat `@layer base`, and the radii cannot be a token: `rounded-sm/md/lg` read `--radius` (changing it would reshape the
   blood-type badge and every chip) and `rounded-xl` compiles to a literal `1.25rem` (`@theme inline`). **The recipe**, one soft outer drop plus
   two inner shadows (light top-left, shade bottom-right), is defined once as tokens **by size**: `--shadow-clay-sm` (secondary buttons, tooltips),
@@ -102,11 +102,31 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `--muted-foreground` (5.2:1 light, 5.8:1 dark); Preflight's 50%-of-text placeholder is 3.35:1 off and was already below AA. **Colours that move,
   measured in light theme:** `--card` is a token, so every `bg-card` element softens from white to #FDFAF6, not only the surfaces (29 unselected
   blood-type badges, the header, the cards, the buttons), the page and the borders change as in (4), fields go to #F6F2EC, and the gauge's tick halo
-  (`stroke="var(--card)"`) follows from white to #FDFAF6. In dark theme nothing moves except field fills (checked on three screens). **Measured**
-  (headless Chrome, local, 4x CPU throttle, median of 7, the bank Dashboard against a mock API; not a device, and raster work may run off the traced
-  thread): paint+raster is 13 to 17 ms and drifts by about 30% between runs of the same build; clay minus off was -0.5 to +0.4 ms over two runs of 11
-  (spreads overlapping) and +0.9 and +1.6 ms (6% and 10%) in a single noisier run of 7, so a small cost cannot be ruled out; a real phone's GPU was not
-  measured. **Looked at with it on** (screenshots at 1280 and 390 px, light and dark): sign-in, both Dashboards, Inventory, Source supply, Admin,
+  (`stroke="var(--card)"`) follows from white to #FDFAF6. In dark theme nothing moves except field fills (checked on three screens).
+  **The stock gauge** (`components/StockDial.tsx`, one component for both Dashboards: three plain SVG circles and two tick lines, colours as `var(--…)`
+  presentation attributes, no class hooks) is molded as a clay tube and groove with **extra thin strokes, never an SVG blur or filter** (eight gauges
+  repaint with the Dashboard): per gauge four hidden groups, `g.dial-clay.dial-clay-{groove,lip}` after the track and `-{hi,lo}` after the arc (the arc ones only
+  when there is a fill), each a copy of the stroke it decorates (same dash and rotation) with a narrower width, shifted `CLAY_OFFSET` (1.5 units) toward or
+  away from the light, so everything stays inside the original 10-unit band. **They are hidden by the `display="none"` presentation attribute**, which
+  only the clay rule `.dial-clay { display: inline }` overrides: no base-layer CSS exists for them, so off, print, `prefers-contrast: more` and
+  `forced-colors` renders are exactly what they were (`check_accessibility.ts` asserts the attribute and that every `.dial-clay` rule is scoped by
+  `[data-surface="clay"]`; never add a rule that shows them outside the block, and never give them a `stroke` attribute). Each group sets `color` to the
+  token the arc or track already uses (`var(--status-*)` for the arc, `var(--dial-track)` for the track) and the clay CSS strokes it with
+  `color-mix(in srgb, white|black N%, currentColor)`, N from `--clay-dial-hi/lo/groove/lip` (light 38/18/13/55%, dark 26/30/32/8%): **the arc's body
+  colour, the track colour, the tick, the badge, the number and the "min" text are untouched** and a highlight or shade is always its own status colour
+  mixed, never another. Contrast (token values, cross-checked with Chrome's computed colours): body against track 3.64 / 3.01 / 3.56 (teal, amber,
+  red-orange) in light and 4.96 / 5.66 / 3.66 in dark, unchanged by clay; body against the card 5.26 / 4.36 / 5.14 in light (5.47 / 4.53 / 5.35 off, the
+  softer card) and unchanged in dark. The decorative strokes themselves are under 3:1 against the track (light highlights 1.6-1.8:1, dark shades
+  2.0-2.9:1); the arc's outer edge, which meets the track and the card, is always the body colour. The track against the card was 1.50:1 off and is
+  1.45:1 in light clay (1.54 dark): the groove's edge is 1.9:1; that the track is faint was already so. The tick's wide halo is `stroke="var(--card)"`
+  and so follows the softer card (white to #FDFAF6), as noted above. The probe found no ink outside the original arcs and tracks (at most 0.02% of
+  pixels), identical layout, role, `aria-label`, title and stroke attributes, and byte-identical Dashboards on and off in print media, under
+  `prefers-contrast: more` and `forced-colors`, and as PDFs. **Measured** (headless Chrome, local, 4x CPU throttle, the bank Dashboard against a mock API; not a device, and raster work may run off the traced
+  thread). Before the gauges: paint+raster 13 to 17 ms, clay minus off -0.5 to +0.4 ms over two runs of 11 and +0.9 and +1.6 ms (6% and 10%) in one noisier run of 7. **With the molded gauges (32 more circles on
+  the page)**, two runs of 11 in each theme: paint+raster 20.4 to 21.2 ms off against 20.7 to 21.5 ms on in light (+0.3, +0.3 ms) and 20.9 against 21.0 and
+  21.0 against 22.5 in dark (+0.1, +1.5 ms, 1 to 7%), every pair inside the run-to-run spread (the same build drifts by about 30% between sessions, and these
+  runs were slower than the earlier ones); but the layer phase was higher in all four comparisons (+0.3 to +0.8 ms, 5 to 11%) and style recalculation by 1 to 4%
+  (+2 to +7 ms of about 170), which fits 32 more elements, so a small cost is likely and a real phone's GPU was not measured. **Looked at with it on** (screenshots at 1280 and 390 px, light and dark): sign-in, both Dashboards, Inventory, Source supply, Admin,
   Register, Reset password, Complete profile, the Receipt, the Add unit, Edit facility profile and Change password dialogs and the account menu; nothing
   was cut off or unreadable. **Not looked at**: the Donors screen (donor-blast code, untouched) picks up clay through the shared selectors; Admin was
   seen with no pending registrations and the request lists with no requests (the mock returned none).
