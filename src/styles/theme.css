@@ -672,110 +672,209 @@
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-   Clay surfaces: a design experiment, OFF by default. `data-surface="clay"` on <html> (see index.html) turns it on; with
-   the attribute absent nothing below matches, so the app is exactly what it was. Surfaces only: cards, buttons, inputs,
-   modals, popovers and tooltips get a larger corner radius and a soft "pressed from clay" shadow. No status or alert colour,
-   chart or gauge colour, layout, spacing, copy or behaviour is touched.
+   Clay look, enabled by `data-surface="clay"` on <html> (see index.html; DESIGN.md, "The Clay Look"). With the attribute absent
+   nothing below matches, so the app is exactly what it is without it. Surfaces and the stock gauge only: no status or alert
+   colour, chart colour, layout, spacing, copy or behaviour is touched.
 
    Why this is unlayered and selector-based rather than a token change: Tailwind's utilities live in @layer utilities and
    beat anything in @layer base, and the radii cannot be a token (rounded-sm/md/lg read --radius, which would also reshape
    the blood-type badge and every chip; rounded-xl compiles to a literal 1.25rem). Unlayered rules beat the utilities.
 
-   The whole block is inside three nested media queries (a single `not (A or B)` is rewritten into invalid CSS by the minifier): under
-   prefers-contrast: more, forced-colors and print nothing here applies (a printed page has no clay shadow, inner shadow, tinted fill or
-   larger radius), so those users get exactly the flat, off-state surfaces. Every selector in this block is scoped by the attribute (it starts with
-   :root[data-surface="clay"], :root:not(.dark)[data-surface="clay"] or .dark[data-surface="clay"]).
+   The whole block is inside three nested media queries (a single `not (A or B)` is rewritten into invalid CSS by the minifier):
+   under prefers-contrast: more, forced-colors and print nothing here applies, so those users get exactly the off look. Every
+   selector is scoped by the attribute (:root[data-surface="clay"], :root:not(.dark)[...] or .dark[...]).
 
-   Recipe (one soft outer drop + two inner shadows, light from the top left), defined once as the --shadow-clay* tokens and
-   reused: at most three layers on any element. Buttons inside a <li>, <td> or <th> get neither the shadow nor the radius, and a
-   field there gets the radius and fill but no shadow. A tooltip is the exception: one is open at a time, so it is clay wherever
-   it is anchored, a table cell included. Status-tinted panels (bg-status-*) keep their off-state shadow, so
-   a shortage reads exactly as before. A field's clay shadow is off while it has focus so Tailwind's focus:ring-* (a
-   box-shadow) and the global :focus-visible outline stay as they are.
+   READ THIS FIRST, THEN TUNE SECTION 1. The look is one recipe per KIND of thing, defined once, applied to every instance:
+     1 primary button   solid accent fill (maroon bank, navy hospital)        outer drop + inner light + inner shade, fill gradient
+     2 secondary button outline or neutral fill, also tabs and toggles         same, with a soft 3:1 boundary
+       danger button    outline in the critical colour (Deactivate, Reject)    same as 2, its own border colour
+       chip             selectable tinted chip (blood type in Add unit)         same as 2, no boundary
+     3 pill / badge     status pills, position numbers                          inner light + inner shade only, fill untouched
+     4 field            input, select, textarea                                 recessed, with a soft 3:1 boundary
+     5 card / container card, raised surface, big container                     no outline: the edge is the shading (md or lg)
+       nested tile      a gauge tile inside or beside a card                    a shallow recessed well, no outline
+     6 floating         modal, popover, tooltip                                 no outline, a stronger drop (float or sm)
+     7 flat controls    icon buttons, navigation, text links                    unchanged on purpose (they are not objects)
+   A small control inside a list or table row (h-6 / h-7 / h-8 in an li, td or th) gets the inner shading only and no outer
+   drop, so a table of them stays calm. At most three shadow layers on any element.
    ───────────────────────────────────────────────────────────────────────────────────────────────────────────────── */
 @media not (prefers-contrast: more) {
 @media not (forced-colors: active) {
 @media not print {
+
+  /* ═════ 1. STRENGTH: the one block to tune ═════════════════════════════════════════════════════════════════════
+     Medium is the default; <html data-clay-strength="strong"> selects the strong column. Nothing else in this file holds a
+     strength number. depth scales every offset and blur; the three alphas are the light, the shade and the drop; grad is how
+     much a button or chip fill goes from light on top to warm shade underneath; acc-* are the light and the drop on an
+     accent-coloured button. */
+  :root:not(.dark)[data-surface="clay"] {
+    --clay-depth: 1;
+    --clay-hi-a: 0.92;
+    --clay-lo-a: 0.24;
+    --clay-drop-a: 0.17;
+    --clay-grad: 7%;
+    --clay-acc-hi-a: 0.34;
+    --clay-acc-drop-a: 0.30;
+  }
+  :root:not(.dark)[data-surface="clay"][data-clay-strength="strong"] {
+    --clay-depth: 1.35;
+    --clay-hi-a: 1;
+    --clay-lo-a: 0.40;
+    --clay-drop-a: 0.28;
+    --clay-grad: 13%;
+    --clay-acc-hi-a: 0.50;
+    --clay-acc-drop-a: 0.45;
+  }
+  .dark[data-surface="clay"] {
+    --clay-depth: 1;
+    --clay-hi-a: 0.12;
+    --clay-lo-a: 0.55;
+    --clay-drop-a: 0.45;
+    --clay-grad: 7%;
+    --clay-acc-hi-a: 0.22;
+    --clay-acc-drop-a: 0.50;
+  }
+  .dark[data-surface="clay"][data-clay-strength="strong"] {
+    --clay-depth: 1.35;
+    --clay-hi-a: 0.22;
+    --clay-lo-a: 0.75;
+    --clay-drop-a: 0.62;
+    --clay-grad: 13%;
+    --clay-acc-hi-a: 0.34;
+    --clay-acc-drop-a: 0.65;
+  }
+
+  /* ═════ 2. COLOURS ═════════════════════════════════════════════════════════════════════════════════════════════
+     The light colours live under :root:not(.dark): at equal specificity they would otherwise out-rank the plain .dark token
+     block and turn dark cards cream. Light and shade are warm, never black or neutral grey. */
   :root[data-surface="clay"] {
     --clay-radius-card: 1.75rem;     /* cards, raised surfaces, modals, popovers */
-    --clay-radius-control: 0.875rem; /* buttons, fields, tooltips */
+    --clay-radius-tile: 1.25rem;     /* a nested tile */
+    --clay-radius-control: 0.875rem; /* buttons, chips, fields, tooltips */
+    --clay-radius-row: 0.625rem;     /* a small button inside a list or table row */
   }
-  /* The light colours are scoped to :root:not(.dark): at equal specificity they would otherwise out-rank the plain .dark
-     token block above and turn the dark theme's cards cream. */
   :root:not(.dark)[data-surface="clay"] {
-    /* light theme: a softer card fill (not stark white) and a field fill one step darker so a field reads as pressed in */
-    --card: #FDFAF6;
-    --clay-field: #F6F2EC;
-    /* A slightly darker page and border keep the surface-versus-page and border contrast at or above the off state (off: card
-       vs page 1.052, border on card 7.80, on page 7.41, on a field 7.80); with the softer card alone the first was 1.011. */
-    --background: #F4F0EA;
-    --border: #4F4842;
-
-    --clay-hi: rgba(255, 255, 255, 0.95);       /* inner light, top left */
-    --clay-lo: rgba(120, 98, 76, 0.26);         /* inner shade, bottom right */
-    --clay-drop: rgba(88, 64, 40, 0.20);        /* the one outer shadow */
-    --clay-drop-lg: rgba(88, 64, 40, 0.14);     /* the same, lighter, for the large containers */
-    --clay-lo-faint: rgba(120, 98, 76, 0.12);   /* the very faint inner shade of a tile inside a card */
-    /* the stock gauge (StockDial): how much white or black is mixed into the arc's or the track's own colour for the tube's
-       highlight and shade and the groove's shade and lip; the colours themselves are never replaced */
+    --background: #EEE8DD;
+    --card: #F8F3EA;                 /* a card is a step lighter than the page; a field is a step darker than a card */
+    --clay-field: #E9E2D6;
+    --border: #D2C9BC;               /* dividers and the rules inside a card: soft */
+    --clay-boundary: #857B70;        /* the edge of a field, a secondary button or a chip: 3.4:1 on the page, 3.8 on a card, 3.2 on a field */
+    --clay-hi-rgb: 255, 255, 255;
+    --clay-shade-rgb: 176, 116, 66;  /* warm brown */
+    --clay-drop-rgb: 150, 98, 52;
+    --clay-acc-lo-rgb: 40, 10, 0;
     --clay-dial-hi: 38%;
     --clay-dial-lo: 18%;
     --clay-dial-groove: 13%;
     --clay-dial-lip: 55%;
-    --clay-drop-strong: rgba(88, 64, 40, 0.30); /* the outer shadow of a surface that floats over the page */
-    --clay-lo-deep: rgba(120, 98, 76, 0.42);    /* the pressed state's deeper inner shade */
-    /* the same recipe on an accent-coloured button: light and shade are white and black, the drop takes the role accent */
-    --clay-accent-hi: rgba(255, 255, 255, 0.30);
-    --clay-accent-lo: rgba(0, 0, 0, 0.30);
-    --clay-accent-lo-deep: rgba(0, 0, 0, 0.42);
-    --clay-accent-drop: rgba(var(--role-accent-rgb), 0.40);
+  }
+  .dark[data-surface="clay"] {
+    /* the dark card fill and page are left as they are (a lighter card lowers dark contrast figures that are already low) */
+    --clay-field: #1A1510;
+    --clay-boundary: #857868;        /* 4.0:1 on a dark card, 4.3 on the page, 4.2 on a field (the default dark border is 1.6:1) */
+    --clay-hi-rgb: 255, 226, 190;
+    --clay-shade-rgb: 12, 5, 0;
+    --clay-drop-rgb: 0, 0, 0;
+    --clay-acc-lo-rgb: 0, 0, 0;
+    --clay-dial-hi: 26%;
+    --clay-dial-lo: 30%;
+    --clay-dial-groove: 32%;
+    --clay-dial-lip: 8%;
   }
   /* The trend chart's grid lines and hover cursor are drawn with var(--border); a chart colour must not move, so the chart
      keeps the off-state border value. */
   :root:not(.dark)[data-surface="clay"] .recharts-wrapper {
     --border: #58514B;
   }
-  .dark[data-surface="clay"] {
-    /* the dark card fill is left as it is (a lighter one would lower contrast figures that are already low in dark); only the
-       field fill is one step darker, which raises its border contrast */
-    --clay-field: #1A1510;
-    --clay-hi: rgba(255, 240, 220, 0.07);
-    --clay-lo: rgba(0, 0, 0, 0.50);
-    --clay-drop: rgba(0, 0, 0, 0.50);
-    --clay-drop-lg: rgba(0, 0, 0, 0.38);
-    --clay-dial-hi: 26%;
-    --clay-dial-lo: 30%;
-    --clay-dial-groove: 32%;
-    --clay-dial-lip: 8%;
-    --clay-lo-faint: rgba(0, 0, 0, 0.25);
-    --clay-drop-strong: rgba(0, 0, 0, 0.65);
-    --clay-lo-deep: rgba(0, 0, 0, 0.65);
-    --clay-accent-hi: rgba(255, 255, 255, 0.22);
-    --clay-accent-lo: rgba(0, 0, 0, 0.35);
-    --clay-accent-lo-deep: rgba(0, 0, 0, 0.50);
-    --clay-accent-drop: rgba(0, 0, 0, 0.55);
-  }
+
+  /* ═════ 3. THE RECIPE: one token per size ══════════════════════════════════════════════════════════════════════
+     sm   a button, chip or tooltip         md   a card          lg   a big container (raised surface, 600 px panel)
+     float  a modal or popover              tile a nested tile (recessed)         field a text field (recessed)
+     row  a small control in a table or list row (inner shading only, no drop)    pill a status pill (inner shading only)
+     Each is: one warm outer drop, an inner white light on the top left (6 to 8 px blur on the big ones) and an inner warm
+     shade on the bottom right. depth is the strength multiplier from section 1. */
   :root[data-surface="clay"] {
-    /* by size: sm = buttons, fields' neighbours, tooltips; md = cards; lg = the big containers (a tighter, lighter drop and
-       softer inner shade, so a large surface sits on the page rather than floating); float = dialogs and popovers; tile = the
-       very faint inner depth of a tile inside a card (inner shadows only) */
-    --shadow-clay-md:      10px 14px 30px -10px var(--clay-drop), inset 5px 5px 10px var(--clay-hi), inset -6px -7px 14px var(--clay-lo);
-    --shadow-clay-lg:      4px 7px 16px -8px var(--clay-drop-lg), inset 4px 4px 8px var(--clay-hi), inset -4px -5px 10px var(--clay-lo);
-    --shadow-clay-tile:    inset 2px 2px 4px var(--clay-hi), inset -2px -3px 5px var(--clay-lo-faint);
-    --shadow-clay-float:   14px 20px 44px -12px var(--clay-drop-strong), inset 5px 5px 10px var(--clay-hi), inset -6px -7px 14px var(--clay-lo);
-    --shadow-clay-sm:      5px 7px 14px -5px var(--clay-drop), inset 2px 2px 5px var(--clay-hi), inset -3px -3px 6px var(--clay-lo);
-    --shadow-clay-pressed: 0 1px 1px var(--clay-hi), inset 3px 4px 9px var(--clay-lo-deep), inset -2px -2px 5px var(--clay-hi);
-    --shadow-clay-field:   inset 3px 3px 7px var(--clay-lo), inset -3px -3px 6px var(--clay-hi);
-    --shadow-clay-accent:         5px 7px 14px -5px var(--clay-accent-drop), inset 2px 2px 5px var(--clay-accent-hi), inset -3px -3px 6px var(--clay-accent-lo);
-    --shadow-clay-accent-hover:   7px 10px 18px -5px var(--clay-accent-drop), inset 2px 2px 5px var(--clay-accent-hi), inset -3px -3px 6px var(--clay-accent-lo);
-    --shadow-clay-accent-pressed: 0 1px 1px var(--clay-accent-hi), inset 3px 4px 9px var(--clay-accent-lo-deep), inset -2px -2px 4px var(--clay-accent-hi);
+    --clay-c-hi: rgba(var(--clay-hi-rgb), var(--clay-hi-a));
+    --clay-c-lo: rgba(var(--clay-shade-rgb), var(--clay-lo-a));
+    --clay-c-drop: rgba(var(--clay-drop-rgb), var(--clay-drop-a));
+    --clay-c-drop-float: rgba(var(--clay-drop-rgb), calc(var(--clay-drop-a) * 1.5));
+    --clay-c-lo-soft: rgba(var(--clay-shade-rgb), calc(var(--clay-lo-a) * 0.7));
+    --clay-c-lo-deep: rgba(var(--clay-shade-rgb), calc(var(--clay-lo-a) * 1.8));
+    --clay-c-acc-hi: rgba(255, 255, 255, var(--clay-acc-hi-a));
+    --clay-c-acc-lo: rgba(var(--clay-acc-lo-rgb), calc(var(--clay-lo-a) * 1.3));
+    --clay-c-acc-drop: rgba(var(--role-accent-rgb), var(--clay-acc-drop-a));
+
+    --shadow-clay-sm:
+      calc(2px * var(--clay-depth)) calc(3px * var(--clay-depth)) calc(6px * var(--clay-depth)) calc(-1px * var(--clay-depth)) var(--clay-c-drop),
+      inset calc(2px * var(--clay-depth)) calc(2px * var(--clay-depth)) calc(4px * var(--clay-depth)) var(--clay-c-hi),
+      inset calc(-2px * var(--clay-depth)) calc(-3px * var(--clay-depth)) calc(5px * var(--clay-depth)) var(--clay-c-lo);
+    --shadow-clay-md:
+      calc(5px * var(--clay-depth)) calc(8px * var(--clay-depth)) calc(16px * var(--clay-depth)) calc(-6px * var(--clay-depth)) var(--clay-c-drop),
+      inset calc(4px * var(--clay-depth)) calc(4px * var(--clay-depth)) calc(8px * var(--clay-depth)) var(--clay-c-hi),
+      inset calc(-5px * var(--clay-depth)) calc(-6px * var(--clay-depth)) calc(10px * var(--clay-depth)) var(--clay-c-lo);
+    --shadow-clay-lg:
+      calc(6px * var(--clay-depth)) calc(10px * var(--clay-depth)) calc(20px * var(--clay-depth)) calc(-9px * var(--clay-depth)) var(--clay-c-drop),
+      inset calc(6px * var(--clay-depth)) calc(6px * var(--clay-depth)) calc(8px * var(--clay-depth)) var(--clay-c-hi),
+      inset calc(-6px * var(--clay-depth)) calc(-7px * var(--clay-depth)) calc(12px * var(--clay-depth)) var(--clay-c-lo);
+    --shadow-clay-float:
+      calc(10px * var(--clay-depth)) calc(14px * var(--clay-depth)) calc(28px * var(--clay-depth)) calc(-10px * var(--clay-depth)) var(--clay-c-drop-float),
+      inset calc(5px * var(--clay-depth)) calc(5px * var(--clay-depth)) calc(8px * var(--clay-depth)) var(--clay-c-hi),
+      inset calc(-5px * var(--clay-depth)) calc(-6px * var(--clay-depth)) calc(10px * var(--clay-depth)) var(--clay-c-lo);
+    --shadow-clay-tile:
+      inset calc(3px * var(--clay-depth)) calc(3px * var(--clay-depth)) calc(6px * var(--clay-depth)) var(--clay-c-lo-soft),
+      inset calc(-3px * var(--clay-depth)) calc(-3px * var(--clay-depth)) calc(5px * var(--clay-depth)) var(--clay-c-hi);
+    --shadow-clay-field:
+      inset calc(3px * var(--clay-depth)) calc(3px * var(--clay-depth)) calc(6px * var(--clay-depth)) var(--clay-c-lo),
+      inset calc(-3px * var(--clay-depth)) calc(-3px * var(--clay-depth)) calc(5px * var(--clay-depth)) var(--clay-c-hi);
+    --shadow-clay-row:
+      inset calc(2px * var(--clay-depth)) calc(2px * var(--clay-depth)) calc(3px * var(--clay-depth)) var(--clay-c-hi),
+      inset calc(-2px * var(--clay-depth)) calc(-2px * var(--clay-depth)) calc(4px * var(--clay-depth)) var(--clay-c-lo);
+    --shadow-clay-pill:
+      inset calc(1px * var(--clay-depth)) calc(1px * var(--clay-depth)) calc(2px * var(--clay-depth)) var(--clay-c-hi),
+      inset calc(-1px * var(--clay-depth)) calc(-2px * var(--clay-depth)) calc(3px * var(--clay-depth)) var(--clay-c-lo);
+    --shadow-clay-pressed:
+      inset calc(3px * var(--clay-depth)) calc(4px * var(--clay-depth)) calc(8px * var(--clay-depth)) var(--clay-c-lo-deep),
+      inset calc(-2px * var(--clay-depth)) calc(-2px * var(--clay-depth)) calc(4px * var(--clay-depth)) var(--clay-c-hi);
+    --shadow-clay-accent:
+      calc(2px * var(--clay-depth)) calc(4px * var(--clay-depth)) calc(8px * var(--clay-depth)) calc(-2px * var(--clay-depth)) var(--clay-c-acc-drop),
+      inset calc(2px * var(--clay-depth)) calc(2px * var(--clay-depth)) calc(4px * var(--clay-depth)) var(--clay-c-acc-hi),
+      inset calc(-2px * var(--clay-depth)) calc(-3px * var(--clay-depth)) calc(5px * var(--clay-depth)) var(--clay-c-acc-lo);
+    --shadow-clay-accent-hover:
+      calc(3px * var(--clay-depth)) calc(6px * var(--clay-depth)) calc(12px * var(--clay-depth)) calc(-2px * var(--clay-depth)) var(--clay-c-acc-drop),
+      inset calc(2px * var(--clay-depth)) calc(2px * var(--clay-depth)) calc(4px * var(--clay-depth)) var(--clay-c-acc-hi),
+      inset calc(-2px * var(--clay-depth)) calc(-3px * var(--clay-depth)) calc(5px * var(--clay-depth)) var(--clay-c-acc-lo);
+    --shadow-clay-accent-row:
+      inset calc(2px * var(--clay-depth)) calc(2px * var(--clay-depth)) calc(3px * var(--clay-depth)) var(--clay-c-acc-hi),
+      inset calc(-2px * var(--clay-depth)) calc(-2px * var(--clay-depth)) calc(4px * var(--clay-depth)) var(--clay-c-acc-lo);
+    --shadow-clay-accent-pressed:
+      inset calc(3px * var(--clay-depth)) calc(4px * var(--clay-depth)) calc(8px * var(--clay-depth)) rgba(var(--clay-acc-lo-rgb), calc(var(--clay-lo-a) * 2.2)),
+      inset calc(-2px * var(--clay-depth)) calc(-2px * var(--clay-depth)) calc(4px * var(--clay-depth)) var(--clay-c-acc-hi);
+    /* the fill of a button or chip: a very subtle light on top, warm shade underneath, laid over its own colour */
+    --clay-fill:
+      linear-gradient(180deg, color-mix(in srgb, rgb(var(--clay-hi-rgb)) var(--clay-grad), transparent) 0%, color-mix(in srgb, rgb(var(--clay-shade-rgb)) var(--clay-grad), transparent) 100%);
+  }
+  :root:not(.dark)[data-surface="clay"] {
+    --shadow-clay-status:
+      0 3px 7px -1px rgba(28, 25, 23, 0.12),
+      0 16px 30px -8px rgba(28, 25, 23, 0.20),
+      inset calc(4px * var(--clay-depth)) calc(4px * var(--clay-depth)) calc(8px * var(--clay-depth)) var(--clay-c-hi);
+  }
+  .dark[data-surface="clay"] {
+    --shadow-clay-status:
+      0 3px 7px -1px rgba(0, 0, 0, 0.40),
+      0 16px 30px -8px rgba(0, 0, 0, 0.55),
+      inset calc(4px * var(--clay-depth)) calc(4px * var(--clay-depth)) calc(8px * var(--clay-depth)) var(--clay-c-hi);
   }
 
-  /* Cards, and the Dashboard's raised surfaces (their shadow is a utility, shadow-[var(--shadow-raised)]). A raised surface
-     tinted with a status colour (the hospital's Action Required) keeps its off-state shadow. A list item such as a blood
-     type's tile is not a card: li is not matched. */
+  /* ═════ 4. KIND 5 and 6: cards, containers, tiles, floating surfaces ═══════════════════════════════════════════
+     No hard outline on a surface that is not a control: its border stays in the layout (the width is unchanged, so nothing
+     moves) but is transparent, and the edge is the shading. A surface tinted with a status colour (the hospital's Action
+     required) keeps its fill, its colours and its drop; it gets the radius and the light edge only. */
   :root[data-surface="clay"] :is(div, section, aside, form):is(.rounded-xl, .rounded-2xl):not(.max-w-\[80\%\]) {
     border-radius: var(--clay-radius-card);
+  }
+  :root[data-surface="clay"] :is(.bg-card.border.border-border.rounded-xl, li.rounded-xl.border, [role="dialog"], [role="tooltip"]:not(.sr-only)) {
+    border-color: transparent;
   }
   :root[data-surface="clay"] .bg-card.border.border-border.rounded-xl:not(li *) {
     box-shadow: var(--shadow-clay-md);
@@ -785,12 +884,14 @@
   :root[data-surface="clay"] [class*="shadow-[var(--shadow-raised)]"]:not([class*="bg-status-"]) {
     box-shadow: var(--shadow-clay-lg);
   }
-  /* The tiles inside a raised card (a blood type's gauge tile) read as part of the same material: a very faint inner depth,
-     no tint, no outer shadow. They keep their border. */
-  :root[data-surface="clay"] [class*="shadow-[var(--shadow-raised)]"] li.rounded-xl.border {
+  :root[data-surface="clay"] [class*="shadow-[var(--shadow-raised)]"][class*="bg-status-"] {
+    box-shadow: var(--shadow-clay-status);
+  }
+  /* A gauge tile, on the bank Dashboard inside a raised card and on the hospital Dashboard on the page: one recessed well. */
+  :root[data-surface="clay"] li.rounded-xl.border {
+    border-radius: var(--clay-radius-tile);
     box-shadow: var(--shadow-clay-tile);
   }
-
   /* Modals and the two header popovers all come through DialogPanel (role="dialog"); a tooltip is role="tooltip" (the
      screen-reader-only copy of it is skipped). */
   :root[data-surface="clay"] [role="dialog"] {
@@ -802,42 +903,97 @@
     box-shadow: var(--shadow-clay-sm);
   }
 
-  /* Buttons that are not inside a list or table row. Solid primary buttons first (they already carry a shadow in the base
-     layer); bordered or filled secondary buttons get the neutral recipe; transparent ones (navigation, icon buttons) only
-     the larger radius. A disabled button is left out of the shadow rules (":not(:disabled)"), so it keeps the off state's none. */
-  :root[data-surface="clay"] button:is(.rounded-md, .rounded-lg):not(li *, td *, th *) {
+  /* ═════ 5. KINDS 1 to 3: buttons and chips ═════════════════════════════════════════════════════════════════════
+     1 primary: button.bg-primary.text-white (also a selected chip and the icon-only send button)
+     2 secondary: a button with a border-border border or a bg-card / bg-secondary fill, which includes the tabs and toggles
+     3 danger: a button with a critical-colour border (its border and text colour are the status's and stay)
+       chip: an unselected tinted chip (bg-primary-tint) outside the navigation
+     A disabled button is left out of every rule here with :not(:disabled), so it keeps the off look (no shadow, no gradient). */
+  :root[data-surface="clay"] :is(
+    button.bg-primary.text-white,
+    button:is(.bg-card, .bg-secondary, .border-border):not(.bg-primary, [class*="border-status-"], .bg-primary-tint),
+    button.border-status-critical-border,
+    button.bg-primary-tint:not(header *)
+  ):not(:disabled) {
     border-radius: var(--clay-radius-control);
+    background-image: var(--clay-fill);
   }
-  :root[data-surface="clay"] button:is(.rounded-md, .rounded-lg):is(.bg-secondary, .bg-card, .border-border):not(.bg-primary, :disabled, li *, td *, th *) {
+  :root[data-surface="clay"] button:is(.bg-card, .bg-secondary, .border-border):not(.bg-primary, [class*="border-status-"], .bg-primary-tint):not(:disabled),
+  :root[data-surface="clay"] button.border-status-critical-border:not(:disabled),
+  :root[data-surface="clay"] button.bg-primary-tint:not(header *, :disabled) {
     box-shadow: var(--shadow-clay-sm);
   }
-  :root[data-surface="clay"] button.bg-primary.text-white:not(:disabled, li *, td *, th *) {
+  /* the edge of an outline button: 3:1 or better against what is behind it, in a soft warm grey */
+  :root[data-surface="clay"] button.border.border-border:not(.bg-primary):not(:disabled) {
+    border-color: var(--clay-boundary);
+  }
+  /* The keyboard focus ring is the role accent; a hospital's dark accent (#3E6091) is 2.7:1 against a dark card, under the 3:1 a focus
+     indicator needs. In dark clay a hospital's ring is a lighter tone of the same blue (4.3:1 on a card); every other ring is as before. */
+  .dark[data-role="hospital"][data-surface="clay"] {
+    --ring: #5B82B6;
+  }
+  /* A danger button's own border token is 1.6:1 against a dark card, below the 3:1 an unfilled button's edge needs; in dark theme
+     its edge is drawn with the base tone of the same critical family instead (5.6:1). Light theme's own border already clears 3:1. */
+  .dark[data-surface="clay"] button.border-status-critical-border:not(:disabled) {
+    border-color: var(--status-critical);
+  }
+  :root[data-surface="clay"] button.bg-primary.text-white:not(:disabled) {
     box-shadow: var(--shadow-clay-accent);
   }
-  :root[data-surface="clay"] button.bg-primary.text-white:hover:not(:disabled, li *, td *, th *) {
+  :root[data-surface="clay"] button.bg-primary.text-white:hover:not(:disabled) {
     box-shadow: var(--shadow-clay-accent-hover);
+  }
+  /* a small control inside a list or table row: inner shading only, no outer drop */
+  :root[data-surface="clay"] :is(li, td, th) :is(
+    button.bg-primary.text-white,
+    button:is(.bg-card, .bg-secondary, .border-border):not(.bg-primary, [class*="border-status-"], .bg-primary-tint),
+    button.border-status-critical-border
+  ):is(.h-6, .h-7, .h-8):not(:disabled) {
+    border-radius: var(--clay-radius-row);
+    box-shadow: var(--shadow-clay-row);
+  }
+  :root[data-surface="clay"] :is(li, td, th) button.bg-primary.text-white:is(.h-6, .h-7, .h-8):not(:disabled) {
+    box-shadow: var(--shadow-clay-accent-row);
   }
   /* Pressed: the shadow goes inward, nothing moves. Only for people who have not asked for reduced motion. */
   @media (prefers-reduced-motion: no-preference) {
-    :root[data-surface="clay"] button:is(.rounded-md, .rounded-lg):is(.bg-secondary, .bg-card, .border-border):not(.bg-primary, li *, td *, th *) {
+    :root[data-surface="clay"] :is(
+      button:is(.bg-card, .bg-secondary, .border-border):not(.bg-primary, [class*="border-status-"], .bg-primary-tint),
+      button.border-status-critical-border,
+      button.bg-primary-tint:not(header *)
+    ):not(:disabled) {
       transition: box-shadow 150ms ease-out;
     }
-    :root[data-surface="clay"] button:is(.rounded-md, .rounded-lg):is(.bg-secondary, .bg-card, .border-border):not(.bg-primary, li *, td *, th *):active:not(:disabled) {
+    :root[data-surface="clay"] :is(
+      button:is(.bg-card, .bg-secondary, .border-border):not(.bg-primary, [class*="border-status-"], .bg-primary-tint),
+      button.border-status-critical-border,
+      button.bg-primary-tint:not(header *)
+    ):active:not(:disabled, :is(li, td, th) *) {
       box-shadow: var(--shadow-clay-pressed);
     }
-    :root[data-surface="clay"] button.bg-primary.text-white:active:not(:disabled, li *, td *, th *) {
+    :root[data-surface="clay"] button.bg-primary.text-white:active:not(:disabled, :is(li, td, th) *) {
       box-shadow: var(--shadow-clay-accent-pressed);
     }
   }
 
-  /* Text fields, selects and text areas (not checkboxes, radios, file pickers): a larger radius and a pressed-in fill, in a
-     row too (radius and fill only; no shadow there). While a field has focus its off-state ring is left alone. */
+  /* ═════ 6. KIND 3: pills and badges ════════════════════════════════════════════════════════════════════════════
+     Status pills (Complete, Active, Trauma, Restock, Position 1): inner shading only, and no gradient, so a status colour is
+     exactly the colour it was. The dots (w-2) and the bell's count badge (absolute) are not pills. */
+  :root[data-surface="clay"] span.rounded-full:is([class*="px-"], .w-6):not(.absolute, .w-2, .w-4) {
+    box-shadow: var(--shadow-clay-pill);
+  }
+
+  /* ═════ 7. KIND 4: text fields, selects and text areas ═════════════════════════════════════════════════════════
+     A larger radius, a pressed-in fill, a soft boundary at 3:1 or better, and a recessed shadow. While a field has focus the
+     boundary and the shadow are left to the off look, so Tailwind's focus:ring-* (a box-shadow), focus:border-primary and the
+     global :focus-visible outline all show as they do without clay. A field inside a row gets the radius and fill only. */
   :root[data-surface="clay"] :is(input:not([type="checkbox"], [type="radio"], [type="file"], [type="range"], [type="hidden"], [type="color"], [type="button"], [type="submit"]), select, textarea):not(:disabled) {
     border-radius: var(--clay-radius-control);
     background-color: var(--clay-field);
   }
   :root[data-surface="clay"] :is(input:not([type="checkbox"], [type="radio"], [type="file"], [type="range"], [type="hidden"], [type="color"], [type="button"], [type="submit"]), select, textarea):not(:disabled, :focus, li *, td *, th *) {
     box-shadow: var(--shadow-clay-field);
+    border-color: var(--clay-boundary);
   }
   /* Preflight draws a placeholder at 50% of the text colour, 3.2-3.4:1 on these fills; on the pressed-in fill use the muted
      text colour, which is above 4.5:1 in both themes. */

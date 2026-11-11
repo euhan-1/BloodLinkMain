@@ -62,74 +62,60 @@ requests, SARIMAX demand forecasting, donor broadcast.
   Fontsource packages (5.3.0), so no request goes to Google Fonts. All four families are SIL OFL 1.1: the `OFL-*.txt` files beside the
   fonts must stay with them. `index.html` preloads four (Plex Sans 400 and 600, Archivo 700, and Plex Serif 700 only at
   `min-width: 1024px`); adding a family means a `@font-face`, the file, its licence text, and a preload only if it is used above the fold.
-- **Clay surfaces: an optional look, OFF by default** (the last block of `src/styles/theme.css`; its visual rules are in DESIGN.md, "The Clay Look";
-  nothing in the repo asserts it, a throwaway headless-Chrome probe checked it). **`<html data-surface="clay">` turns it on**; with the attribute
-  absent no rule in the block matches and the compiled CSS is byte-identical to the build without it (proved by stripping the block and diffing; 40
-  screenshots, ten screens at 1280 and 390 px in light and dark, byte-identical to the build before any clay work; three single mismatches over several runs
-  (Source supply in dark twice, a screen with a live map; Receipt in dark once) were transient: in one the unmodified baseline was the odd render, and 12 of 12
-  re-renders of each build were identical; cause unknown). To try it locally run `document.documentElement.dataset.surface = "clay"`
-  in DevTools (again after each reload); to ship it, add `data-surface="clay"` to the `<html>` tag in `index.html`, which has not been edited.
-  **Surfaces only**: cards, raised surfaces, buttons, text fields, `role="dialog"` (Modal and both header popovers, through `DialogPanel`) and
-  `role="tooltip"` get a larger radius (`--clay-radius-card` 1.75rem, `--clay-radius-control` 0.875rem) and a clay shadow; status and alert colours,
-  the gauges' arc and track colours, chart colours, layout, spacing and copy are untouched. **Why selectors and not a token**: the clay rules are unlayered because
-  Tailwind utilities beat `@layer base`, and the radii cannot be a token: `rounded-sm/md/lg` read `--radius` (changing it would reshape the
-  blood-type badge and every chip) and `rounded-xl` compiles to a literal `1.25rem` (`@theme inline`). **The recipe**, one soft outer drop plus
-  two inner shadows (light top-left, shade bottom-right), is defined once as tokens **by size**: `--shadow-clay-sm` (secondary buttons, tooltips),
-  `--shadow-clay-md` (cards), `--shadow-clay-lg` (the big containers: every raised surface, `shadow-[var(--shadow-raised)]`, and the 600 px
-  Request and chats panels; a tighter, lighter drop than md, about 15 px of reach below the edge against 34), `--shadow-clay-float` (dialogs,
-  popovers), `--shadow-clay-tile` (the gauge tiles inside a raised card: two very faint inner shadows, no outer drop, no tint), `--shadow-clay-field`
-  (fields, inset), `--shadow-clay-pressed` and the `-accent`, `-accent-hover`, `-accent-pressed` set for solid primary buttons, from the colour
-  tokens `--clay-hi/lo/drop/drop-lg/lo-faint/lo-deep/accent-*`; **at most three layers on any element** (the probe asserts it). A new big
-  container takes the lg token by being a raised surface or by adding its selector to the lg rule. Things to keep true when editing it:
-  (1) **A button inside a `<li>`, `<td>` or `<th>` gets neither the clay shadow nor the larger radius, and a field there gets the radius and fill
-  but no shadow**; the exceptions are the gauge tiles (`li.rounded-xl.border` inside a raised surface, inner shadows only, on the bank Dashboard) and
-  a tooltip, which is clay wherever it is anchored (one is open at a time; the probe's row check ran at rest, when a tooltip is screen-reader-only, so it does
-  not cover it); a selector that would reach a row needs `:not(li *, td *, th *)`. (2) **A surface tinted with a status colour keeps its off-state
-  shadow** (the hospital's Action Required: `:not([class*="bg-status-"])`), so a shortage reads as before. (3) **A field's clay shadow is off while
-  it has focus** (`:not(:focus)`), because Tailwind's `focus:ring-*` is a box-shadow; the global `:focus-visible` outline is untouched. (4) **The
-  light colours (`--card` #FDFAF6, `--clay-field` #F6F2EC, `--background` #F4F0EA, `--border` #4F4842) live under
-  `:root:not(.dark)[data-surface="clay"]`**: at equal specificity they would otherwise out-rank the plain `.dark` token block and turn dark cards
-  cream (this happened once). The trend chart's grid lines and hover cursor read `--border`, so `.recharts-wrapper` is given the off-state value back (`--border: #58514B`) and the chart's strokes do not move. The dark card, page and border are deliberately left alone (a lighter card lowers dark contrast figures that are
-  already low). The page and border are darker than the off state on purpose: with only a softer card the card-against-page contrast was 1.01:1
-  against 1.05:1 off; now it is 1.09:1, and the border is 8.6:1 on a card (7.8 off), 7.9:1 on the page (7.4) and 8.1:1 on a field (7.8). **No text element
-  fell from AA to below it** (511 text elements on nine screens, approximate: gradients ignored). (5) **The whole block sits in three nested
-  media queries, `not (prefers-contrast: more)`, `not (forced-colors: active)` and `not print`**, so those users get exactly the off state and a printed
-  page has no clay shadow, inner shadow, tinted fill or larger radius (the printable Receipt renders to byte-identical PDFs on and off, and every
-  element's computed shadow, radius, fill and border is equal in print media on five screens); do not merge them into `not (A or B)`: the build's
-  minifier rewrites that into invalid CSS and the block silently never applies. (6) **The pressed state** (shadow inward, no transform, no layout
-  shift) is inside `(prefers-reduced-motion: no-preference)`; under reduce a held button looks as it does hovered. A disabled button is left out of
-  the shadow rules with `:not(:disabled)` (a trailing `:disabled` rule lost on specificity once). (7) Placeholders in clay fields use
-  `--muted-foreground` (5.2:1 light, 5.8:1 dark); Preflight's 50%-of-text placeholder is 3.35:1 off and was already below AA. **Colours that move,
-  measured in light theme:** `--card` is a token, so every `bg-card` element softens from white to #FDFAF6, not only the surfaces (29 unselected
-  blood-type badges, the header, the cards, the buttons), the page and the borders change as in (4), fields go to #F6F2EC, and the gauge's tick halo
-  (`stroke="var(--card)"`) follows from white to #FDFAF6. In dark theme nothing moves except field fills (checked on three screens).
-  **The stock gauge** (`components/StockDial.tsx`, one component for both Dashboards: three plain SVG circles and two tick lines, colours as `var(--…)`
-  presentation attributes, no class hooks) is molded as a clay tube and groove with **extra thin strokes, never an SVG blur or filter** (eight gauges
-  repaint with the Dashboard): per gauge four hidden groups, `g.dial-clay.dial-clay-{groove,lip}` after the track and `-{hi,lo}` after the arc (the arc ones only
-  when there is a fill), each a copy of the stroke it decorates (same dash and rotation) with a narrower width, shifted `CLAY_OFFSET` (1.5 units) toward or
-  away from the light, so everything stays inside the original 10-unit band. **They are hidden by the `display="none"` presentation attribute**, which
-  only the clay rule `.dial-clay { display: inline }` overrides: no base-layer CSS exists for them, so off, print, `prefers-contrast: more` and
-  `forced-colors` renders are exactly what they were (`check_accessibility.ts` asserts the attribute and that every `.dial-clay` rule is scoped by
-  `[data-surface="clay"]`; never add a rule that shows them outside the block, and never give them a `stroke` attribute). Each group sets `color` to the
-  token the arc or track already uses (`var(--status-*)` for the arc, `var(--dial-track)` for the track) and the clay CSS strokes it with
-  `color-mix(in srgb, white|black N%, currentColor)`, N from `--clay-dial-hi/lo/groove/lip` (light 38/18/13/55%, dark 26/30/32/8%): **the arc's body
-  colour, the track colour, the tick, the badge, the number and the "min" text are untouched** and a highlight or shade is always its own status colour
-  mixed, never another. Contrast (token values, cross-checked with Chrome's computed colours): body against track 3.64 / 3.01 / 3.56 (teal, amber,
-  red-orange) in light and 4.96 / 5.66 / 3.66 in dark, unchanged by clay; body against the card 5.26 / 4.36 / 5.14 in light (5.47 / 4.53 / 5.35 off, the
-  softer card) and unchanged in dark. The decorative strokes themselves are under 3:1 against the track (light highlights 1.6-1.8:1, dark shades
-  2.0-2.9:1); the arc's outer edge, which meets the track and the card, is always the body colour. The track against the card was 1.50:1 off and is
-  1.45:1 in light clay (1.54 dark): the groove's edge is 1.9:1; that the track is faint was already so. The tick's wide halo is `stroke="var(--card)"`
-  and so follows the softer card (white to #FDFAF6), as noted above. The probe found no ink outside the original arcs and tracks (at most 0.02% of
-  pixels), identical layout, role, `aria-label`, title and stroke attributes, and byte-identical Dashboards on and off in print media, under
-  `prefers-contrast: more` and `forced-colors`, and as PDFs. **Measured** (headless Chrome, local, 4x CPU throttle, the bank Dashboard against a mock API; not a device, and raster work may run off the traced
-  thread). Before the gauges: paint+raster 13 to 17 ms, clay minus off -0.5 to +0.4 ms over two runs of 11 and +0.9 and +1.6 ms (6% and 10%) in one noisier run of 7. **With the molded gauges (32 more circles on
-  the page)**, two runs of 11 in each theme: paint+raster 20.4 to 21.2 ms off against 20.7 to 21.5 ms on in light (+0.3, +0.3 ms) and 20.9 against 21.0 and
-  21.0 against 22.5 in dark (+0.1, +1.5 ms, 1 to 7%), every pair inside the run-to-run spread (the same build drifts by about 30% between sessions, and these
-  runs were slower than the earlier ones); but the layer phase was higher in all four comparisons (+0.3 to +0.8 ms, 5 to 11%) and style recalculation by 1 to 4%
-  (+2 to +7 ms of about 170), which fits 32 more elements, so a small cost is likely and a real phone's GPU was not measured. **Looked at with it on** (screenshots at 1280 and 390 px, light and dark): sign-in, both Dashboards, Inventory, Source supply, Admin,
-  Register, Reset password, Complete profile, the Receipt, the Add unit, Edit facility profile and Change password dialogs and the account menu; nothing
-  was cut off or unreadable. **Not looked at**: the Donors screen (donor-blast code, untouched) picks up clay through the shared selectors; Admin was
-  seen with no pending registrations and the request lists with no requests (the mock returned none).
+- **Clay look** (the last block of `src/styles/theme.css`; its visual rules are in DESIGN.md, "The Clay Look"; nothing in the repo asserts it, a throwaway
+  headless-Chrome probe checked it). **`<html data-surface="clay">` is the switch**, and **it is currently ON in `index.html`** (Euhan's commit 34e299b,
+  "Enable clay look by default"); remove the attribute and the app is its default look. With the attribute absent no rule in the block matches: the compiled CSS
+  is identical to the build without the block (proved by stripping the block and diffing) and 28 screens (twelve at 1280 and 390 px in light, four in dark)
+  render byte-identically to HEAD with the attribute removed (a few dark and chart-heavy screens render a rare stray variant in HEAD as much as in the new build;
+  the probe compares the most common render; cause unknown). To try it on a build where it is absent run `document.documentElement.dataset.surface = "clay"`
+  in DevTools (again after each reload). **`data-clay-strength="strong"`** on `<html>` selects the strong setting; absent is medium.
+  **Surfaces, controls and the stock gauges only**: status and alert colours, the gauges' arc and track colours, chart colours, layout, spacing and copy are
+  untouched, and the hospital's Action required keeps its fill, text and outer drop (it gets the radius and a light inner edge). **Why selectors and not a
+  token**: the clay rules are unlayered because Tailwind utilities beat `@layer base`, and the radii cannot be a token (`rounded-sm/md/lg` read `--radius`, which
+  would reshape the blood-type badge and every chip; `rounded-xl` compiles to a literal `1.25rem`). **Select by exact class token (`.bg-primary-tint`),
+  never `[class*="bg-primary-tint"]`**: the substring also matches `hover:bg-primary-tint` and gave text buttons a chip look once.
+  **One recipe per kind, applied to every instance** (8 kinds, listed in a comment at the top of the block and in DESIGN.md): primary button
+  (`button.bg-primary.text-white`: maroon bank, navy hospital, selected chips), secondary / outline / danger / chip button (`button` with `.border-border`,
+  `.bg-card`, `.bg-secondary`, `.border-status-critical-border` or `.bg-primary-tint` outside `header`), pill (`span.rounded-full` with horizontal padding, no
+  gradient so a status colour is exact), field, card and nested tile, floating surface (dialog, popover, tooltip), status-tinted panel, and the flat
+  controls left as they are (icon buttons, navigation, text links). **No per-file class constants were replaced: the whole look is selectors in `theme.css`**
+  (one file of code touched). **The strength is one block**, section 1 of the clay block: `--clay-depth`, `--clay-hi-a`, `--clay-lo-a`, `--clay-drop-a`,
+  `--clay-grad`, `--clay-acc-hi-a`, `--clay-acc-drop-a`, each written for light and dark, medium and strong; the warm colours are `--clay-hi-rgb`,
+  `--clay-shade-rgb`, `--clay-drop-rgb`. The shadows by size, all built from them: `--shadow-clay-sm` (buttons, chips, tooltips), `-md` (cards), `-lg` (every
+  raised surface, `shadow-[var(--shadow-raised)]`, and the 600 px Request and chats panels), `-float` (dialogs, popovers), `-tile` (the nested gauge tiles: a
+  shallow recessed well), `-field` (fields, recessed), `-row` and `-pill` (inner shading only), `-pressed`, `-status` (Action required) and the `-accent`,
+  `-accent-hover`, `-accent-row`, `-accent-pressed` set for solid primary buttons. Each is one warm outer drop, an inner white light on the top left and an inner
+  warm shade on the bottom right; **at most three layers on any element** (the probe asserts it). Things to keep true when editing it:
+  (1) **A card, tile, dialog, popover or tooltip has no visible outline**: its `border-color` is transparent and the width stays, so nothing moves. (2) **A small
+  control in a list or table row (`h-6`, `h-7` or `h-8` in an `li`, `td`, `th`) gets inner shading only and no outer drop**, and a field there gets radius and fill
+  only; the same control outside a row has the full recipe. (3) **An unfilled control's edge is `--clay-boundary` (#857B70 light, #857868 dark), 3:1 or better
+  against what is behind it** (measured on every field, outline button and danger button on twelve screens: lowest 3.40 light, 3.78 dark); a filled button needs
+  none. A danger button's own border token is 1.6:1 on a dark card, so in dark clay its edge uses `--status-critical`, the base tone of the same family. Dividers
+  inside a card use the soft `--border` (#D2C9BC light). (4) **A field's clay shadow and boundary colour are off while it has focus** (`:not(:focus)`), so Tailwind's
+  `focus:ring-*` and `focus:border-primary` show. **Keyboard focus rings are the off look's** (a 2px accent outline with a 2px offset on buttons and chips; a field has no outline, its indicator is the accent border and a 30% box-shadow ring), **except a hospital's dark ring**, which is `#5B82B6` (4.3:1 on a dark card; the dark navy accent is 2.7:1 there, already so with the switch off). **Measure a ring only after its 150 ms `transition-colors` has finished**: read at once, it is the accent at 50% and looks like 2.6:1 (this misled the probe once). (5) **The light colours (`--card` #F8F3EA, `--background` #EEE8DD, `--clay-field` #E9E2D6, `--border`,
+  `--clay-boundary`) live under `:root:not(.dark)[data-surface="clay"]`**: at equal specificity they would out-rank the plain `.dark` block and turn dark cards
+  cream (this happened once). The dark card and page are left alone (a lighter card lowers dark contrast figures that are already low). The trend chart's grid
+  and cursor read `--border`, so `.recharts-wrapper` gets the off-state value back and chart strokes do not move. (6) **The whole block sits in three nested media
+  queries, `not (prefers-contrast: more)`, `not (forced-colors: active)` and `not print`**: those users, and a printed page, get exactly the off look (checked: every
+  element's shadow, radius, fill, gradient and border equals off in each, on four screens); never merge them into `not (A or B)`: the minifier turns that into invalid
+  CSS and the block silently never applies. (7) **Pressed** (shadow inward, no transform, no layout shift) is inside `(prefers-reduced-motion: no-preference)`; a
+  disabled button is left out of the shadow and gradient rules with `:not(:disabled)`. (8) Placeholders in clay fields use `--muted-foreground`.
+  **Contrast, light and dark (token values, cross-checked in Chrome)**: text on a card 15.8 / 14.5, muted text on a card 5.3 / 5.4, on the page 4.8 / 5.9, on a field
+  4.5 / 5.8; no text element (750 scanned on twelve screens, both themes) falls from AA to below it. **The surface-versus-page contrast and the border contrast are lower
+  than the off look's by design** (card against page 1.10:1 against 1.05 with the default white, but no outline; a control's boundary 3.4:1 instead of 7.4:1).
+  **Colours that move**: `--card` is a token, so every `bg-card` element (the unselected blood-type badge, the header, the buttons) is #F8F3EA instead of white, the
+  page is #EEE8DD, the gauge's tick halo (`stroke="var(--card)"`) follows the card; fields are #E9E2D6. In dark theme only field fills move.
+  **The stock gauge** (`components/StockDial.tsx`, both Dashboards; unchanged in this round) is molded as a clay tube and groove with extra thin strokes, never a blur
+  or filter: per gauge four hidden groups (`g.dial-clay.dial-clay-{groove,lip,hi,lo}`, `display="none"` as a presentation attribute that only the clay rule
+  `.dial-clay { display: inline }` overrides, so off, print, `prefers-contrast: more` and `forced-colors` are exactly what they were; `check_accessibility.ts` asserts
+  it), each a narrower copy of the stroke it decorates shifted `CLAY_OFFSET` toward or away from the light, stroked with `color-mix(in srgb, white|black N%,
+  currentColor)` (`--clay-dial-*`), so a highlight or shade is always its own status colour and everything stays inside the original band. Arc body against the track
+  3.64 / 3.01 / 3.56 (teal, amber, red-orange) in light and 4.96 / 5.66 / 3.66 in dark, unchanged; against the card 4.95 / 4.10 / 4.84 in light (5.47 / 4.53 / 5.35
+  against white) and unchanged in dark; the decorative strokes themselves are under 3:1 against the track, the arc's outer edge is always the body colour; the
+  track against the card is 1.36:1 (1.50 against white; 1.54 dark). **Measured** (headless Chrome, local, 4x CPU throttle, the bank Dashboard against a mock API; not a device, and raster work may run off the traced thread): paint+raster, medium, median of 11, was 18.7 ms off against 21.2 on in light (+2.5 ms, 13%; ranges 17-20 and 18-22) and 19.5 against 21.3 in dark (+1.8 ms, 9%; 17-21 and 19-23); strong, median of 7, +0.7 and +1.6 ms; the layer phase was 11-14% higher in every comparison and style recalculation 1-5% (+5 to +8 ms of about 165). So a small real cost is likely, at the edge of the run-to-run spread (the same build drifts by about 30% between sessions); a phone's GPU was not measured. **Looked at with it on** (screenshots at 1280 and 390 px, light and dark): the bank
+  Dashboard, Inventory, Source supply, Requests, Admin (with one pending registration), Register, sign-in, the hospital Dashboard and Source supply, the Add unit and
+  Change password dialogs and the account menu. **Not looked at**: the Donors screen (donor-blast code, untouched) picks up the look through the shared selectors; the
+  Receipt page, Reset password and Complete profile were not re-photographed this round; the request thread (a request open in the chat) was not mocked.
 
 ## Conventions that bite
 
