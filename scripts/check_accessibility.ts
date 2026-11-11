@@ -30,7 +30,7 @@ const H1: Record<string, number> = {
   "src/app/screens/HospitalDashboard.tsx": 1,
   "src/app/screens/Inventory.tsx": 1,
   "src/app/screens/HospitalSourcing.tsx": 1, // the Source supply / Emergency sourcing tab
-  "src/app/screens/Requests.tsx": 1,         // the Request and chats tab (its other two tabs have their own: HospitalSourcing, TransferHistory)
+  "src/app/components/ConversationList.tsx": 1, // the Messages sub-tab of Supply: its list's title (its other two tabs have their own: HospitalSourcing, TransferHistory)
   "src/app/screens/TransferHistory.tsx": 1,
   "src/app/screens/Admin.tsx": 1,            // the header's "BloodLink Admin"
 };
@@ -39,8 +39,20 @@ for (const [file, n] of Object.entries(H1)) eq(count(read(file), /<h1[\s>]/g), n
 // Any other file with an <h1> would add a second one to a page. ReceiptRecord is the receipt page's own document (headingLevel 1 there only).
 const others = sources.filter((f) => !(f in H1) && /<h1[\s>]/.test(read(f)));
 eq(others, [], "no other file adds an <h1>");
-yes(/headingLevel\?: HeadingLevel/.test(read("src/app/components/ReceiptRecord.tsx")) && read("src/app/screens/Requests.tsx").includes("headingLevel={3}"),
-  "the receipt shown inside the chat is a level-3 heading under the chat's h2, not a second h1");
+yes(/headingLevel\?: HeadingLevel/.test(read("src/app/components/ReceiptRecord.tsx")), "the receipt document takes its heading level (1 on its own page)");
+// Messages: the thread is a named, focusable, polite log region; the conversation title is an h2 under the one h1 and a request is an h3;
+// every message carries a visible "You" / facility label (alignment is never the only cue); the composer's field has a label; a bubble has a
+// border (forced colors drops fills); no title-only control (the generic rule below also covers these files).
+{
+  const messagesTab = read("src/app/screens/Messages.tsx"), parts = read("src/app/components/ThreadParts.tsx");
+  yes(/role="log"[^>]*aria-live="polite"[^>]*aria-relevant="additions"[^>]*tabIndex=\{0\}/.test(messagesTab.replace(/\s+/g, " ")) && /aria-label=\{`Messages and requests with/.test(messagesTab), "the thread is a named, focusable log region with polite additions");
+  yes(/<h2 id="conversation-heading"/.test(messagesTab) && /<h3 className=/.test(parts), "the conversation title is an h2 and a request card's title an h3");
+  yes(/function Label\b[\s\S]*font-bold text-foreground[\s\S]*<time dateTime=\{at\}>/.test(parts) && /<Label text=\{row\.label\}/.test(parts), "every message, event and request carries a visible label (You or the facility's name) and its time");
+  yes(/<label htmlFor=\{`\$\{uid\}-input`\} className="sr-only">Message/.test(parts), "the composer's field has a label");
+  yes(/msg-bubble[^"]*\bborder\b/.test(parts) && /thread-chip[^"`]* border /.test(parts), "a bubble and a chip have a border, so they survive forced colors");
+  yes(/aria-expanded=\{open\}/.test(parts) && /aria-controls=\{id\}/.test(parts), "the units toggles say whether they are open");
+  yes(/aria-label=\{`Remove request #\$\{aboutRequestId\} from this message`\}/.test(parts), "the chip's remove button has a name");
+}
 // The page-level titles that were visible headings keep their size: theme.css gives h1/h2/h3 different default sizes, so a bare tag change
 // would resize them. Every h1 and h2 in a screen names its size.
 for (const file of Object.keys(H1)) {

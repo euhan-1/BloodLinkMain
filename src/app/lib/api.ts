@@ -3,6 +3,7 @@ import { clearSession, getToken, setSession, updateSessionUser, type SessionUser
 import { type InventoryApiRow } from "./inventoryTypes";
 import { SharedRequests, type SharedOptions } from "./sharedRequests";
 import type { PollResult, SyncPayload } from "./liveSync";
+import type { ConversationList, ConversationThread, ThreadMessage } from "./conversations";
 
 // Production always calls same-origin, through Vercel's /api/:path* rewrite
 // (see vercel.json) to the real Render backend — not the Render URL
@@ -65,8 +66,11 @@ async function throwForResponse(res: Response): Promise<never> {
     window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
     throw new Error("Your session has expired — please log in again.");
   }
-  throw new Error(await extractErrorMessage(res));
+  throw Object.assign(new Error(await extractErrorMessage(res)), { status: res.status });
 }
+
+/** The HTTP status an authenticated call failed with, when it was an HTTP failure (undefined for a network error). */
+export const errorStatus = (error: unknown): number | undefined => (error as { status?: number } | null)?.status;
 
 // Every GET goes through one shared layer (sharedRequests.ts): identical requests made while one is already running share it,
 // and a caller can pass `ttlMs` to reuse a recent answer. Every write below calls invalidateApiCache() when it settles, so nothing
@@ -103,6 +107,25 @@ export async function syncPoll(etag: string | null): Promise<PollResult> {
   if (res.status === 401) return throwForResponse(res);
   if (!res.ok) throw Object.assign(new Error(await extractErrorMessage(res)), { status: res.status });
   return { status: 200, data: (await res.json()) as SyncPayload, etag: res.headers.get("ETag") };
+}
+
+// ─── Conversations (one per pair of facilities; see "Conversations" in server/main.py) ──────────────────────────────────────────────
+export function listConversations(): Promise<ConversationList> {
+  return apiGet<ConversationList>("/conversations");
+}
+
+export function getConversation(otherFacilityId: number, finishedBefore?: number): Promise<ConversationThread> {
+  const query = finishedBefore === undefined ? "" : `?finished_before=${finishedBefore}`;
+  return apiGet<ConversationThread>(`/conversations/${otherFacilityId}${query}`);
+}
+
+export function sendConversationMessage(otherFacilityId: number, message: string, requestId: number | null): Promise<ThreadMessage & { conversation_id: number }> {
+  return apiPost(`/conversations/${otherFacilityId}/messages`, requestId === null ? { message } : { message, request_id: requestId });
+}
+
+/** Moves MY read position forward (never back) to `upTo`, or to the newest message with none. The first call for a pair also makes its conversation row. */
+export function markConversationRead(otherFacilityId: number, upTo?: number): Promise<{ conversation_id: number; last_read_message_id: number; unread: number }> {
+  return apiPost(`/conversations/${otherFacilityId}/read`, upTo === undefined ? {} : { up_to_message_id: upTo });
 }
 
 export async function apiPost<T>(path: string, body: unknown, headers?: HeadersInit): Promise<T> {

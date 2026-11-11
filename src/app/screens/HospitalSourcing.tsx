@@ -424,7 +424,7 @@ function RequestPanel(p: HospitalSourcingProps & { selected: Facility | null }) 
             <CheckCircle size={20} className="text-status-safe-text shrink-0" /> Request sent
           </h2>
           <p className="mt-2 text-[15px] text-foreground">
-            {selected.name} has your request for {units} of {what(p)}. Follow its status and message them in Request and chats.
+            {selected.name} has your request for {units} of {what(p)}. Follow its status and message them in Messages.
             The number on that tab counts requests that need your action.
           </p>
           <button
@@ -432,7 +432,7 @@ function RequestPanel(p: HospitalSourcingProps & { selected: Facility | null }) 
             onClick={p.onOpenRequests}
             className="mt-4 w-full h-11 border border-border rounded-md bg-card text-[15px] font-semibold text-foreground hover:bg-secondary transition-colors"
           >
-            Open Request and chats
+            Open Messages
           </button>
         </div>
       )}

@@ -14,11 +14,11 @@ import { NotificationBell, AccountMenu, HEADER_ROW_CLASS } from "./components/Ac
 // signed-out visitor actually needs, so it's the only screen bundled into
 // the initial/login chunk. Every other screen (and, transitively, whatever
 // heavy libraries only it needs — recharts for Dashboard, leaflet for
-// Requests/CompleteProfile) fetches its own chunk only once the user
+// Supply/CompleteProfile) fetches its own chunk only once the user
 // actually navigates there. See ScreenFallback below for the Suspense UI.
 const DashboardScreen = lazy(() => import("./screens/Dashboard").then((m) => ({ default: m.DashboardScreen })));
 const InventoryScreen = lazy(() => import("./screens/Inventory").then((m) => ({ default: m.InventoryScreen })));
-const RequestsScreen = lazy(() => import("./screens/Requests").then((m) => ({ default: m.RequestsScreen })));
+const SupplyScreen = lazy(() => import("./screens/Supply").then((m) => ({ default: m.SupplyScreen })));
 const ChatScreen = lazy(() => import("./screens/Donors").then((m) => ({ default: m.ChatScreen })));
 const AdminDashboardScreen = lazy(() => import("./screens/Admin").then((m) => ({ default: m.AdminDashboardScreen })));
 const ResetPasswordScreen = lazy(() => import("./screens/ResetPassword").then((m) => ({ default: m.ResetPasswordScreen })));
@@ -47,7 +47,7 @@ function ScreenFallback() {
   );
 }
 
-type Screen = "login" | "dashboard" | "inventory" | "requests" | "chat";
+type Screen = "login" | "dashboard" | "inventory" | "supply" | "chat";
 
 // ─── Top Navigation ───────────────────────────────────────────────────────────
 
@@ -66,7 +66,7 @@ function TopNav({
   const navItems: { key: Screen; label: string; icon: React.ReactNode }[] = [
     { key: "dashboard", label: "Dashboard", icon: <Activity size={20} /> },
     { key: "inventory", label: "Inventory", icon: <Package size={20} /> },
-    { key: "requests", label: "Requests", icon: <MapPin size={20} /> },
+    { key: "supply", label: "Supply", icon: <MapPin size={20} /> },
   ];
 
   // The one shared poller (lib/liveSync.ts) runs exactly while a facility account's nav is on screen: it starts when the nav mounts and
@@ -176,16 +176,17 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<SessionUser | null>(() => getCurrentUser());
 
   // One-shot: set when a hospital's dashboard action prompt sends staff to
-  // Emergency Sourcing for a specific blood type. RequestsScreen consumes it
+  // Emergency Sourcing for a specific blood type. SupplyScreen consumes it
   // on mount (via onConsumedSourcingPrefill) so a later, unrelated visit to
-  // Requests (e.g. the top nav) doesn't inherit a stale prefill.
+  // Supply (e.g. the top nav) doesn't inherit a stale prefill.
   // A blood bank's "Order 90 by 4 Nov" also carries the quantity; a hospital's prompt carries only the type.
-  // "View all requests" and "Open the incoming list" open Request and chats, not whichever tab the screen opens on.
+  // "View all requests" and "Open the incoming list" open Messages, not whichever tab the screen opens on.
   const [requestsOpenOnChats, setRequestsOpenOnChats] = useState(false);
   const [sourcingPrefill, setSourcingPrefill] = useState<{ bloodType: string; quantity?: number; component?: string } | null>(null);
 
   // Same one-shot pattern, driven by clicking a "requests:{id}" notification
-  // — jumps Requests straight to its transfer tab with that request selected.
+  // (the link text the server writes; it names a request, not a screen) — jumps Supply straight to Messages, in the conversation that
+  // request is part of, at its card.
   const [requestsHighlightId, setRequestsHighlightId] = useState<number | null>(null);
 
   function handleNotificationNavigate(n: NotificationItem) {
@@ -193,11 +194,13 @@ export default function App() {
     if (n.link.startsWith("requests:")) {
       const id = parseInt(n.link.slice("requests:".length), 10);
       if (!Number.isNaN(id)) setRequestsHighlightId(id);
-      setScreen("requests");
+      setScreen("supply");
     } else if (n.link.startsWith("sourcing:")) {
       setSourcingPrefill({ bloodType: n.link.slice("sourcing:".length) });
-      setScreen("requests");
-    } else if (n.link === "dashboard" || n.link === "inventory" || n.link === "requests" || n.link === "chat") {
+      setScreen("supply");
+    } else if (n.link === "requests" || n.link === "supply") {
+      setScreen("supply"); // "requests" is what older notification rows say
+    } else if (n.link === "dashboard" || n.link === "inventory" || n.link === "chat") {
       setScreen(n.link);
     }
   }
@@ -216,7 +219,7 @@ export default function App() {
   }, []);
 
   // Any authenticated call anywhere in the app (Dashboard's poll, an action on
-  // Requests, etc.) can come back 401 well after mount — api.ts already
+  // Supply, etc.) can come back 401 well after mount — api.ts already
   // clears the stored session when that happens and fires this event so we
   // drop back to the login screen instead of every screen being stuck
   // rendering "Failed to load: 401 Unauthorized" with no way out.
@@ -336,20 +339,20 @@ export default function App() {
             <DashboardScreen
               onRequestBloodType={(bloodType, quantity, component) => {
                 setSourcingPrefill({ bloodType, quantity, component });
-                setScreen("requests");
+                setScreen("supply");
               }}
-              onViewRequests={() => { setRequestsOpenOnChats(true); setScreen("requests"); }}
+              onViewRequests={() => { setRequestsOpenOnChats(true); setScreen("supply"); }}
               onViewInventory={() => setScreen("inventory")}
             />
           )}
           {screen === "inventory" && <InventoryScreen />}
-          {screen === "requests" && (
-            <RequestsScreen
+          {screen === "supply" && (
+            <SupplyScreen
               initialSearchType={sourcingPrefill?.bloodType ?? null}
               initialQuantity={sourcingPrefill?.quantity ?? null}
               initialComponent={sourcingPrefill?.component ?? null}
               onConsumedSourcingPrefill={() => setSourcingPrefill(null)}
-              initialTab={requestsOpenOnChats ? "transfer" : null}
+              initialTab={requestsOpenOnChats ? "messages" : null}
               onConsumedInitialTab={() => setRequestsOpenOnChats(false)}
               initialHighlightRequestId={requestsHighlightId}
               onConsumedHighlight={() => setRequestsHighlightId(null)}

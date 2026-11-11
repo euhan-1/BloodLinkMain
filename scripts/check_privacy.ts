@@ -56,6 +56,8 @@ for (const must of [
   "does not itself encrypt", "have not verified",
   "To be informed", "To access", "To correct", "To erasure or blocking", "To object", "To data portability",
   "tick a box", "version of the notice", `Version ${PRIVACY_NOTICE_VERSION}`,
+  // messages (Messages redesign, 2026-11-11): one conversation per other facility, a message may be about no request, a read position is stored
+  "conversation with another facility", "about no particular request", "how far your facility has read", "They are not shown how far you have read",
 ]) yes(lower.includes(must.toLowerCase()), `the notice must say: ${must}`);
 
 // ── what it must NOT claim (the code does not do these, or nobody checked)

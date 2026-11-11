@@ -253,7 +253,7 @@ function YourRequests({ requests, failed, onViewRequests }: { requests: RequestR
         </div>
       )}
       {requests === null && failed && (
-        <p role="alert" className="text-[14px] text-status-critical-text">Couldn't load your requests. Open the Requests screen to see them.</p>
+        <p role="alert" className="text-[14px] text-status-critical-text">Couldn't load your requests. Open Supply to see them.</p>
       )}
       {requests !== null && requests.length === 0 && (
         <p className="text-[15px] text-foreground">

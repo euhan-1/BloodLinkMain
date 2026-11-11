@@ -21,13 +21,14 @@
 // Pure: the network, the clock and the page's visibility are injected, so scripts/check_live_sync.ts can drive it with fakes. The real
 // wiring is in liveSyncRuntime.ts.
 
-export type SyncSection = "requestsIncoming" | "requestsOutgoing" | "inventory" | "expiring";
+export type SyncSection = "requestsIncoming" | "requestsOutgoing" | "inventory" | "expiring" | "messages";
 
 export type SyncPayload = {
   notifications: { unread: number; latest_id: number };
   requests: { incoming: string; outgoing: string };
   inventory: string;
   expiring: string;
+  messages: string; // moves when a message arrives or is sent in any of my conversations, and when my own read position moves
 };
 
 export type PollResult = { status: 200; data: SyncPayload; etag: string | null } | { status: 304 };

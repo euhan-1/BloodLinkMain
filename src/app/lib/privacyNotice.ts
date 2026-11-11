@@ -8,8 +8,8 @@
 // environment in screens/PrivacyNotice.tsx and goes through privacyContact() below.
 
 /** Must equal PRIVACY_NOTICE_VERSION in server/main.py (check_privacy.ts compares the two). Raise both when the notice changes. */
-export const PRIVACY_NOTICE_VERSION = "1.0";
-export const PRIVACY_NOTICE_EFFECTIVE_DATE = "10 November 2026";
+export const PRIVACY_NOTICE_VERSION = "1.1";
+export const PRIVACY_NOTICE_EFFECTIVE_DATE = "11 November 2026";
 
 /** A paragraph, a list, a small heading, or the place where the contact address goes. */
 export type NoticeBlock =
@@ -77,7 +77,7 @@ export const NOTICE_SECTIONS: NoticeSection[] = [
           "Your sign-in: a work email address and a password. We use the email to sign you in and to send verification codes, password reset links and notices about your registration. The password is stored only as a bcrypt hash.",
           "The contact person on a registration: a name and a phone number, entered only on the Register form. An administrator uses them to review the application, and they are kept with the application afterwards.",
           "Blood stock and transfers: the units you record or upload, your stock limits, and requests between facilities, including when each step happened and the email of the account that accepted, released or received a transfer.",
-          "Messages and notifications: what you type in a request's chat, and the notices BloodLink creates for your facility. A chat is free text and BloodLink does not check it, so do not put patient names or other personal details in it.",
+          "Messages and notifications: what you type in your conversation with another facility, and the notices BloodLink creates for your facility. There is one conversation for each other facility you have a request with. A message can be about one of your requests or about no particular request. BloodLink also stores, for each conversation, how far your facility has read, so that it can show you what is new. A message is free text and BloodLink does not check it, so do not put patient names or other personal details in it.",
           "Uploaded files: for stock uploads we keep the original text of the file so you can download it again, and a record of which account uploaded it and when.",
           "Donor lists (blood banks only): if a blood bank uploads a donor list, we store each donor's name, blood type and phone number for that bank. Blood type is health information, which the Data Privacy Act treats as sensitive. BloodLink does not collect this from donors themselves and does not record their consent, and for now it simulates donor messages instead of sending real ones. The bank that uploads a list is responsible for having the donors' permission.",
           "In your browser: a sign-in token and your basic account details (email, facility name and type) in the browser's local storage, your light or dark theme, and which requests you have already seen. Our code sets no cookies and BloodLink uses no advertising or analytics trackers.",
@@ -112,7 +112,7 @@ export const NOTICE_SECTIONS: NoticeSection[] = [
       {
         kind: "list",
         items: [
-          "Other signed-in facilities see your facility's name, type, address and map position, in the search for blood and on the map. On a request you share with another facility, they also see the quantities, the chat, and the email of the account that accepted, released or received it.",
+          "Other signed-in facilities see your facility's name, type, address and map position, in the search for blood and on the map. A facility you have a request with also sees your conversation with it: every message in it, whether or not the message is about that request. On a request you share, they also see the quantities and the email of the account that accepted, released or received it. They are not shown how far you have read.",
           "Your own facility sees its stock, requests, notifications and uploads. Each facility has one login.",
           "BloodLink administrators see registration applications (facility name, address, contact person, phone and email), every facility, and the email of each account.",
           "The thesis team runs the database and can read everything stored in it.",

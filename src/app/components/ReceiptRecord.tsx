@@ -126,13 +126,13 @@ export function ReceiptRecord({
       </section>
 
       <section className="mt-6 print:break-inside-avoid" aria-labelledby="receipt-chat">
-        <Section id="receipt-chat" className={H2}>Coordination chat</Section>
+        <Section id="receipt-chat" className={H2}>Messages about this request</Section>
         <p className="mt-2 text-[14px] text-foreground print:text-black">
           {data.message_count === 0
-            ? "The coordination chat for this request holds no messages."
-            : `The coordination chat for this request holds ${plural(data.message_count, "message", "messages")} between the two facilities.`}
+            ? "No message was sent about this request."
+            : `${plural(data.message_count, "message was", "messages were")} sent about this request between the two facilities.`}
           {data.message_count > 0 && " They are not reproduced here."}
-          {data.message_count > 0 && showChatLocation && " They can be viewed in the app, under Requests, Request and chats."}
+          {data.message_count > 0 && showChatLocation && " They can be viewed in the app, under Supply, Messages, in the conversation with the other facility."}
         </p>
       </section>
 

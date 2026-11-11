@@ -54,7 +54,7 @@ eq(receiptTimeText("2026-10-30T12:27:00Z"), formatDateTime("2026-10-30T12:27:00Z
 eq(receiptTimeText(null), "not recorded", "the receipt, no time");
 eq(formatTime("2026-10-30T12:27:00Z", "Asia/Manila"), "20:27", "time only, 24-hour");
 eq(formatTime("2026-03-03T00:05:00Z", "UTC"), "00:05", "time only, midnight and a leading zero");
-for (const f of ["lib/dateFormat.ts", "lib/transfers.ts", "lib/requestTimeline.ts", "components/RequestThread.tsx"]) {
+for (const f of ["lib/dateFormat.ts", "lib/transfers.ts", "lib/requestTimeline.ts", "lib/conversations.ts", "components/ThreadParts.tsx"]) {
   if (/toLocale/.test(readFileSync(new URL(`../src/app/${f}`, import.meta.url), "utf8").replace(/\/\/.*$/gm, ""))) throw new Error(`${f} must not rely on the browser's locale`);
 }
 

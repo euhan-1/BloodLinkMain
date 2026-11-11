@@ -212,6 +212,22 @@ Status badges (Adequate / Below minimum / Critical, the three stock states) foll
 ### Navigation
 Sticky top bar, Surface White background, single bottom border (no shadow — the nav sits flush, cards below it carry the depth instead). **4rem tall (it was 3.5rem), and every control in it is at least 44 × 44 px** (the nav tabs, the bell, the account button): labels 15px, icons 20px (the bell 22px), the logo drop 32px and the wordmark 18px, the account avatar 32px. The row is one class, `HEADER_ROW_CLASS` in `components/AccountMenu.tsx` (`max-w-screen-2xl`, `px-4 sm:px-6`, the same gutter as every page), used by the facility `TopNav` and by the Admin screen's header, so the logo and the account button sit at the same x as the page content on every screen and every width (measured 2026-11-11 at 390, 1280 and 1920). Active item: Oxblood/Navy-tinted background pill with brand-colored text and a slight scale-up; inactive: muted text that brightens on hover with a soft background wash. Labels hide below the `md` breakpoint, leaving icon-only nav so the header shrinks rather than overflows on a narrow or split window. Below `sm` the wordmark is hidden (the drop alone is the logo) and the bar's gaps tighten, so the three nav icons, the bell and the account button fit at 320px without touching (measured: right-most control at 298 of 320 px). The bell's unread badge is anchored to the icon, 10px above and to the right of it, whatever the size of the target around it. Below `sm` the notification panel anchors to the header and spans the viewport with a 1rem gutter (anchored to the bell it ran off the left edge of a phone); from `sm` up it hangs from the bell, 20rem wide. The Admin header is the same bar (not sticky, no bell: an admin has no facility) with an `ADMIN` pill after the wordmark.
 
+### Messages (the conversation screen)
+The top nav tab is **Supply** (it was Requests); its sub-tabs are the role's sourcing name, **Messages** and Transfer history. Messages is a list of
+conversations (one row per other facility: an initials circle, the name and the time, the last message, an unread count, and what is waiting
+on you) beside one thread, and on a phone the list and then the thread with a back link. In the thread **everything is aligned by who did it:
+mine on the right, theirs on the left, never centred and never full width**, each with a visible label ("You" or the facility's name, and the
+time). A message is a bubble with an asymmetric corner (the tail toward its side); mine is the role's accent with white text (maroon on a bank,
+navy on a hospital), theirs a neutral grey. A status event is a compact chip (an icon and one sentence naming its actor, such as "You accepted
+request #38"; mine tinted with the accent, theirs neutral), with "Units released (9)" and "Units and outcome (9)" as expandable sections inside it
+(the table scrolls inside the chip, the page never widens). A request is a compact card (at most 26rem wide) on the side of the facility that
+made it: blood type, quantity, component, emergency type, a status pill, and the one button for its next step (Accept and Decline are the only
+pair); a finished request is a one-line summary that expands in place. Names and times use the foreground and muted text colours: an
+accent-coloured name was under 3:1 on a dark card. Every bubble and chip has a real 1px border (so forced colors still shows where each
+begins); under the clay look its colour is transparent and the shading draws the edge. The composer is a pill-shaped field and a round accent send
+button; an "About: request #N ×" chip sits above it on one line, also at 390px. Measured contrast of every text on the screen, in the browser
+and for both accents, light and dark, clay on and off, is 4.5:1 or more (lowest: my bubble in the bank's dark theme, 4.5036:1).
+
 ### DIN and dates
 A blood-unit ID (DIN) is plain mono text (JetBrains Mono, per the Mono-Means-Physical Rule); a date is plain text in the app's one date format ("30 Oct 2026"). There is no separate "label" or "stamp" component: an earlier design had a wide-tracked uppercase `DinLabel` and a boxed, status-colored `DateStamp` for expiry dates, but no screen used them once the bank screens were rebuilt as tables, and both were removed. An expiring unit is shown by the plain days-left text and the status colour of the row, not a stamp.
 
@@ -231,6 +247,7 @@ A blood-unit ID (DIN) is plain mono text (JetBrains Mono, per the Mono-Means-Phy
 | 6 Floating surface | modal, popover, tooltip | no outline, a stronger drop (`float`; a tooltip `sm`) |
 | 7 Status-tinted panel | the hospital's Action required | the same radius and a light inner edge; its fill, text and outer drop are as before |
 | 8 Flat controls | icon buttons, navigation, text links, the unselected half of a segmented control | unchanged on purpose: they are not objects |
+| 9 Message bubble and status chip | the Messages thread (`.msg-bubble-own`, `.msg-bubble-other`, `.thread-chip`) | small raised look: `sm` for theirs and for chips, the accent recipe for mine; the border colour is transparent (it stays in the off look and in forced colors) |
 
 A small control inside a list or table row (a button that is `h-6`, `h-7` or `h-8` in an `li`, `td` or `th`: Deactivate, Decline, Accept) gets the **inner shading only and no outer drop**, and a smaller radius, so a table of them stays calm; the same control outside a row has the full recipe. At most three shadow layers on any element.
 

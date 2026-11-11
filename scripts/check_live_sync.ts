@@ -6,9 +6,9 @@ import {
 
 const eq = (a: unknown, b: unknown, m: string) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${m}: ${JSON.stringify(a)} !== ${JSON.stringify(b)}`); };
 
-const payload = (over: Partial<{ unread: number; latest: number; incoming: string; outgoing: string; inventory: string; expiring: string }> = {}): SyncPayload => {
-  const o = { unread: 0, latest: 10, incoming: "i0", outgoing: "o0", inventory: "v0", expiring: "e0", ...over };
-  return { notifications: { unread: o.unread, latest_id: o.latest }, requests: { incoming: o.incoming, outgoing: o.outgoing }, inventory: o.inventory, expiring: o.expiring };
+const payload = (over: Partial<{ unread: number; latest: number; incoming: string; outgoing: string; inventory: string; expiring: string; messages: string }> = {}): SyncPayload => {
+  const o = { unread: 0, latest: 10, incoming: "i0", outgoing: "o0", inventory: "v0", expiring: "e0", messages: "m0", ...over };
+  return { notifications: { unread: o.unread, latest_id: o.latest }, requests: { incoming: o.incoming, outgoing: o.outgoing }, inventory: o.inventory, expiring: o.expiring, messages: o.messages };
 };
 
 // A world of fake timers, a fake page and a scripted network.
@@ -42,7 +42,7 @@ function world() {
 const ok = (data: SyncPayload, etag = "e"): PollResult => ({ status: 200, data, etag });
 
 // ── pure helpers
-eq((["requestsIncoming", "requestsOutgoing", "inventory", "expiring"] as const).map((x) => tokenOf(payload(), x)), ["i0", "o0", "v0", "e0"], "each section reads its own token; incoming and outgoing are separate");
+eq((["requestsIncoming", "requestsOutgoing", "inventory", "expiring", "messages"] as const).map((x) => tokenOf(payload(), x)), ["i0", "o0", "v0", "e0", "m0"], "each section reads its own token; incoming and outgoing are separate");
 eq([nextDelay(0, () => 0.5), nextDelay(1, () => 0.5), nextDelay(2, () => 0.5)], [SYNC_INTERVAL_MS, SYNC_INTERVAL_MS * 2, SYNC_INTERVAL_MS * 4], "interval, then doubling");
 eq(nextDelay(20, () => 0.5), SYNC_MAX_BACKOFF_MS, "the backoff is capped");
 eq([nextDelay(0, () => 0), nextDelay(0, () => 1)], [13500, 16500], "jitter is +/-10%");
@@ -262,6 +262,26 @@ for (const status of [401, 403]) {
   w.sync.start(); await w.settle();
   eq(w.calls, [null, null], "a restart sends no validator from the previous session");
   eq(told, 2, "and the first answer after a restart tells it again: its data may belong to another session");
+}
+
+// the messages section (the Messages list subscribes to it, with both requests tokens): a moved messages token tells only its subscribers
+{
+  const w = world();
+  w.script.push(ok(payload()), ok(payload({ messages: "m1" })), ok(payload({ messages: "m1", outgoing: "o1" })));
+  const told: string[] = [];
+  w.sync.subscribe("messages", () => told.push("messages"));
+  w.sync.subscribe("requestsOutgoing", () => told.push("outgoing"));
+  w.sync.subscribe("inventory", () => told.push("inventory"));
+  w.sync.start();
+  await w.settle();
+  eq(told.sort(), ["inventory", "messages", "outgoing"], "the first answer counts as a change for a subscription that had nothing to compare with");
+  told.length = 0;
+  w.fire(); await w.settle();
+  eq(told, ["messages"], "a new message moves only the messages token");
+  told.length = 0;
+  w.fire(); await w.settle();
+  eq(told, ["outgoing"], "a request moving moves only the requests token");
+  w.sync.stop();
 }
 
 console.log("ok");

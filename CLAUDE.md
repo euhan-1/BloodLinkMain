@@ -354,33 +354,70 @@ requests, SARIMAX demand forecasting, donor broadcast.
   person, and is NULL under the dev override. Nothing is backfilled: NULL means "not recorded", never "did not happen".
   The five transition functions take `user_id`, so tests call them with `user_id=None` (a bare call would pass the
   `Depends` object into SQL, as for `uploaded_by`).
-- **A request's timeline is derived, not stored** (`_request_timeline`, served by `GET /requests/{id}`, which the chat
-  re-fetches with its messages every 4 s while the browser tab is visible; the Live label is the last poll's result). Both sides' request lists reload silently when the shared poller's token for them moves (see **Live sync**; no timer of their own); the
-  chat shows a day separator above each run of bubbles once the thread spans more than one day. The **Request and chats tab badge counts
-  the rows where this facility has an action available** (`needsAction` in `lib/requestInbox.ts`): incoming requests awaiting its decision,
-  accepted incoming requests awaiting its release, accepted outgoing requests awaiting its receipt. Requests waiting on the other
-  facility are not counted. It is the same figure as the first one in the inbox's header line (`inboxCounts().action`; the second
-  is how many more are in flight but waiting on the other side), so the two cannot disagree. It was the count of requests this
-  facility had sent that were still pending, which for a hospital was everything it was waiting for and for a bank left out its
-  whole incoming side. The supplier's incoming list is polled only while that tab is open, so the badge's incoming part is as fresh as
-  the last visit to the tab (or the load at mount); its outgoing part is polled on every tab. Request and chats is for work in flight only (awaiting a decision, awaiting release, awaiting receipt): finished
-  transfers are in Transfer history, whose rows open their thread and receipt. Events are the record, not action surfaces: confirm release and confirm
-  receipt are buttons in the open request's header (`RequestHeader`, above the thread, always visible) and on its inbox row, both
-  from `rowActions` in `lib/requestInbox.ts`, so they cannot disagree; an action that fails shows its error in that header
-  (a failure opens the request's thread so it is seen, since a narrow screen shows the list or the thread, never both). Events
-  stay full width, never aligned to a side. An
-  event is listed whenever status and timestamps show it happened; a time or account never captured is None and reads
-  "not recorded", never omitted. An event's account is the account's email (not an id), shown to both facilities. The
-  receipt (`/receipt/{id}`, `screens/Receipt.tsx`, printable via `print:` classes) renders the same `timeline` and
-  `units`, the same page for both facilities, states how many chat messages exist without reproducing them, and always
-  says what BloodLink does not record (condition, temperature, transport, signatures). The document itself is
-  `components/ReceiptRecord.tsx` (props `showPrintedLine`, `showChatLocation`, `headingLevel`; defaults suit the page), which the
-  page renders (`screens/Receipt.tsx` is only the shell: loader, title, Print button) and which the thread's **Receipt** control shows inline in place of the
-  conversation (from the thread's own `GET /requests/{id}` data, with the stamp and chat sentence off and `headingLevel={4}`; the control replaces the old link to
-  the page, which stays reachable from inside the inline view for printing). The units table is `components/TransferUnits.tsx`,
-  shared by the receipt (every column) and the thread, where the release and receipt events each carry a "Units" toggle (release:
-  what was sent; receipt: how each unit arrived) when the ledger recorded them. Release and receipt events name the units from `request_units`, falling back to `request_unit_failures`
-  for a request released before the ledger existed.
+- **A request's timeline is derived, not stored** (`_request_timeline`, served by `GET /requests/{id}` and, per request card, by
+  `GET /conversations/{id}`). An event is listed whenever status and timestamps show it happened; a time or account never captured is
+  None and reads "not recorded", never omitted. An event's account is the account's email (not an id). The receipt (`/receipt/{id}`,
+  `screens/Receipt.tsx`, printable via `print:` classes) renders the same `timeline` and `units`, the same page for both facilities,
+  states how many messages were sent **about that request** (`request_messages.request_id`) without reproducing them, and always says
+  what BloodLink does not record (condition, temperature, transport, signatures). The document itself is `components/ReceiptRecord.tsx`
+  (props `showPrintedLine`, `showChatLocation`, `headingLevel`; defaults suit the page), which the page renders (`screens/Receipt.tsx` is
+  only the shell: loader, title, Print button). The units table is `components/TransferUnits.tsx`, shared by the receipt (every column) and
+  the thread's expandable release and receipt events. Release and receipt events name the units from `request_units`, falling back to
+  `request_unit_failures` for a request released before the ledger existed.
+- **Supply and Messages** (2026-11-11, stage 2 of the Messages redesign; `screens/Supply.tsx`, `screens/Messages.tsx`,
+  `components/ConversationList.tsx`, `components/ThreadParts.tsx`, `lib/conversations.ts`, `scripts/check_conversations.ts`; the server is
+  the **Conversations** bullet below). **Names**: the top nav tab "Requests" is **Supply** (screen key `supply`; a notification row's link
+  text `requests:{id}` is still what the server writes and still opens the request: it names a request, not a screen); its sub-tabs are the
+  role's sourcing name (Source supply for a bank, Emergency sourcing for a hospital), **Messages** (the old "Request and chats") and
+  Transfer history, unchanged. The Messages badge is `GET /conversations`' `needs_action`: requests needing this facility's action (the
+  nav badge's rule, `needsAction` in `lib/requestInbox.ts`). **The old per-request chat is gone from the frontend** (`Requests.tsx`,
+  `RequestThread`, `RequestHeader`, `RequestInboxRow`, the inbox order and the "New / Updated" localStorage flags; the Receipt button in
+  the chat header and its inline receipt view); the old per-request server endpoints stay. **Layout**: a conversation list (one row per other facility: initials,
+  name, time, last message or "You: ...", an unread badge, "N requests need your action" or "N open requests, waiting on them"; the list's
+  title is the screen's one h1) and one thread (title h2, a request's title h3). On a phone the list is the whole screen until a
+  conversation opens, then the thread with a back link (focus returns to the row). **Alignment by actor**: every message, status event and
+  request is aligned by who did it, mine on the right and theirs on the left, never centred or full width; each carries a visible label,
+  "You" or the facility's name, plus the time, so alignment is never the only cue. A message is a bubble (mine in the role's accent with
+  white text: maroon, navy; theirs neutral); a status event is a compact chip with a sentence naming its actor ("You accepted request #38",
+  "You released 5 units for request #31", "Riverside General Hospital confirmed receipt for request #31: 5 of 5 arrived"); a request is a
+  compact card on the side of the facility that made it (blood type, quantity, component, emergency type, status). "Units released (N)"
+  and "Units and outcome (N)" stay expandable inside the chip, and **the account email is only inside that expansion ("Recorded by")**,
+  never on a card or chip. **Requests in the thread**: open requests are always cards; finished ones (completed, failed, declined,
+  cancelled) are a one-line summary ("Request #31 · 5 units of Packed RBC · Completed, 5 of 5 received" and "Show history") that expands
+  in place, the newest 5 first and "Show earlier requests (N more)" through `finished_before`; **a request this facility just acted on
+  stays a card with its result until the conversation is reopened or "Hide history"**, so the result does not fold away under the
+  reader. The header says how many requests are open and how many need my action, with "Go to the first one" (scrolls to that card and
+  focuses its status). **Actions are on the request card only**, from `rowActions` (the one list the badge counts), through
+  `RequestActionButtons`: Accept and Decline (the only pair), Confirm release, Confirm receipt, Cancel request (keeps its confirmation
+  dialog); no action in the header or a strip. An error shows inside its card; after an action focus moves to the card's status text
+  (`req-status-<id>`). A released or finished card has a small **Receipt** link to `/receipt/{id}`, the page Transfer history links.
+  **Composer**: the message goes to the conversation with no request by default; "Message about this" on a card sets the chip
+  "About: request #N ×" (one line, also at 390 px); the field is disabled only when the pair has no request, and an error or hint is
+  announced next to it (`role="alert"`, `aria-describedby`); a 429 says "You are sending messages too quickly. Wait a few seconds, then
+  send again." and keeps the text; **focus stays in the field after sending** (the field is never disabled while sending). **Live**: the
+  conversation list (kept in `Supply.tsx`, so the badge is right on every sub-tab) refetches when the shared poller's `messages` token or
+  either requests token moves; the open thread polls `GET /conversations/{id}` every 4 s only while it is open and the browser tab is
+  visible (the "Live" label is the last poll's result); opening it, and each time a newer message arrives while it is open and visible,
+  calls `POST .../read`, and the "N new messages" divider is drawn from the read position the thread had when it was OPENED. Rows have
+  stable keys (`m-<id>`, `e-<request>-<kind>`), so a poll that changes nothing changes no DOM node and a screen reader is not told old
+  messages again (measured: 0 nodes added over two polls). A deep link (a notification, Transfer history's "Chat") finds the other facility from
+  `GET /requests/{id}`, opens that conversation, expands and focuses the card, and loads older pages until it is found. **Accessibility**:
+  the thread is `role="log" aria-live="polite" aria-relevant="additions" tabindex="0"` with a name; own-sender labels are the foreground
+  colour (the old accent-coloured label failed contrast on a dark card); a bubble and a chip have a **border** (so forced colors still
+  shows them; the clay rules make it transparent). **Contrast measured in the browser** (computed colours against the composited
+  background; bank maroon and hospital navy, light and dark, clay on and off; every text in the screen): all at or above 4.5:1, the lowest
+  being my bubble in the bank's dark theme at **4.5036:1** (white on #C94A68: it passes by 0.004, so a change to that token needs this
+  re-measured), then list previews 4.9 to 5.1. Under forced colors, `prefers-contrast: more` and print the bubbles and chips keep a real 1px border. Clay: `msg-bubble`, `msg-bubble-own`,
+  `msg-bubble-other` and `thread-chip` are the marker classes (theme.css section 8): small raised look, accent shading on mine, no
+  outline; a request card is an ordinary card. Checked with a headless Chrome flow against a stateful mock API (a throwaway
+  script, not in the repo): open a conversation, send, accept, confirm release, confirm receipt, cancel, the unread divider, 429, paging,
+  the phone layout, keyboard-only, focus. **Cost, measured** (headless Chrome, local, 4x CPU throttle, a mock API; not a device; one scripted task:
+  open Supply > Messages, open the Riverside conversation, expand a finished request, send a message, let two polls land, scroll the log; median
+  of 7, clay on against off): paint + raster 124.1 ms off, 135.5 ms on in light (+11.4 ms, +9%) and 129.0 against 137.8 in dark (+8.8 ms, +7%); layout and
+  style +5%, the ranges of off and on overlap in places and the same build drifts between sessions. **Layout shift**: none from sending, from polls
+  or from a message arriving; two shifts after the Dashboard loaded, both on a click the script made with `.click()` (so the browser does not
+  call it input): opening a conversation (0.013 at 1280, 0.031 at 390: the log's "Loading" line becomes its rows) and expanding a finished request
+  (0.011, 0.020: the rows below it move down, which is the point). **Privacy notice 1.1** (see its bullet).
 - **Live sync** (`GET /sync`, `lib/liveSync.ts`, `lib/liveSyncRuntime.ts`, `scripts/check_live_sync.ts`, `tests/test_sync.py`): one
   poller per signed-in tab asks `GET /sync` about every 15 s (±10 % jitter) **while the tab is visible**, instead of each screen polling
   its own endpoint, so a change another facility makes shows within about 15-17 s with no reload. No websocket and no SSE: they hold a
@@ -401,7 +438,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
   message arrives or is sent in any of its conversations and when its own read position moves (another tab), and says nothing about any other
   facility; still one statement. **Until the conversations migration has been run** the statement leaves the conversation parts out (the token
   then covers the messages on the caller's requests alone), chosen by `_conversations_ready()`, which costs one extra statement the first
-  time per process (and one every 30 s while the migration is missing), then none. No frontend uses the token yet (stage 2). **notifications** are two numbers, not a token;
+  time per process (and one every 30 s while the migration is missing), then none. The Messages list (`Supply.tsx`) subscribes to it, with both requests tokens. **notifications** are two numbers, not a token;
   they replace the unread-count polling, and `_STALE_NOTIFICATION_SQL` is the one definition of "resolved" for the sweep, the count and
   `/sync`. The 12 hex characters are not secret, only unreadable. **Frontend**: `LiveSync` (pure, injected network, clock and visibility)
   has exactly one pending timer for the whole app (the check script asserts it). **Each subscription carries its own baseline**, the
@@ -423,7 +460,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
   never a lost update; a facility's own write moves its own token, so it costs one extra silent refetch; `latest_id` is `max(id)` over the
   facility's notifications, which scans more as history grows (an `(facility_id, id DESC)` index would make it a lookup: not added);
   the admin screens, the donor list and the hospital sourcing search are not covered.
-- **Conversations** (Messages redesign, **stage 1 of 2: server side only, no frontend yet**; `main.py`, "Conversations";
+- **Conversations** (Messages redesign, **stage 1 of 2, the server; stage 2, the frontend, is the Supply and Messages bullet above**; `main.py`, "Conversations";
   `server/migrate_add_conversations.sql` and `server/migrate_conversations_part2_not_null.sql`, **both files only, never run by anything in
   the repo and not yet applied to production**; `tests/test_conversations.py`, `tests/test_sync.py`, `docs/build_data_dictionary.py`). One
   conversation per **pair of facilities**, whatever requests exist between them (`conversations`: the pair stored once, smaller id first, a
@@ -462,9 +499,15 @@ requests, SARIMAX demand forecasting, donor broadcast.
   conversation parts out, the old POST writes the old way. **Order**: backup, part 1, deploy the server, then part 2 (NOT NULL), which is the
   only step that can make an old writer fail and has its own file; see the header of each file, which is the instruction. The unread count is
   per facility and server-side (`conversation_reads`), after the owner's decision for option 2 of the proposal; the nav badge stays
-  "needs action". The privacy notice's chat statements ("what you type in a request's chat", "they also see ... the chat") are still true
-  while no screen sends a message about no request; **stage 2 should reword them to a conversation and mention the stored read position**, and
-  raise the consent version only if a statement becomes false. `docs/DATA_DICTIONARY.md` was **not** regenerated (it introspects production,
+  "needs action". The privacy notice's chat statements were reworded in stage 2 (**version 1.1, 11 November 2026**: one conversation per other
+  facility, a message can be about no request, the stored read position, and that the other facility sees the whole conversation but is
+  not shown how far you have read; `check_privacy.ts` requires that wording). **Why the version was raised**: no earlier statement became
+  false, but the notice itself says "when this notice changes, the version number changes", a new item is now stored (a read position
+  per facility per conversation) and a message may now exist with no request; a reworded notice under the old number would break its own
+  promise. There is no re-consent flow (`docs/BACKLOG.md` proposes asking the accounts that existed before; that now covers 1.0 to
+  1.1 as well): registrations from now on record 1.1, earlier ones keep their recorded 1.0 and NULL stays "not recorded". **Deploy
+  order for the version**: the server accepts only the version it names, so a Vercel build with 1.1 and a Render instance still on 1.0
+  (or the reverse) refuses registrations (400) until both are live; deploy the server first. `docs/DATA_DICTIONARY.md` was **not** regenerated (it introspects production,
   which does not have the tables yet): `docs/build_data_dictionary.py` has the descriptions and was dry-run against the scratch database.
 - **Privacy notice and consent (RA 10173)** (`/privacy`, `screens/PrivacyNotice.tsx`, text as data in `lib/privacyNotice.ts`,
   `scripts/check_privacy.ts`, `tests/test_privacy_consent.py`, `server/migrate_add_privacy_consent.sql`). `/privacy` is handled in `App.tsx`
@@ -525,7 +568,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
   sign-in tab order has "Forgot password?" between the email and password fields. The headless-Chrome check (headings in every
   state, dialog focus, tooltips, keyboard-only sign-in and Register, computed heading styles against the previous build) is a throwaway
   script against a mock API, not in the repo (it needs `puppeteer-core`); it ran 91 checks on 2026-11-10.
-- **The transfer history** (`GET /transfers`, the third Requests tab): a transfer is an accepted request, so finished ones
+- **The transfer history** (`GET /transfers`, the third Supply tab): a transfer is an accepted request, so finished ones
   (completed, failed) by default and accepted ones with `include_active`; pending never; declined and cancelled only when
   chosen as the outcome (dated by when requested, no units, so received is null, not 0). Filtering
   and totals are server-side, the date range is Manila business dates applied as instants, and each row is the
@@ -555,9 +598,10 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `node scripts/check_trend_chart.ts` (trend chart history/forecast data) and
   `node scripts/check_incoming_groups.ts` (the blood bank's incoming-request sections) and
   `node scripts/check_components.ts` (request components match the server's) and
-  `node scripts/check_request_timeline.ts` (status-event wording and the chat thread) and
+  `node scripts/check_request_timeline.ts` (the receipt's wording of status events) and
   `node scripts/check_transfers.ts` (transfer-history filters, date presets and wording) and
-  `node scripts/check_request_inbox.ts` (the Requests inbox's order, counts, status wording and unread rule) and
+  `node scripts/check_request_inbox.ts` (a request card's actions, the badge's rule, status wording) and
+  `node scripts/check_conversations.ts` (the Messages screen: list order, unread and action counts, alignment by actor, finished-request collapse and paging, day separators, the new-messages divider, wiring) and
   `node scripts/check_bank_dashboard.ts` (the blood bank Dashboard's sentence, outlook, basis and order prefill) and
   `node scripts/check_bank_inventory.ts` (the blood bank Inventory's notes, filters, search, paging and backlog) and
   `node scripts/check_notifications.ts` (the bell's badge, times and paging) and

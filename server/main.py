@@ -4199,7 +4199,7 @@ def geocode_facility_address(address: str, request: Request):
 # The version of the Privacy Notice (the /privacy page) a registrant consents to, stored with the account. It must equal
 # PRIVACY_NOTICE_VERSION in src/app/lib/privacyNotice.ts (scripts/check_privacy.ts fails if the two differ). Raise both when the notice
 # changes in a way that needs fresh consent.
-PRIVACY_NOTICE_VERSION = "1.0"
+PRIVACY_NOTICE_VERSION = "1.1"
 
 # The four columns of server/migrate_add_privacy_consent.sql. Until it has been applied the app still registers people (see
 # _consent_columns_ready), it just cannot record the consent.

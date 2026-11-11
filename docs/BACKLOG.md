@@ -5,6 +5,8 @@ Remove an entry when it ships.
 
 ## Consent for accounts that existed before the Privacy Notice
 
+*Update 2026-11-11: the notice is now version 1.1 (conversations and the stored read position). The proposal below applies to 1.0 to 1.1 as much as to "never asked": an account that consented to 1.0 is recorded as 1.0 and nothing asks it again.*
+
 **Where it comes from.** The Register form now records consent (version and time) on the new account. Every account that exists today (9 on
 2026-11-10: 8 staff and 1 admin) has `users.privacy_consented_at`
 NULL (the admin-side account creation that would also have produced NULL rows was removed on 2026-11-11), meaning "not recorded". The notice itself says so. Proposed here, not built.
