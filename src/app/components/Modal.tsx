@@ -17,8 +17,8 @@ export function Modal({
   // the animation ends, not just while it's playing. Per the CSS spec, any
   // ancestor with a transform other than none becomes the containing block
   // for position:fixed descendants, so without the portal this modal's
-  // "fixed inset-0" backdrop resolved to the header's own 56px-tall box
-  // instead of the viewport — centering the whole modal a few pixels from
+  // "fixed inset-0" backdrop resolved to the header's own short box
+  // (a bar a few dozen pixels tall) instead of the viewport — centering the whole modal a few pixels from
   // the top of the page with most of its height cut off above the fold.
   // Escaping to body sidesteps this regardless of what animations any
   // future ancestor ends up with.

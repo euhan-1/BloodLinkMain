@@ -3,7 +3,7 @@ import { liveSync } from "../lib/liveSyncRuntime";
 import { Plus, Upload, Archive } from "lucide-react";
 import { apiGet, apiUploadFile, updateThreshold, deleteInventoryUnit, createInventoryUnit, archiveExpiredInventory } from "../lib/api";
 import { getCurrentUser } from "../lib/session";
-import { StockByTypeTable } from "./HospitalInventory";
+import { HospitalInventoryView } from "./HospitalInventory";
 import { BankInventoryView } from "./BankInventory";
 import { BLOOD_TYPE_ORDER, getExpiryStatus } from "../lib/statusTokens";
 import { Modal } from "../components/Modal";
@@ -312,7 +312,7 @@ export function InventoryScreen() {
   return (
     <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-8">
       {(
-        <div className={`${hospital ? "max-w-5xl " : ""}flex flex-wrap items-end justify-between gap-x-6 gap-y-3`}>
+        <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
           <div>
             <h1 className="font-display font-bold text-2xl tracking-tight text-foreground">Blood inventory</h1>
             <p className="text-[15px] text-foreground mt-1">
@@ -356,18 +356,16 @@ export function InventoryScreen() {
       )}
 
       {hospital && (
-        <div className="max-w-5xl">
-          <StockByTypeTable
-            summary={thresholds}
-            units={rows}
-            loading={loading || summaryLoading}
-            error={error ?? summaryError}
-            isOpen={(t) => !collapsedTypes.has(t)}
-            onToggle={toggleGroup}
-            onEditThresholds={openThresholdEditor}
-            onRemoveUnit={(din) => { setDeleteError(null); setDeleteConfirmDin(din); }}
-          />
-        </div>
+        <HospitalInventoryView
+          summary={thresholds}
+          units={rows}
+          loading={loading || summaryLoading}
+          error={error ?? summaryError}
+          isOpen={(t) => !collapsedTypes.has(t)}
+          onToggle={toggleGroup}
+          onEditThresholds={openThresholdEditor}
+          onRemoveUnit={(din) => { setDeleteError(null); setDeleteConfirmDin(din); }}
+        />
       )}
 
       {!hospital && (
@@ -384,9 +382,7 @@ export function InventoryScreen() {
         />
       )}
 
-      <div className={hospital ? "max-w-5xl" : undefined}>
-        <UploadHistoryPanel uploadType="inventory" refreshKey={uploadHistoryRefreshKey} onUndone={() => loadInventory()} variant="flat" />
-      </div>
+      <UploadHistoryPanel uploadType="inventory" refreshKey={uploadHistoryRefreshKey} onUndone={() => loadInventory()} variant="flat" />
 
       {editingType && (
         <Modal title={`${editingType}: stock thresholds`} onClose={() => setEditingType(null)}>

@@ -9,7 +9,7 @@ import { withViewTransition } from "./lib/motion";
 import { startLiveSync, stopLiveSync } from "./lib/liveSyncRuntime";
 import { isDevModeEnabled, getDevFacilityId, setDevFacilityId } from "./lib/devMode";
 import { BloodDropLogo } from "./components/BloodTypeBadge";
-import { NotificationBell, AccountMenu } from "./components/AccountMenu";
+import { NotificationBell, AccountMenu, HEADER_ROW_CLASS } from "./components/AccountMenu";
 // Everything below is lazy except LoginScreen — that's the one screen a
 // signed-out visitor actually needs, so it's the only screen bundled into
 // the initial/login chunk. Every other screen (and, transitively, whatever
@@ -64,9 +64,9 @@ function TopNav({
   // (GET /forecast) vs. threshold status — a hospital account gets no tab
   // for it at all, matching the server-side rejection in _require_bloodbank_facility.
   const navItems: { key: Screen; label: string; icon: React.ReactNode }[] = [
-    { key: "dashboard", label: "Dashboard", icon: <Activity size={17} /> },
-    { key: "inventory", label: "Inventory", icon: <Package size={17} /> },
-    { key: "requests", label: "Requests", icon: <MapPin size={17} /> },
+    { key: "dashboard", label: "Dashboard", icon: <Activity size={20} /> },
+    { key: "inventory", label: "Inventory", icon: <Package size={20} /> },
+    { key: "requests", label: "Requests", icon: <MapPin size={20} /> },
   ];
 
   // The one shared poller (lib/liveSync.ts) runs exactly while a facility account's nav is on screen: it starts when the nav mounts and
@@ -78,12 +78,12 @@ function TopNav({
 
   return (
     <header className="sticky top-0 z-[1100] bg-card border-b border-border animate-header-drop-in">
-      <div className="max-w-screen-2xl mx-auto px-3 sm:px-6 flex items-center gap-2 sm:gap-8 h-14 min-w-0">
+      <div className={HEADER_ROW_CLASS}>
         {/* Logo */}
         <div className="flex items-center gap-2.5 shrink-0">
-          <BloodDropLogo size={28} />
+          <BloodDropLogo size={32} />
           {/* The wordmark gives way first on a phone: the drop alone is the logo there. */}
-          <span className="hidden sm:inline text-[16px] font-bold tracking-tight text-foreground">
+          <span className="hidden sm:inline text-[18px] font-bold tracking-tight text-foreground">
             Blood<span className="text-primary">Link</span>
           </span>
         </div>
@@ -96,7 +96,7 @@ function TopNav({
               onClick={() => setScreen(item.key)}
               aria-label={item.label}
               aria-current={screen === item.key ? "page" : undefined}
-              className={`flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded text-[14px] font-medium transition-all duration-200 ease-out ${
+              className={`flex items-center justify-center gap-2 min-h-11 min-w-11 px-3 md:px-4 py-2 rounded text-[15px] font-medium transition-all duration-200 ease-out ${
                 screen === item.key
                   ? "bg-accent text-primary scale-105"
                   : "text-muted-foreground hover:text-foreground hover:bg-secondary"

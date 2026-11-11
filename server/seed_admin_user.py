@@ -1,6 +1,6 @@
 """The only way an admin account (role='admin') ever gets created — there is
-no registration endpoint for it, and POST /admin/facilities (which creates
-ordinary facility staff accounts) deliberately can't set role='admin'.
+no registration endpoint for it, and no endpoint creates a login at all except
+registration approval, which only ever makes ordinary facility staff accounts.
 
 Usage:
     .venv\\Scripts\\python.exe seed_admin_user.py <email> <password>

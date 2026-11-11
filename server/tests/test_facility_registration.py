@@ -11,7 +11,7 @@ concern, not this endpoint's.
 
 DB-backed otherwise (real facility_registration_requests / otp_codes /
 users rows, live DB per this project's convention), same style as
-test_admin_create_account_for_facility.py.
+test_admin_registrations.py.
 
 Run from the server/ directory:
 

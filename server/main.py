@@ -2957,7 +2957,7 @@ def get_inventory_summary(facility_id: int = Depends(get_acting_facility_id)):
     measurement. Types with zero current stock still appear, with units=0,
     so shortages are visible. Thresholds are per-facility (see
     blood_type_thresholds's schema comment) — every facility gets its own 8
-    rows seeded at creation time (admin_create_facility_account), so this
+    rows seeded at creation time (admin_approve_registration), so this
     join should never miss a row for a real facility.
 
     expires_date >= today (the Manila business date) only: an expired unit was never usable, so
@@ -4093,8 +4093,8 @@ class CompleteProfileBody(BaseModel):
 
 @app.post("/facilities/profile")
 def complete_facility_profile(body: CompleteProfileBody, facility_id: int = Depends(get_acting_facility_id)):
-    """The other half of admin onboarding (see POST /admin/facilities):
-    fills in the location/department an admin-created facility
+    """The other half of the old admin onboarding (POST /admin/facilities, removed
+    2026-11-11): fills in the location/department a facility created that way
     doesn't have yet, and flips profile_completed so the frontend stops
     gating this facility into the complete-profile screen. The map-confirmed
     latitude/longitude are what Emergency Sourcing's distance ranking
@@ -4498,7 +4498,7 @@ BLOOD_COMPATIBILITY: dict[str, list[str]] = {
 }
 
 # Starting min/max safe-stock thresholds seeded for every newly-created
-# facility (admin_create_facility_account below) — a facility can edit its
+# facility (admin_approve_registration) — a facility can edit its
 # own from here via PUT /thresholds/{blood_type}. Must match seed_thresholds.py
 # and migrate_scope_thresholds_to_facility.py's backfill values, so a
 # freshly-seeded facility and a migrated pre-existing one start identically.
@@ -6179,9 +6179,9 @@ def _send_password_reset_email(to_email: str, facility_name: Optional[str], rese
 @app.post("/auth/forgot-password")
 def forgot_password(body: ForgotPasswordBody, request: Request):
     """Self-service reset for an existing, already-verified facility account
-    that simply forgot its password — distinct from admin-provisioned
-    onboarding's forced first-login reset (POST /admin/facilities), which
-    still uses the separate JWT-based reset_token + POST /auth/change-password
+    that simply forgot its password — distinct from the forced first-login
+    reset after an admin's temporary password (POST /admin/accounts/{id}/reset-password),
+    which still uses the separate JWT-based reset_token + POST /auth/change-password
     machinery untouched by this endpoint.
 
     Deliberately reveals nothing about whether the email matched anything —
@@ -6407,8 +6407,9 @@ def change_password(body: ChangePasswordBody, reset_claims: dict = Depends(get_u
     login response shape, so the frontend can proceed exactly as it would
     after an ordinary login (into the complete-profile flow if the facility's
     profile isn't done yet, or straight to the dashboard if it already is).
-    In practice this is only ever reached by facility accounts created via
-    POST /admin/facilities — admin accounts are seeded with a real password
+    In practice this is only ever reached by facility accounts on a temporary
+    password (an admin's reset, or one issued before admin account creation was
+    removed on 2026-11-11) — admin accounts are seeded with a real password
     and must_change_password=false, so they never get a reset_token."""
     user_id = int(reset_claims["sub"])
     with engine.begin() as conn:
@@ -6530,69 +6531,11 @@ def get_me(user: dict = Depends(get_current_user)):
 # require_admin_role) — no shared secret, no header-based bypass. role='admin'
 # can only ever be set by seed_admin_user.py, run by hand once; there is no
 # endpoint anywhere that lets a request create or promote itself to admin.
-
-def _create_staff_account(conn, facility_id: int, email: str) -> dict:
-    """Shared temp-password issuance path — used by POST /admin/facilities
-    (brand new facility + its first account) and
-    POST /admin/facilities/{facility_id}/accounts (an account for a facility
-    that already exists but has none). Same shape either way: a random temp
-    password, must_change_password=true, role is always 'staff' — there is no
-    way to pass a role here, which is what keeps admin creation confined to
-    seed_admin_user.py.
-
-    Email uniqueness is checked globally (WHERE email = :email, not scoped to
-    a facility) because that's what the users table actually enforces
-    everywhere else in this app — one email, one account, regardless of which
-    facility it's tied to.
-
-    The temporary password is returned once, here, and nowhere else — same
-    out-of-band-relay caveat as everywhere this pattern is used: there's no
-    email/SMS provider wired up to deliver it automatically, so whoever calls
-    this is responsible for relaying it.
-    """
-    existing = conn.execute(
-        text("SELECT id FROM users WHERE email = :email"), {"email": email}
-    ).mappings().first()
-    if existing is not None:
-        raise HTTPException(status_code=409, detail="an account with this email already exists")
-
-    temp_password = auth.generate_temp_password()
-    user = conn.execute(
-        text(
-            """
-            INSERT INTO users (email, password_hash, facility_id, role, must_change_password)
-            VALUES (:email, :password_hash, :facility_id, 'staff', true)
-            RETURNING id, email, facility_id, role, created_at
-            """
-        ),
-        {
-            "email": email,
-            "password_hash": auth.hash_password(temp_password),
-            "facility_id": facility_id,
-        },
-    ).mappings().first()
-    return {"user": dict(user), "temporary_password": temp_password}
-
-
-class CreateFacilityAccountBody(BaseModel):
-    name: str
-    facility_type: str
-    email: EmailStr
-
-    @field_validator("name")
-    @classmethod
-    def _name_not_blank(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("name must not be blank")
-        return v.strip()
-
-    @field_validator("facility_type")
-    @classmethod
-    def _facility_type_valid(cls, v: str) -> str:
-        if v not in VALID_FACILITY_TYPES:
-            raise ValueError(f"facility_type must be one of {sorted(VALID_FACILITY_TYPES)}")
-        return v
-
+#
+# There is no endpoint here that creates a facility or a login. A facility comes into existence one way: it registers itself
+# (POST /facilities/register), proves its email, and an admin approves it (admin_approve_registration below). The admin-side
+# "create facility account" and "add account to a facility" endpoints, and the temporary password they issued, were removed on
+# 2026-11-11; the forced first-login reset still exists for the accounts that were issued one and for an admin's password reset.
 
 class UpdateFacilityStatusBody(BaseModel):
     is_active: bool
@@ -6601,8 +6544,8 @@ class UpdateFacilityStatusBody(BaseModel):
 @app.get("/admin/facilities", dependencies=[Depends(require_admin_role)])
 def admin_list_facilities():
     """Every facility plus its status and linked login account(s) — almost
-    always exactly one account per facility (POST /admin/facilities below
-    only ever creates one), but this doesn't assume that; a facility with no
+    always exactly one account per facility (registration approval
+    creates exactly one), but this doesn't assume that; a facility with no
     account yet (shouldn't normally happen) just gets an empty accounts list."""
     with engine.connect() as conn:
         facilities = conn.execute(
@@ -6634,124 +6577,14 @@ def admin_list_facilities():
     ]
 
 
-@app.post("/admin/facilities", dependencies=[Depends(require_admin_role)])
-def admin_create_facility_account(body: CreateFacilityAccountBody):
-    """Replaces public self-service registration (Step 9A). Creates a minimal
-    facility row — name/type only, no location/department yet —
-    plus a single staff login for it, with a random temporary password and
-    must_change_password=true. The facility fills in its own address, map
-    location and department via POST /facilities/profile the
-    first time it logs in with a real password (see /auth/change-password
-    and the frontend's complete-profile flow).
-
-    Always creates role='staff' — there is no way to pass role here, which is
-    what keeps admin creation confined to seed_admin_user.py.
-
-    The temporary password is returned once, here, and nowhere else — there's
-    no email/SMS provider wired up in this app to deliver it automatically
-    (same limitation as the simulated donor SMS blast), so whoever calls this
-    endpoint is responsible for relaying it to the facility out of band.
-    """
-    with engine.begin() as conn:
-        # Checked here too, before creating the facility row, purely so a
-        # duplicate-email request fails fast rather than after allocating a
-        # facility + thresholds it's about to roll back anyway — engine.begin()
-        # rolls back the whole transaction on the HTTPException either helper
-        # call would raise, so this pre-check is a nicety, not a correctness
-        # requirement.
-        existing = conn.execute(
-            text("SELECT id FROM users WHERE email = :email"), {"email": body.email}
-        ).mappings().first()
-        if existing is not None:
-            raise HTTPException(status_code=409, detail="an account with this email already exists")
-
-        facility = conn.execute(
-            text(
-                """
-                INSERT INTO facilities (name, facility_type)
-                VALUES (:name, :facility_type)
-                RETURNING id, name, facility_type, profile_completed, is_active
-                """
-            ),
-            {"name": body.name, "facility_type": body.facility_type},
-        ).mappings().first()
-
-        conn.execute(
-            text(
-                """
-                INSERT INTO blood_type_thresholds (facility_id, blood_type, minimum_units, maximum_units)
-                VALUES (:facility_id, :blood_type, :minimum_units, :maximum_units)
-                """
-            ),
-            [
-                {"facility_id": facility["id"], "blood_type": bt, "minimum_units": mn, "maximum_units": mx}
-                for bt, mn, mx in DEFAULT_THRESHOLDS
-            ],
-        )
-
-        account = _create_staff_account(conn, facility["id"], body.email)
-
-    return {
-        "facility": dict(facility),
-        "user": account["user"],
-        "temporary_password": account["temporary_password"],
-    }
-
-
-class CreateAccountForFacilityBody(BaseModel):
-    email: EmailStr
-
-
-@app.post("/admin/facilities/{facility_id}/accounts", dependencies=[Depends(require_admin_role)])
-def admin_create_account_for_facility(facility_id: int, body: CreateAccountForFacilityBody):
-    """Provisions a login for a facility that already exists but has none —
-    the gap POST /admin/facilities above can't close, since that endpoint
-    always creates a brand new facility alongside its account. A facility
-    onboarded some other way (an early seed script, a migration, admin-side
-    data entry before this endpoint existed) had no way to ever get a login
-    until now.
-
-    One account per facility, deliberately, not multiple-accounts-per-facility:
-    every facility-scoped permission in this app (get_acting_facility_id)
-    already treats "logged in as X" as synonymous with "acting as facility
-    X", and there's no per-user audit trail beyond upload_history.uploaded_by
-    — a second login for the same facility would just be a second person
-    with identical access and no way to tell their actions apart after the
-    fact. If that ever becomes a real need, it wants real per-user
-    permissions, not a bigger version of this endpoint. Refuses with 409 if
-    the facility already has one, rather than silently allowing a second.
-    """
-    with engine.begin() as conn:
-        facility = conn.execute(
-            text("SELECT id, name, facility_type FROM facilities WHERE id = :id"),
-            {"id": facility_id},
-        ).mappings().first()
-        if facility is None:
-            raise HTTPException(status_code=404, detail="facility not found")
-
-        existing_account = conn.execute(
-            text("SELECT id FROM users WHERE facility_id = :facility_id"),
-            {"facility_id": facility_id},
-        ).mappings().first()
-        if existing_account is not None:
-            raise HTTPException(status_code=409, detail="this facility already has an account")
-
-        account = _create_staff_account(conn, facility_id, body.email)
-
-    return {
-        "facility": dict(facility),
-        "user": account["user"],
-        "temporary_password": account["temporary_password"],
-    }
-
-
 @app.post("/admin/accounts/{user_id}/reset-password", dependencies=[Depends(require_admin_role)])
 def admin_reset_account_password(user_id: int):
     """Admin backup access when a facility forgets its password. Password
     hashes are one-way (bcrypt) — there is no existing password to reveal —
     so this issues a brand new temporary password and puts the account back
-    into the forced-reset flow, the same shape as POST /admin/facilities.
-    Shown once, here, same out-of-band-relay caveat as account creation."""
+    into the forced-reset flow (must_change_password). It is returned once,
+    here, in the response: there is no email delivery of it, so whoever calls
+    this relays it out of band."""
     temp_password = auth.generate_temp_password()
     with engine.begin() as conn:
         row = conn.execute(
@@ -6844,8 +6677,8 @@ def _send_registration_rejected_email(to_email: str, facility_name: str, reason:
 def admin_approve_registration(registration_id: int, admin: dict = Depends(require_admin_role)):
     """Creates the real facilities + users rows from the request and
     archives it — the only place either of those ever gets created from a
-    registration. must_change_password is false here, unlike every
-    admin-provisioned account (POST /admin/facilities): the applicant chose
+    registration. must_change_password is false here, unlike an account on a
+    temporary password issued by an admin: the applicant chose
     this password themselves, proved they own the email it's tied to, and
     an administrator has now reviewed the application — there's no
     temporary-password handoff to complete.

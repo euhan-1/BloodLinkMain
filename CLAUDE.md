@@ -287,6 +287,48 @@ requests, SARIMAX demand forecasting, donor broadcast.
   /inventory` still returns every non-archived unit with no paging or filters, and each row now carries `reserved_for_request_id`. A unit's Note says "Reserved for request N" or "Not
   released: inside the margin"; the margin is mirrored in `RELEASE_MARGIN_DAYS` and `check_bank_inventory.ts` fails if it drifts
   from `MIN_DAYS_TO_EXPIRY_AT_RELEASE`.
+- **The hospital Inventory** (`HospitalInventory.tsx`, `HospitalInventoryView`) is the same page as the bank's, not a narrower copy: the
+  same content width (the `max-w-5xl` wrappers are gone; header block, table and Upload history all run the full `max-w-screen-2xl`
+  column), the same header block (title, units on hand, Upload CSV, Add unit; the hospital adds its expired-units note and Clear expired
+  button), the same search box above the table (`components/UnitSearch.tsx`, shared with `BankInventory.tsx` so the box, its help
+  line, the `/` shortcut and the results frame cannot drift; `searchUnits` from `lib/bankInventory.ts`, so a DIN prefix or substring,
+  case and spaces ignored, then location or component), and the same row grid at the same `lg` breakpoint, `gap-x-4`, 48 px rows,
+  Thresholds right-aligned to the content edge (verified equal to the pixel at 1280 and 1920 against the bank's in a headless browser
+  on a mock API). The columns are the hospital's own: Type, Units held, Status, Minimum, Maximum, Thresholds. An opened type lists
+  DIN, Component, Location, Volume, Collected, Expires, Time left, Remove (the raw `collected` / `expires` strings as before, no bank
+  Note column: release-margin and reservation notes are a supplier's). Search results add the Type column. The old per-type search
+  (shown above 8 units) stays. The Thresholds button keeps its visible label below `lg` (the bank's is icon-only there). Rows start
+  collapsed, as before. No data logic, API or accent changed.
+- **Accounts: one way in.** A facility account is made by registration approval only (`POST /facilities/register`, email proof,
+  `admin_approve_registration`). The admin-side "Create Facility Account" form and the table's "Add account" button, with their
+  endpoints (`POST /admin/facilities`, `POST /admin/facilities/{id}/accounts`), the request models, `_create_staff_account`, the
+  frontend functions and `server/tests/test_admin_create_account_for_facility.py` (4 tests), were removed on 2026-11-11. What stays: the admin's
+  **Reset** (`POST /admin/accounts/{id}/reset-password`, which **still returns `temporary_password` in its response**, shown once in the
+  Admin screen), `must_change_password`, the forced first-login change and the "(pending first login)" label (4 accounts were on a temporary
+  password when last counted, a read-only count on 2026-11-11; 0 facilities had no account), all existing columns (no migration), the
+  registrations queue, deactivate / activate. A facility with no account now shows "No account" in the table, with no action to fix it
+  (none exists in production). The privacy notice no longer mentions accounts an administrator created; its version was not raised, because
+  `check_privacy.ts` does not tie the version to that sentence and the notice's other statements are unchanged (the sentence only got
+  shorter), which is a judgment, not something the script enforces.
+- **The header** (`TopNav` in `App.tsx`, the Admin screen's header, `NotificationBell` / `AccountMenu` in `components/AccountMenu.tsx`):
+  **4rem tall, every control at least 44 × 44 px**, one row at 320 to 1920 px, for all three roles. One class, `HEADER_ROW_CLASS`,
+  is the inner row of both the facility nav and the Admin header (`max-w-screen-2xl`, `px-4 sm:px-6`, the page gutter), so the logo and
+  the account button line up with the content on every screen (the Admin bar used to be full-bleed with its own `px-6`). Nav labels
+  still appear at `md`, the wordmark at `sm`, the account name at `lg`. The bell badge is anchored to the icon, not the button.
+  **Nothing else was positioned from the old 56 px height**: no `top-14`, `scroll-mt` or `calc(100vh - ...)` exists; the two header
+  popovers hang from their buttons with `top-full`, and `Modal` is portaled. Below `sm` the notification panel anchors to the header
+  and spans the viewport (it ran off the left edge of a 390 px phone before this change, by 28 px, and by 44 px with the larger
+  controls). The clay rules need nothing from it (the header's controls are flat controls). **Re-baselined 2026-11-11 against HEAD with
+  the switch off** (headless Chrome, mock API, crops from under each header, 2 renders per side): with the new header held to its old
+  56 px by an injected style, 60 of 76 state / width / theme crops are pixel-identical, and the 16 that differ are exactly the Admin
+  page (form removed, content gutter), the hospital Inventory (new layout) and the account popover (it hangs 8 px under a taller
+  button, so the page pixels behind it differ). Without that injection 27 of 76 differ, by a few dozen glyph pixels each (shown for
+  the hospital Dashboard at 1280: 42 pixels in one blood-type badge, the same in three renders of each side, none once the 8 px offset
+  is removed); that is raster noise from the 8 px shift, not a style change, but it is an inference from the injected run, not a
+  measurement of the cause. With the switch on, under `prefers-contrast: more`, `forced-colors: active` and print, every element's
+  computed shadow, radius, fill, gradient, border colour, text colour and box equals the switch-off render in all 190 state / width /
+  theme combinations (computed styles, not pixels, because single screenshots are noisy). Differs from HEAD with the switch off:
+  the header on every screen, the Admin page, the hospital Inventory, the account popover's position; nothing else was found.
 - **The transfer ledger** (`request_units`): `confirm_release` writes one row per reserved unit, copied from the unit at
   release (DIN, type, component, volume, dates, supplier shelf, days left), and `confirm_receipt` settles each as
   `received` or `failed` with days left at receipt (from the live unit's expiry, the value the decision used; the row's
@@ -385,7 +427,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
   budget, and so is a `privacy_notice_version` other than `PRIVACY_NOTICE_VERSION` in `main.py`, which must equal the constant in
   `privacyNotice.ts` (the check script compares them). The version and the database clock's time go on the registration row (re-recorded
   if the form is resubmitted before verification) and are copied to `users` at approval; **NULL means "not recorded", never "refused"**,
-  and it is what every account has today and every admin-created account will have. The four columns come from the migration, **which
+  and it is what every account has today (an account is made one way now, registration approval, which records it; see **Accounts**). The four columns come from the migration, **which
   is a file only and is run by hand**; until it has been, `_consent_columns_ready` makes registration and approval work without
   recording anything and logs `[consent] ... consent is NOT being recorded` (a positive answer is cached, a negative one re-asked at
   the next registration). Run the migration before deploying the code that records consent; its test runs it twice against the scratch
@@ -420,8 +462,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
   and in words whether it stays above the combined minimum or falls below it by a date. **Status is never colour alone**: every
   `StatusDot` has its word beside it (the script checks the three places). **The Register password hint is the server's rule** (10
   characters, a letter and a digit, no very common password; the other password forms say 8, as their endpoints do), and the script
-  compares both to `server/auth.py` and `main.py`. Known gaps, not fixed: `<label>`s with no `htmlFor` remain in the Admin create-facility
-  form, ResetPassword, the location picker's map label and the Donors screen; the printable Receipt page was not browser-checked; the
+  compares both to `server/auth.py` and `main.py`. Known gaps, not fixed: `<label>`s with no `htmlFor` remain in ResetPassword, the location picker's map label and the Donors screen; the printable Receipt page was not browser-checked; the
   sign-in tab order has "Forgot password?" between the email and password fields. The headless-Chrome check (headings in every
   state, dialog focus, tooltips, keyboard-only sign-in and Register, computed heading styles against the previous build) is a throwaway
   script against a mock API, not in the repo (it needs `puppeteer-core`); it ran 91 checks on 2026-11-10.
@@ -438,7 +479,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (769 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (765 tests plus
   160 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`

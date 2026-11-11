@@ -59,9 +59,9 @@ def decode_access_token(token: str) -> dict:
 
 
 def generate_temp_password() -> str:
-    """A random, high-entropy one-time password for admin-onboarded accounts
-    (see POST /admin/facilities) — 16 URL-safe characters, ~96 bits of
-    entropy, no email/SMS provider to deliver it through yet so it's handed
+    """A random, high-entropy one-time password for an account an admin resets
+    (POST /admin/accounts/{id}/reset-password) — 16 URL-safe characters, ~96 bits
+    of entropy, no email/SMS provider to deliver it through yet so it's handed
     back directly in that endpoint's response for the admin to relay."""
     return secrets.token_urlsafe(12)
 

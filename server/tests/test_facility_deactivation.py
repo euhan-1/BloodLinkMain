@@ -7,7 +7,7 @@ checking profile_completed / facility_type but not is_active:
   - POST /requests             (create_request — request target)
 
 DB-backed, route handlers called directly as plain Python functions, same
-convention as test_admin_create_account_for_facility.py.
+convention as test_admin_registrations.py.
 
 Run from the server/ directory:
 

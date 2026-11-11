@@ -26,9 +26,9 @@ import main
 from database import engine
 
 # Mirrors main.py's DEFAULT_THRESHOLDS — a test facility isn't created via
-# POST /admin/facilities (that needs a real password hash / JWT setup this
-# test doesn't need), so it's seeded directly here the same way that
-# endpoint would seed it.
+# an approved registration (that needs a real password hash / JWT setup this
+# test doesn't need), so it's seeded directly here the same way approval
+# would seed it.
 TEST_THRESHOLDS = [
     ("A+", 80, 160), ("A-", 50, 100), ("B+", 60, 120), ("B-", 40, 80),
     ("O+", 100, 200), ("O-", 80, 160), ("AB+", 30, 60), ("AB-", 25, 50),

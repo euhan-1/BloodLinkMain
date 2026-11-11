@@ -2,7 +2,7 @@
 -- Composite key (facility_id, blood_type) — was a single-column blood_type
 -- PRIMARY KEY (global across every facility) until
 -- migrate_scope_thresholds_to_facility.py. A facility's rows are seeded at
--- creation time (see admin_create_facility_account in main.py), so every
+-- creation time (see admin_approve_registration in main.py), so every
 -- facility always has its own 8 rows — no facility-scoped read here should
 -- ever need to fall back to a hardcoded default.
 --

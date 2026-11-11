@@ -6,8 +6,8 @@ Remove an entry when it ships.
 ## Consent for accounts that existed before the Privacy Notice
 
 **Where it comes from.** The Register form now records consent (version and time) on the new account. Every account that exists today (9 on
-2026-11-10: 8 staff and 1 admin) and every account an administrator creates without the Register form has `users.privacy_consented_at`
-NULL, meaning "not recorded". The notice itself says so. Proposed here, not built.
+2026-11-10: 8 staff and 1 admin) has `users.privacy_consented_at`
+NULL (the admin-side account creation that would also have produced NULL rows was removed on 2026-11-11), meaning "not recorded". The notice itself says so. Proposed here, not built.
 
 **The version.** A one-time acknowledgement at the next load of the app, for any account whose consent is NULL or older than
 `PRIVACY_NOTICE_VERSION`: a full-screen step like the complete-profile one (the notice, or a link to it, plus the same unticked box and
@@ -28,7 +28,7 @@ Raising the version constant later re-asks everyone through the same path, which
   unacknowledged account, and needs `get_current_user` to read the column on the cached active-account check. Recommended: soft first.
 - **The admin account.** Its email is personal data too, but it is a team member and the author of the notice. Recommended: ask it as well,
   so "every account" is true.
-- **Order with the forced password change.** An admin-created account has no access token until it changes its temporary password, so the
+- **Order with the forced password change.** An account on a temporary password (an admin's password reset) has no access token until it changes it, so the
   acknowledgement can only come after that step.
 - **What this does not fix.** The contact persons named on registrations (their name and phone) never see a consent screen; the line by
   that field on the Register form is the only measure. The 4 existing registration rows (1 approved, 3 rejected) hold a contact person's

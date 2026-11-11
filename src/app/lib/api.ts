@@ -441,16 +441,6 @@ export function adminListFacilities(): Promise<AdminFacility[]> {
   return apiGet<AdminFacility[]>("/admin/facilities");
 }
 
-export type CreateFacilityAccountResult = {
-  facility: { id: number; name: string; facility_type: string; profile_completed: boolean; is_active: boolean };
-  user: { id: number; email: string; facility_id: number; role: string; created_at: string };
-  temporary_password: string;
-};
-
-export function adminCreateFacility(body: { name: string; facility_type: string; email: string }): Promise<CreateFacilityAccountResult> {
-  return apiPost<CreateFacilityAccountResult>("/admin/facilities", body);
-}
-
 export function adminSetFacilityActive(facilityId: number, isActive: boolean): Promise<AdminFacility> {
   return apiPatch<AdminFacility>(`/admin/facilities/${facilityId}`, { is_active: isActive });
 }
@@ -459,14 +449,6 @@ export type AdminPasswordResetResult = { id: number; email: string; temporary_pa
 
 export function adminResetAccountPassword(userId: number): Promise<AdminPasswordResetResult> {
   return apiPost<AdminPasswordResetResult>(`/admin/accounts/${userId}/reset-password`, {});
-}
-
-// For a facility that already exists but has zero accounts — POST
-// /admin/facilities (above) always creates a brand new facility alongside
-// its first account, so it can't close this gap. Server 409s if the
-// facility already has an account (one account per facility, by design).
-export function adminCreateAccountForFacility(facilityId: number, email: string): Promise<CreateFacilityAccountResult> {
-  return apiPost<CreateFacilityAccountResult>(`/admin/facilities/${facilityId}/accounts`, { email });
 }
 
 // Self-registration review queue — see server/main.py's admin_list_registrations.

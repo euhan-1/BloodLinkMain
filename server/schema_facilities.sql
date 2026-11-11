@@ -1,5 +1,5 @@
--- address/latitude/longitude are nullable: an admin-onboarded facility (see
--- POST /admin/facilities in main.py) starts with just a name, type, and
+-- address/latitude/longitude are nullable: a facility created by the old admin
+-- onboarding (POST /admin/facilities, removed 2026-11-11) started with just a name, type, and
 -- login — location and department get filled in by the
 -- facility itself via the post-first-login "complete your profile" flow
 -- (POST /facilities/profile), which also flips profile_completed to true.

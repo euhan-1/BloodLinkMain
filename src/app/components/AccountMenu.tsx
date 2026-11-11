@@ -168,6 +168,11 @@ function ChangePasswordModal({ email, onClose, returnFocusRef }: { email: string
 
 const NOTIFICATION_PAGE = 50;
 
+// The header's inner row, for every role: TopNav (facility accounts, App.tsx) and the Admin screen's header both use it, so the logo
+// and the account button sit at the same x on every screen and at every width, and the bar is one height. 4rem tall (it was 3.5rem):
+// the controls inside are at least 44 px (2.75rem), the WCAG 2.5.5 / Apple HIG target size.
+export const HEADER_ROW_CLASS = "max-w-screen-2xl mx-auto px-4 sm:px-6 flex items-center gap-2 sm:gap-8 h-16 min-w-0";
+
 // Bell trigger + dropdown for facility accounts (TopNav only — admins have no
 // facility_id, so notifications, which are facility-scoped, never apply to
 // them; AdminDashboardScreen's header renders AccountMenu without this).
@@ -282,28 +287,33 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
 
   const badge = badgeLabel(unread);
 
+  // Below `sm` the wrapper is not positioned, so the panel anchors to the (full-width, sticky) header and spans the viewport with a
+  // 1rem gutter; anchored to the bell it was 320 px wide and ran off the left edge of a phone (-28 px at 390 px wide, before this round).
   return (
-    <div className="relative" ref={menuRef}>
+    <div className="sm:relative" ref={menuRef}>
       <button
         ref={triggerRef}
         onClick={() => setOpen((o) => !o)}
         aria-label={unread > 0 ? `Notifications, ${unread} unread` : "Notifications"}
         aria-haspopup="dialog"
         aria-expanded={open}
-        className="relative p-1.5 text-muted-foreground hover:text-foreground rounded transition-colors"
+        className="flex items-center justify-center w-11 h-11 text-muted-foreground hover:text-foreground rounded transition-colors"
       >
-        <Bell size={19} className={justArrived ? "animate-bell-pulse" : ""} />
-        {badge !== null && (
-          <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 bg-primary text-white text-[11px] font-bold rounded-full flex items-center justify-center leading-none">
-            {badge}
-          </span>
-        )}
+        {/* The badge is anchored to the icon, not to the button, so it keeps its place on the icon however big the target around it is. */}
+        <span className="relative inline-flex">
+          <Bell size={22} className={justArrived ? "animate-bell-pulse" : ""} />
+          {badge !== null && (
+            <span className="absolute -top-2.5 -right-2.5 min-w-[18px] h-[18px] px-1 bg-primary text-white text-[12px] font-bold rounded-full flex items-center justify-center leading-none">
+              {badge}
+            </span>
+          )}
+        </span>
       </button>
 
       {open && (
         <DialogPanel
           labelledBy={headingId} onClose={() => setOpen(false)} returnFocusRef={triggerRef}
-          className="absolute right-0 top-full mt-2 w-80 bg-card border border-border rounded-xl shadow-lg z-50 overflow-hidden"
+          className="absolute left-4 right-4 sm:left-auto sm:right-0 top-full mt-2 sm:w-80 bg-card border border-border rounded-xl shadow-lg z-50 overflow-hidden"
         >
           <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
             <div>
@@ -395,10 +405,10 @@ export function AccountMenu({ user, onLogout }: { user: SessionUser; onLogout: (
         aria-label={`Account menu, ${user.email}`}
         aria-haspopup="dialog"
         aria-expanded={open}
-        className="flex items-center gap-2 pl-3 pr-2 py-1 border-l border-border rounded-lg hover:bg-secondary transition-colors"
+        className="flex items-center gap-2.5 min-h-11 pl-3.5 pr-2.5 py-1 border-l border-border rounded-lg hover:bg-secondary transition-colors"
       >
-        <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-          <User size={16} className="text-primary" />
+        <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+          <User size={18} className="text-primary" />
         </div>
         {/* Hidden below lg (not md — the nav's own labels also turn on at
             md, and together with this they don't actually fit until lg;
@@ -408,11 +418,11 @@ export function AccountMenu({ user, onLogout }: { user: SessionUser; onLogout: (
             even at lg+. Avatar + chevron alone still identify the control;
             the menu itself still shows the full email/facility name once
             opened. */}
-        <div className="hidden lg:block text-[13px] text-left max-w-[180px] min-w-0">
+        <div className="hidden lg:block text-[14px] text-left max-w-[180px] min-w-0">
           <div className="font-semibold text-foreground leading-tight truncate">{user.email}</div>
           <div className="text-muted-foreground leading-tight truncate">{isAdmin ? "Administrator" : user.facility_name}</div>
         </div>
-        <ChevronDown size={15} className={`text-muted-foreground transition-transform shrink-0 ${open ? "rotate-180" : ""}`} />
+        <ChevronDown size={17} className={`text-muted-foreground transition-transform shrink-0 ${open ? "rotate-180" : ""}`} />
       </button>
 
       {open && (

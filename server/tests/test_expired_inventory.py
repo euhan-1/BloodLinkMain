@@ -50,7 +50,7 @@ TOMORROW = TODAY + timedelta(days=1)
 # migrate_scope_thresholds_to_facility.py), and /inventory/summary's query
 # starts FROM blood_type_thresholds, so a facility with zero threshold rows
 # returns an empty summary regardless of its actual blood_units. A facility
-# created via POST /admin/facilities gets these seeded automatically; this
+# created by approving a registration gets these seeded automatically; this
 # test helper isn't going through that endpoint, so it seeds them itself.
 _TEST_THRESHOLDS = [
     ("A+", 80, 160), ("A-", 50, 100), ("B+", 60, 120), ("B-", 40, 80),

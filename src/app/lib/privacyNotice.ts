@@ -100,7 +100,7 @@ export const NOTICE_SECTIONS: NoticeSection[] = [
       },
       {
         kind: "p",
-        text: "Accounts created before this notice existed, and accounts an administrator created without the Register form, have no consent on file yet.",
+        text: "Accounts created before this notice existed have no consent on file yet.",
       },
     ],
   },

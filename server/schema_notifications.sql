@@ -1,5 +1,5 @@
 -- Facility-scoped, not user-scoped: a facility can have more than one staff
--- account (see POST /admin/facilities), and "a new request arrived" is
+-- account (a facility has one login today), and "a new request arrived" is
 -- something any of them should see, not just whoever happened to trigger it.
 CREATE TABLE IF NOT EXISTS notifications (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

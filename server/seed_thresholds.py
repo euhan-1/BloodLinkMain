@@ -9,7 +9,7 @@ from database import engine
 # starting from the values used in the original design mockup as placeholder
 # defaults (maximum is a placeholder 2x the minimum, not a real capacity figure).
 # Must match DEFAULT_THRESHOLDS in main.py (used to seed a newly-created
-# facility via POST /admin/facilities) so a fresh-install facility and one
+# facility when an admin approves its registration) so a fresh-install facility and one
 # created later through the app start out identically.
 THRESHOLDS = [
     ("A+", 80, 160),
