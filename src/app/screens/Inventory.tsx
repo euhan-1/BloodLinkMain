@@ -496,7 +496,7 @@ export function InventoryScreen() {
                     className={`py-2 text-[14px] font-display font-bold rounded-lg border transition-all duration-200 ease-out ${
                       unitForm.bloodType === bt
                         ? "bg-primary text-white border-primary scale-110"
-                        : "bg-primary-tint text-primary border-transparent hover:border-primary/40"
+                        : "bg-primary-tint text-role-accent-text border-transparent hover:border-primary/40"
                     }`}
                   >
                     {bt}

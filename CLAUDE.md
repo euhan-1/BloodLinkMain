@@ -260,14 +260,20 @@ requests, SARIMAX demand forecasting, donor broadcast.
   kept as it was; the Dashboard's own stand-in line and the chart's text alternative say "an example pattern, not your own records").
   **Other Dashboard wording, plain too**: the At risk sentence says "the low end of the range it could realistically fall in" (no 95%), and
   the shaded-band help says "The band is the range the total could realistically fall in. It is wider when there is less history or when
-  looking further ahead." (no "prediction interval"). **The badge and the Upload history "Refresh" link were fixed for dark contrast
-  (2026-11-11)**: the unselected `BloodTypeBadge` text and Refresh are `text-primary dark:text-foreground` (bank 3.78 and 4.1, hospital 2.67
-  and 2.89 before; 14.53 and 15.77 after, light unchanged at 7.38 to 11.5). **Still under 4.5:1 in the dark theme, measured and not changed**:
-  every other `text-primary` text (bank maroon 3.59 to 4.1, hospital navy 2.51 to 2.67): the active nav label, the nav's unread count, "Order 90
-  by 21 Nov", "Open the incoming list", "Review in inventory", "View all requests", "Released, confirm receipt", and the thread card's
-  status lines "Accepted, confirm release" / "Awaiting your decision". The "Link" half of the wordmark is a logotype. The fix would be one dark
-  token for accent text (a lighter navy and maroon), which is a new token and so the owner's call; `BloodTypeBadge`'s `selected` state
-  (white on the accent) is not used by any screen. `check_bank_dashboard.ts` and `check_accessibility.ts` assert all
+  looking further ahead." (no "prediction interval"). **Accent as text in the dark theme (2026-11-11)**: the fill accent (`--role-accent`: bank #C94A68, hospital #3E6091) is
+  3.59 to 4.1:1 (bank) and 2.51 to 2.67:1 (hospital) as text on a dark surface, so there is ONE dark-only token, `--role-accent-text`
+  (bank #EE8199, hospital #88AEDD; `.dark` and `.dark[data-role="hospital"]` in `theme.css`, nothing in the light theme), reached by the
+  utility `text-role-accent-text` (`--color-role-accent-text: var(--role-accent-text, var(--role-accent))`, so in the light theme the
+  fallback is the accent and light text is exactly what it was: 114 measured lists identical before and after). **Text and text-like icons
+  that want the accent use `text-role-accent-text`, never `text-primary`** (also `hover:text-role-accent-text`; `::selection` too);
+  fills, borders, rings, the gauge and chart colours still read `--role-accent`. Measured on the page, card, secondary, accent tint,
+  selected-row and amber-row surfaces: 5.45:1 or more (bank), 6.05:1 or more (hospital); in the browser the lowest instance is 6.34 (bank,
+  the active nav tint) and 7.0 (hospital). The unselected `BloodTypeBadge` text and the Upload history "Refresh" link keep
+  `dark:text-foreground` (14.53 and 15.77:1) from the earlier round. `check_accessibility.ts` fails on any `text-primary` text class, or
+  `hover:text-primary-hover`, outside the logotype, a line with `dark:text-foreground` / `dark:hover:text-role-accent-text`, and the donor
+  screen (donor-blast code, left alone by rule: its five accent-text uses, three icons and two chips, are still the fill accent in dark, so
+  below 4.5:1 there). **Not covered by the token on purpose**: the "Link" half of the wordmark (a logotype, 3.78 / 2.67), the Leaflet origin
+  label (text on light map tiles with a white halo), and `BloodTypeBadge`'s `selected` state (white on the accent, used by no screen). `check_bank_dashboard.ts` and `check_accessibility.ts` assert all
   of this. And "Order 90 by 4 Nov" opens Source supply with type, quantity and Packed RBC
   prefilled. `/inventory/expiring` writes no notification: expiring units are not one (see **Notifications**).
 - **"At risk"** is a third Dashboard outlook, between On track and an order: the central projection holds at or above the minimum at

@@ -210,4 +210,25 @@ for (const file of ["src/app/screens/Login.tsx", "src/app/screens/ResetPassword.
   yes(body.indexOf("<TechnicalDetails") > body.indexOf("<UploadHistoryPanel"), "the technical section comes after the plain content in DOM order, so it is after it in the tab order");
 }
 
+// ── accent as text in the dark theme: the fill accent is 3.78:1 (bank) and 2.67:1 (hospital) on a dark card, so text uses
+//    `text-role-accent-text` (the dark-only token, which falls back to the accent in the light theme). A `text-primary` text class, or a
+//    `hover:text-primary-hover` one, is only allowed where it is the logotype, carries `dark:text-foreground` on the same line, or has the
+//    dark hover override. The donor screen (donor-blast code) is left out by rule.
+{
+  const css = read("src/styles/theme.css");
+  yes(/--color-role-accent-text:\s*var\(--role-accent-text,\s*var\(--role-accent\)\)/.test(css), "theme.css maps text-role-accent-text with the accent as its light-theme fallback");
+  const rootBlock = css.slice(0, css.indexOf("\n.dark {"));
+  yes(!rootBlock.includes("--role-accent-text"), "the light theme does not define --role-accent-text (the fallback is the accent, so light text is unchanged)");
+  yes(/\.dark \{[^]*?--role-accent-text:\s*#[0-9A-Fa-f]{6};[^]*?\n\}/.test(css), "the dark theme defines --role-accent-text");
+  yes(/\.dark\[data-role="hospital"\] \{[^]*?--role-accent-text:\s*#[0-9A-Fa-f]{6};/.test(css), "the hospital's dark theme defines --role-accent-text");
+  const rx = /(?<![\w-])(?:[a-z-]+:)*text-primary(?![\w/-])|hover:text-primary-hover/;
+  for (const file of sources.filter((f) => !f.endsWith("Donors.tsx"))) {
+    read(file).split("\n").forEach((line, i) => {
+      if (!rx.test(line)) return;
+      const ok = /Blood<span className="text-primary">Link<\/span>/.test(line) || /dark:text-foreground/.test(line) || /dark:hover:text-role-accent-text/.test(line);
+      yes(ok, `${file}:${i + 1} uses the dark-theme accent as text colour (text-primary): use text-role-accent-text, which is readable on a dark surface`);
+    });
+  }
+}
+
 console.log("ok");

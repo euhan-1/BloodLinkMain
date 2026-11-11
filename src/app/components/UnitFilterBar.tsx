@@ -37,7 +37,7 @@ export function UnitFilterBar({ filters, onChange, components, stateOptions }: {
         </select>
       </label>
       {hasUnitFilters(filters) && (
-        <button onClick={() => onChange(NO_UNIT_FILTERS)} className="h-9 text-[14px] text-foreground underline underline-offset-2 hover:text-primary">Clear filters</button>
+        <button onClick={() => onChange(NO_UNIT_FILTERS)} className="h-9 text-[14px] text-foreground underline underline-offset-2 hover:text-role-accent-text">Clear filters</button>
       )}
     </div>
   );

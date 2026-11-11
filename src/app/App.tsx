@@ -98,7 +98,7 @@ function TopNav({
               aria-current={screen === item.key ? "page" : undefined}
               className={`flex items-center justify-center gap-2 min-h-11 min-w-11 px-3 md:px-4 py-2 rounded text-[15px] font-medium transition-all duration-200 ease-out ${
                 screen === item.key
-                  ? "bg-accent text-primary scale-105"
+                  ? "bg-accent text-role-accent-text scale-105"
                   : "text-muted-foreground hover:text-foreground hover:bg-secondary"
               }`}
             >

@@ -52,7 +52,7 @@ export function SearchResultsFrame({ total, query, onClear, children }: { total:
         <h2 id="results-heading" className="font-display font-bold text-xl tracking-tight text-foreground" aria-live="polite">
           {total === 0 ? `No unit matches "${query.trim()}"` : total <= SEARCH_LIMIT ? `${total} ${plural(total, "unit matches", "units match")} "${query.trim()}"` : `${total} units match "${query.trim()}"`}
         </h2>
-        <button onClick={onClear} className="text-[14px] font-semibold text-primary rounded-sm hover:underline hover:underline-offset-2">Clear search</button>
+        <button onClick={onClear} className="text-[14px] font-semibold text-role-accent-text rounded-sm hover:underline hover:underline-offset-2">Clear search</button>
       </div>
       {total > SEARCH_LIMIT && <p className="mb-2 text-[14px] text-foreground">Showing the first {SEARCH_LIMIT}: best DIN match first, then live units soonest to expire, then expired ones. Refine your search to narrow them.</p>}
       {total === 0 && <p className="text-[15px] text-foreground py-2">Try fewer characters of the DIN, or a shelf or component.</p>}

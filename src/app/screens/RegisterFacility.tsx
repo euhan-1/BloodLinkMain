@@ -246,7 +246,7 @@ export function RegisterFacilityScreen() {
                 </div>
                 <p className="text-[12px] text-muted-foreground mt-1.5">
                   {CONTACT_PERSON_NOTICE.before}
-                  <a href="/privacy" target="_blank" rel="noopener" className={`text-primary font-semibold underline underline-offset-2 rounded-sm ${FOCUS}`}>{CONTACT_PERSON_NOTICE.link}</a>
+                  <a href="/privacy" target="_blank" rel="noopener" className={`text-role-accent-text font-semibold underline underline-offset-2 rounded-sm ${FOCUS}`}>{CONTACT_PERSON_NOTICE.link}</a>
                   {CONTACT_PERSON_NOTICE.after}
                 </p>
               </div>
@@ -298,7 +298,7 @@ export function RegisterFacilityScreen() {
                 />
                 <label htmlFor={`${uid}-consent`} className="text-[14px] text-foreground leading-snug">
                   {CONSENT_LABEL.before}
-                  <a href="/privacy" target="_blank" rel="noopener" className={`text-primary font-semibold underline underline-offset-2 rounded-sm ${FOCUS}`}>{CONSENT_LABEL.link}</a>
+                  <a href="/privacy" target="_blank" rel="noopener" className={`text-role-accent-text font-semibold underline underline-offset-2 rounded-sm ${FOCUS}`}>{CONSENT_LABEL.link}</a>
                   {CONSENT_LABEL.after}
                 </label>
               </div>

@@ -354,7 +354,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
                     <button
                       type="button"
                       onClick={() => { setForgotMode(true); setError(null); setForgotEmail(email); }}
-                      className={`text-[13px] text-primary hover:underline hover:underline-offset-2 rounded-sm ${FOCUS}`}
+                      className={`text-[13px] text-role-accent-text hover:underline hover:underline-offset-2 rounded-sm ${FOCUS}`}
                     >
                       Forgot password?
                     </button>
@@ -395,7 +395,7 @@ export function LoginScreen({ onLogin }: { onLogin: (user: SessionUser) => void 
 
               <p className="mt-5 text-[13px] font-[500] text-muted-foreground">
                 New facility?{" "}
-                <a href="/register" className={`text-primary font-semibold hover:underline hover:underline-offset-2 rounded-sm ${FOCUS}`}>
+                <a href="/register" className={`text-role-accent-text font-semibold hover:underline hover:underline-offset-2 rounded-sm ${FOCUS}`}>
                   Register here
                 </a>
               </p>

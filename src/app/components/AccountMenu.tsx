@@ -96,7 +96,7 @@ function ChangePasswordModal({ email, onClose, returnFocusRef }: { email: string
                   type="button"
                   onClick={handleForgotClick}
                   disabled={forgotSending}
-                  className="text-[12.5px] font-semibold text-primary hover:underline hover:underline-offset-2 disabled:opacity-60"
+                  className="text-[12.5px] font-semibold text-role-accent-text hover:underline hover:underline-offset-2 disabled:opacity-60"
                 >
                   {forgotSending ? "Sending…" : "Forgot your current password?"}
                 </button>
@@ -321,7 +321,7 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
               <div className="text-[12px] text-foreground" role="status">{unreadText(unread)}</div>
             </div>
             {unread > 0 && (
-              <button onClick={handleMarkAllRead} className="text-[12px] font-semibold text-primary hover:underline hover:underline-offset-2 shrink-0">
+              <button onClick={handleMarkAllRead} className="text-[12px] font-semibold text-role-accent-text hover:underline hover:underline-offset-2 shrink-0">
                 Mark all as read
               </button>
             )}
@@ -358,7 +358,7 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
               <button
                 onClick={loadOlder}
                 disabled={loadingMore}
-                className="w-full px-4 py-3 text-[13px] font-semibold text-primary hover:bg-secondary transition-colors disabled:opacity-60"
+                className="w-full px-4 py-3 text-[13px] font-semibold text-role-accent-text hover:bg-secondary transition-colors disabled:opacity-60"
               >
                 {loadingMore ? "Loading…" : "Show older notifications"}
               </button>
@@ -408,7 +408,7 @@ export function AccountMenu({ user, onLogout }: { user: SessionUser; onLogout: (
         className="flex items-center gap-2.5 min-h-11 pl-3.5 pr-2.5 py-1 border-l border-border rounded-lg hover:bg-secondary transition-colors"
       >
         <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-          <User size={18} className="text-primary" />
+          <User size={18} className="text-role-accent-text" />
         </div>
         {/* Hidden below lg (not md — the nav's own labels also turn on at
             md, and together with this they don't actually fit until lg;
@@ -434,7 +434,7 @@ export function AccountMenu({ user, onLogout }: { user: SessionUser; onLogout: (
             <h2 id={headingId} className="sr-only">Account menu</h2>
             <div className="text-[14px] font-bold text-foreground">{user.email}</div>
             {!isAdmin && <div className="text-[13px] text-muted-foreground mt-0.5">{user.facility_name}</div>}
-            <span className="inline-flex items-center mt-1.5 px-2 py-0.5 rounded-full text-[11.5px] font-bold uppercase tracking-wide bg-primary-tint text-primary">
+            <span className="inline-flex items-center mt-1.5 px-2 py-0.5 rounded-full text-[11.5px] font-bold uppercase tracking-wide bg-primary-tint text-role-accent-text">
               {isAdmin ? "Admin" : user.role}
             </span>
           </div>

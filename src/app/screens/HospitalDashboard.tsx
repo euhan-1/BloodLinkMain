@@ -272,7 +272,7 @@ function YourRequests({ requests, failed, onViewRequests }: { requests: RequestR
                     {req.quantity} {plural(req.quantity, "unit", "units")}{req.component ? ` of ${req.component}` : ""} for {EMERGENCY_TYPE_LABELS[req.emergency_type].toLowerCase()}
                   </div>
                   <div className="text-[14px] text-foreground">{req.supplying_facility_name ?? `Facility ${req.supplying_facility_id}`}</div>
-                  <div className={`text-[14px] font-semibold mt-0.5 ${needsRequesterAction(req) ? "text-primary" : "text-foreground"}`}>
+                  <div className={`text-[14px] font-semibold mt-0.5 ${needsRequesterAction(req) ? "text-role-accent-text" : "text-foreground"}`}>
                     {requesterStatusText(req)}
                   </div>
                   <div className="text-[13px] text-gray-600 mt-0.5">
@@ -288,7 +288,7 @@ function YourRequests({ requests, failed, onViewRequests }: { requests: RequestR
 
       <button
         onClick={onViewRequests}
-        className="mt-4 text-[14px] font-semibold text-primary rounded-sm hover:underline hover:underline-offset-2"
+        className="mt-4 text-[14px] font-semibold text-role-accent-text rounded-sm hover:underline hover:underline-offset-2"
       >
         View all requests
       </button>
@@ -359,7 +359,7 @@ function ExpiringSoon({ rows, loading, error }: { rows: InventoryUnit[]; loading
         {rows.length > VISIBLE_ITEM_LIMIT && (
           <button
             onClick={() => setShowAll((v) => !v)}
-            className="text-[14px] font-semibold text-primary rounded-sm hover:underline hover:underline-offset-2"
+            className="text-[14px] font-semibold text-role-accent-text rounded-sm hover:underline hover:underline-offset-2"
           >
             {showAll ? "Show fewer" : `Show ${rows.length - VISIBLE_ITEM_LIMIT} more`}
           </button>

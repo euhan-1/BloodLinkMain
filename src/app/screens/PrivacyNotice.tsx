@@ -13,7 +13,7 @@ import {
 // The contact address comes from VITE_PRIVACY_CONTACT_EMAIL. Unset (or a placeholder), the page says so in a banner at the top and where
 // the address belongs, and `node scripts/check_privacy.ts` fails: a notice without a way to reach us must not ship by accident.
 
-const LINK = `text-primary font-semibold underline underline-offset-2 hover:text-primary-hover rounded-sm ${FOCUS}`;
+const LINK = `text-role-accent-text font-semibold underline underline-offset-2 hover:text-primary-hover dark:hover:text-role-accent-text rounded-sm ${FOCUS}`;
 
 function Contact({ lead }: { lead: string }) {
   const contact = privacyContact(import.meta.env.VITE_PRIVACY_CONTACT_EMAIL);

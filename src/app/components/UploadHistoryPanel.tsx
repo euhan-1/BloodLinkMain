@@ -248,7 +248,7 @@ export function UploadHistoryPanel({ uploadType, refreshKey, onUndone, variant =
                         <button
                           onClick={() => handleDownload(entry)}
                           disabled={downloadingId === entry.id}
-                          className="flex items-center gap-1.5 font-semibold text-primary rounded-sm hover:underline hover:underline-offset-2 disabled:opacity-60"
+                          className="flex items-center gap-1.5 font-semibold text-role-accent-text rounded-sm hover:underline hover:underline-offset-2 disabled:opacity-60"
                         >
                           <Download size={13} /> {downloadingId === entry.id ? "Downloading…" : "Download original file"}
                         </button>
@@ -350,7 +350,7 @@ export function UploadHistoryPanel({ uploadType, refreshKey, onUndone, variant =
                       <button
                         onClick={() => handleDownload(entry)}
                         disabled={downloadingId === entry.id}
-                        className="flex items-center gap-1.5 text-[12px] font-semibold text-primary hover:underline hover:underline-offset-2 disabled:opacity-60"
+                        className="flex items-center gap-1.5 text-[12px] font-semibold text-role-accent-text hover:underline hover:underline-offset-2 disabled:opacity-60"
                       >
                         <Download size={12} /> {downloadingId === entry.id ? "Downloading…" : "Download original file"}
                       </button>

@@ -123,11 +123,11 @@ export function TransferHistory({ isBloodBank, onOpenThread }: { isBloodBank: bo
         <span className="inline-flex flex-wrap items-center gap-x-3">
           <span className="text-gray-600">Date range</span>
           {(Object.keys(DATE_PRESET_LABELS) as DatePreset[]).map((k) => (
-            <button key={k} type="button" onClick={() => applyPreset(k)} className="underline underline-offset-2 hover:text-primary">{DATE_PRESET_LABELS[k]}</button>
+            <button key={k} type="button" onClick={() => applyPreset(k)} className="underline underline-offset-2 hover:text-role-accent-text">{DATE_PRESET_LABELS[k]}</button>
           ))}
         </span>
         {hasFilters(filters) && (
-          <button type="button" onClick={() => setFilters(NO_FILTERS)} className="underline underline-offset-2 hover:text-primary">Clear filters</button>
+          <button type="button" onClick={() => setFilters(NO_FILTERS)} className="underline underline-offset-2 hover:text-role-accent-text">Clear filters</button>
         )}
       </div>
 
@@ -212,7 +212,7 @@ function TransferLine({ t, onOpenThread }: { t: TransferRow; onOpenThread: (requ
           type="button"
           onClick={() => onOpenThread(r.id)}
           aria-label={`Open the thread for request ${r.id}`}
-          className="text-[14px] font-semibold text-primary underline-offset-2 hover:underline"
+          className="text-[14px] font-semibold text-role-accent-text underline-offset-2 hover:underline"
         >
           Chat
         </button>
@@ -221,7 +221,7 @@ function TransferLine({ t, onOpenThread }: { t: TransferRow; onOpenThread: (requ
           target="_blank"
           rel="noopener"
           aria-label={`Receipt for request ${r.id}`}
-          className="text-[14px] font-semibold text-primary underline-offset-2 hover:underline"
+          className="text-[14px] font-semibold text-role-accent-text underline-offset-2 hover:underline"
         >
           Receipt
         </a>

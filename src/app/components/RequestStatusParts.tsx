@@ -4,7 +4,7 @@ import { inboxStatus, rowActions, type InboxRow, type RowAction, type StatusTone
 // The two pieces a request's row in the inbox and its header above the thread share, so they say and offer the same things.
 
 const TONE: Record<StatusTone, string> = {
-  yours: "bg-primary-tint text-primary border-border",
+  yours: "bg-primary-tint text-role-accent-text border-border",
   theirs: "bg-status-watch-tint text-status-watch-text border-status-watch-border",
   done: "bg-secondary text-foreground border-border",
 };

@@ -214,6 +214,11 @@
   --role-accent-tint: #33191F;
   --role-accent-rgb: 201, 74, 104;
   --role-accent-border: #7A3D4A;
+  /* Accent as TEXT (and text-like icons) on a dark surface, utility `text-role-accent-text`. The fill accent above is 3.78:1 on a dark
+     card and 3.59:1 on the active-nav tint, too dark for text. Defined for the dark theme only: the light theme has no such token and the
+     utility falls back to --role-accent (see --color-role-accent-text below), so light text is exactly what it was. Fills, borders and the
+     gauge never read it. Measured 5.45:1 or more on the page, card, secondary, accent tint, selected-row and amber-row tints. */
+  --role-accent-text: #EE8199;
 
   --secondary: #241E19;
   --secondary-foreground: #E8E0D6;
@@ -286,6 +291,7 @@
   --role-accent-tint: #18222E;
   --role-accent-rgb: 62, 96, 145;
   --role-accent-border: #3C526B;
+  --role-accent-text: #88AEDD; /* hospital navy as text on a dark surface; 6.05:1 or more on the same surfaces */
 }
 
 @theme inline {
@@ -298,6 +304,7 @@
   --color-primary-tint: var(--primary-tint);
   --color-primary-foreground: var(--primary-foreground);
   --color-role-accent-border: var(--role-accent-border);
+  --color-role-accent-text: var(--role-accent-text, var(--role-accent));
   --color-status-safe: var(--status-safe);
   --color-status-safe-text: var(--status-safe-text);
   --color-status-safe-tint: var(--status-safe-tint);
@@ -369,7 +376,7 @@
      the warm palette and, on a Hospital account, the navy identity. */
   ::selection {
     background-color: var(--role-accent-tint);
-    color: var(--role-accent);
+    color: var(--role-accent-text, var(--role-accent));
   }
 
   /* Themed scrollbar — this is a scroll-dense app (long inventory/request

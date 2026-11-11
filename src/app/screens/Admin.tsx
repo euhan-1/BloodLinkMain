@@ -116,7 +116,7 @@ function FacilityTable({
                       disabled={resetBusyId === a.id}
                       aria-label={`Reset password for ${a.email}`}
                       title="Reset password"
-                      className="shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-semibold text-muted-foreground hover:text-primary hover:bg-primary-tint transition-colors disabled:opacity-60"
+                      className="shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-semibold text-muted-foreground hover:text-role-accent-text hover:bg-primary-tint transition-colors disabled:opacity-60"
                     >
                       <KeyRound size={11} /> {resetBusyId === a.id ? "…" : "Reset"}
                     </button>
@@ -281,7 +281,7 @@ export function AdminDashboardScreen({ user, onLogout }: { user: SessionUser; on
           <h1 className="flex items-center gap-2.5 text-[16px] font-normal">
             <BloodDropLogo size={28} />
             <span className="font-bold tracking-tight">Blood<span className="text-primary">Link</span></span>
-            <span className="ml-1 px-2 py-0.5 rounded-full bg-primary/10 text-primary text-[12px] font-bold uppercase tracking-wide">
+            <span className="ml-1 px-2 py-0.5 rounded-full bg-primary/10 text-role-accent-text text-[12px] font-bold uppercase tracking-wide">
               Admin
             </span>
           </h1>

@@ -242,7 +242,7 @@ function OutlookCell({
               type="button"
               aria-label={`${orderLabel(outlook, today)} ${blood_type} Packed RBC. Opens Source supply with these filled in.`}
               onClick={() => { const t = orderPrefill(blood_type, outlook); onOrder(t.bloodType, t.quantity, t.component); }}
-              className="font-semibold text-primary text-left rounded-sm hover:underline hover:underline-offset-2"
+              className="font-semibold text-role-accent-text text-left rounded-sm hover:underline hover:underline-offset-2"
             >
               {orderLabel(outlook, today)}
             </button>
@@ -303,7 +303,7 @@ function WaitingForYou({ requests, failed, onViewRequests }: { requests: Request
         <ol>
           {visible.map((req, i) => (
             <li key={req.id} className="flex gap-3 py-3 border-t border-gray-200 first:border-t-0 first:pt-0">
-              <span aria-label={`Position ${i + 1}`} className="w-6 h-6 rounded-full bg-primary-tint text-primary text-[12px] font-bold flex items-center justify-center shrink-0 mt-0.5">{i + 1}</span>
+              <span aria-label={`Position ${i + 1}`} className="w-6 h-6 rounded-full bg-primary-tint text-role-accent-text text-[12px] font-bold flex items-center justify-center shrink-0 mt-0.5">{i + 1}</span>
               <div className="min-w-0 flex-1">
                 <div className="text-[15px] font-semibold text-foreground">{req.requesting_facility_name ?? `Facility ${req.requesting_facility_id}`}</div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[14px] text-foreground">
@@ -319,7 +319,7 @@ function WaitingForYou({ requests, failed, onViewRequests }: { requests: Request
       {requests !== null && requests.length > VISIBLE_WAITING && (
         <p className="mt-1 text-[14px] text-foreground">and {requests.length - VISIBLE_WAITING} more.</p>
       )}
-      <button onClick={onViewRequests} className="mt-4 text-[14px] font-semibold text-primary rounded-sm hover:underline hover:underline-offset-2">
+      <button onClick={onViewRequests} className="mt-4 text-[14px] font-semibold text-role-accent-text rounded-sm hover:underline hover:underline-offset-2">
         Open the incoming list
       </button>
     </aside>
@@ -338,7 +338,7 @@ function ExpiringUnits({ data, error, onViewInventory }: { data: ExpiringInvento
         <h2 id="expiring-heading" className="font-display font-bold text-xl tracking-tight text-foreground">
           Expiring within {data?.window_days ?? 7} days
         </h2>
-        <button onClick={onViewInventory} className="text-[14px] font-semibold text-primary rounded-sm hover:underline hover:underline-offset-2">
+        <button onClick={onViewInventory} className="text-[14px] font-semibold text-role-accent-text rounded-sm hover:underline hover:underline-offset-2">
           Review in inventory
         </button>
       </div>
@@ -348,7 +348,7 @@ function ExpiringUnits({ data, error, onViewInventory }: { data: ExpiringInvento
         {data !== null && groups.length === 0 && <p className="text-[15px] text-foreground">No units expire within {data.window_days} days.</p>}
         {visible.map((g) => <ExpiringGroupRow key={`${g.expires_date}-${g.blood_type}-${g.component}`} group={g} />)}
         {groups.length > VISIBLE_EXPIRING && (
-          <button onClick={() => setShowAll((v) => !v)} className="mt-2 text-[14px] font-semibold text-primary rounded-sm hover:underline hover:underline-offset-2">
+          <button onClick={() => setShowAll((v) => !v)} className="mt-2 text-[14px] font-semibold text-role-accent-text rounded-sm hover:underline hover:underline-offset-2">
             {showAll ? "Show fewer" : `Show ${groups.length - VISIBLE_EXPIRING} more`}
           </button>
         )}
@@ -726,7 +726,7 @@ function ForecastDetailsBody(p: BankDashboardProps) {
         <div className="space-y-1.5 text-[15px] text-foreground max-w-[75ch]">
           <p>
             {f.forecast_source === "none" && `Collecting data: ${f.days_of_history} of ${f.min_days_required} days of daily stock records are on file.`}
-            {f.forecast_source === "synthetic_model_stand_in" && "The outlook above comes from a reference model, not this facility's own history yet."}
+            {f.forecast_source === "synthetic_model_stand_in" && "The outlook above comes from an example pattern, not this facility's own history yet."}
             {real && `Built from ${f.days_of_history} days of this facility's recorded stock. These are estimates, not guarantees.`}
           </p>
           {real && <div className="pt-2"><PlainGroups f={f} /></div>}
