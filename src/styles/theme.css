@@ -703,74 +703,82 @@
 @media not print {
 
   /* ═════ 1. LIGHT, STRENGTH AND SIZE: the one block to tune ═══════════════════════════════════════════════════════
-     ONE LIGHT, from the upper left. A RAISED thing (card, big container, tile, button, chip, pill, modal, popover, tooltip)
-     throws a drop shadow to the bottom right, with next to nothing on its top and left, and has a white highlight just inside
-     its top-left edge and a warm shade just inside its bottom-right edge. A SUNKEN thing (a field, the gauge groove) is the
-     reverse: shade inside the top left, light inside the bottom right. --clay-lx and --clay-ly are that direction (+1 = the
-     light is on the left / on top, so a shadow falls to the right / down; -1 flips an axis); every offset in the recipe is
-     multiplied by them, so medium and strong, light and dark, can only agree.
-     A size is one depth d (px). Its outer drop is d across and d * ky down, blurred by d * kb, with NO spread; its inner light
-     is d, d, blurred by d * kib; its inner shade is d * klo the other way. The visible drop then reaches about d * ky + 0.7 * d * kb
-     below and d + 0.7 * d * kb to the right, and (0.7 * d * kb - d) to the left and (0.7 * d * kb - d * ky) above.
-     sm = button, chip, tile, tooltip   md = card   lg = big container (raised surface, 600 px panel, Action required)
+     ONE LIGHT, from the upper left. A RAISED thing (card, big container, tile, button, chip, pill, modal, popover, tooltip, and by
+     default a text field) throws a drop shadow to the bottom right, with next to nothing on its top and left, and has a white
+     highlight just inside its top-left edge and a faint warm shade well inside its bottom-right edge. A SUNKEN thing (the gauge
+     groove, a pressed button, and a field if --clay-field-depth is switched) is the reverse: shade inside the top left, light
+     inside the bottom right. --clay-lx and --clay-ly are that direction (+1 = the light is on the left / on top, so a shadow falls
+     to the right / down; -1 flips an axis); every offset in the recipe is multiplied by them.
+     A size is one depth d (px). The outer drop is d across and d * ky down, blurred by d * kb (a large blur next to a small offset
+     is what makes it fade out softly instead of drawing a line), with NO spread. The inner light is d, d, blurred by d * kib. The
+     inner shade is d * klo the other way, blurred by d * ksb: small, far inside and faint, so that it does not make a second dark
+     band against the drop on the other side of the same edge. Reach: the drop is visible about d * ky + 0.7 * d * kb below.
+     sm = button, chip, tile, tooltip, field   md = card   lg = big container (raised surface, 600 px panel, Action required)
      float = modal, popover   row and pill = the inner shading of a small control in a row, and of a status pill.
      Medium is the default; <html data-clay-strength="strong"> selects the strong depths and opacities. Nothing else in this
-     file holds a strength number. */
+     file holds a strength number.
+     FIELDS: --clay-field-depth is the one switch. var(--clay-raised) (the default) makes a field a raised, lighter, flat-filled
+     box with the small raised recipe and its soft boundary; var(--clay-sunken) makes it the recessed, darker field of the previous
+     round. */
   :root[data-surface="clay"] {
     --clay-lx: 1;
     --clay-ly: 1;
-    --clay-d-sm: 2px;
-    --clay-d-md: 3px;
-    --clay-d-lg: 3.8px;
-    --clay-d-float: 5px;
-    --clay-d-row: 2px;
+    --clay-d-sm: 1.6px;
+    --clay-d-md: 2px;
+    --clay-d-lg: 2.4px;
+    --clay-d-float: 4px;
+    --clay-d-row: 1.6px;
     --clay-d-pill: 1px;
     --clay-ky: 1.25;
-    --clay-kb: 1.8;
+    --clay-kb: 4.2;
     --clay-kib: 2;
-    --clay-klo: 1.25;
+    --clay-klo: 0.6;
+    --clay-ksb: 4;
+    --clay-raised: 1;
+    --clay-sunken: -1;
+    --clay-field-depth: var(--clay-raised);
   }
   :root[data-surface="clay"][data-clay-strength="strong"] {
-    --clay-d-sm: 2.5px;
-    --clay-d-md: 3.75px;
-    --clay-d-lg: 4.6px;
-    --clay-d-float: 6.5px;
-    --clay-d-row: 2.5px;
+    --clay-d-sm: 2px;
+    --clay-d-md: 2.5px;
+    --clay-d-lg: 3px;
+    --clay-d-float: 5px;
+    --clay-d-row: 2px;
     --clay-d-pill: 1.25px;
   }
   /* opacities (the warm light, the warm shade, the drop; grad is the button fill gradient; acc-* are the light and the drop on
      an accent button), written for each theme and strength */
   :root:not(.dark)[data-surface="clay"] {
     --clay-hi-a: 0.95;
-    --clay-lo-a: 0.26;
-    --clay-drop-a: 0.30;
+    --clay-lo-a: 0.07;
+    --clay-drop-a: 0.12;
     --clay-grad: 7%;
     --clay-acc-hi-a: 0.34;
-    --clay-acc-drop-a: 0.34;
+    --clay-acc-drop-a: 0.16;
   }
   :root:not(.dark)[data-surface="clay"][data-clay-strength="strong"] {
     --clay-hi-a: 1;
-    --clay-lo-a: 0.42;
-    --clay-drop-a: 0.42;
+    --clay-lo-a: 0.12;
+    --clay-drop-a: 0.19;
     --clay-grad: 13%;
     --clay-acc-hi-a: 0.50;
-    --clay-acc-drop-a: 0.50;
+    --clay-acc-drop-a: 0.26;
   }
   .dark[data-surface="clay"] {
     --clay-hi-a: 0.14;
-    --clay-lo-a: 0.55;
-    --clay-drop-a: 0.55;
+    --clay-lo-a: 0.28;
+    --clay-drop-a: 0.34;
     --clay-grad: 7%;
     --clay-acc-hi-a: 0.22;
-    --clay-acc-drop-a: 0.50;
+    --clay-acc-drop-a: 0.45;
   }
   .dark[data-surface="clay"][data-clay-strength="strong"] {
     --clay-hi-a: 0.24;
-    --clay-lo-a: 0.75;
-    --clay-drop-a: 0.72;
+    --clay-lo-a: 0.40;
+    --clay-drop-a: 0.46;
     --clay-grad: 13%;
     --clay-acc-hi-a: 0.34;
-    --clay-acc-drop-a: 0.65;
+    --clay-acc-drop-a: 0.60;
   }
 
   /* ═════ 2. COLOURS ═════════════════════════════════════════════════════════════════════════════════════════════
@@ -785,8 +793,9 @@
   :root:not(.dark)[data-surface="clay"] {
     --background: #EEE8DD;
     --card: #F8F3EA;                 /* a card is a step lighter than the page; a field is a step darker than a card */
-    --clay-field: #E9E2D6;
-    --border: #D2C9BC;               /* dividers and the rules inside a card: soft */
+    --clay-field: #E9E2D6;           /* a SUNKEN field's fill */
+    --clay-field-raised-fill: #FBF8F2; /* a RAISED field's fill: a flat step lighter than a card (placeholder 5.5:1, boundary 3.9:1 on it) */
+    --border: #DDD3C4;               /* dividers, section rules, table and row separators, a card's inner rules: a soft warm line, 1.34:1 on a card, 1.21:1 on the page */
     --clay-boundary: #857B70;        /* the edge of a field, a secondary button or a chip: 3.4:1 on the page, 3.8 on a card, 3.2 on a field */
     --clay-hi-rgb: 255, 255, 255;
     --clay-shade-rgb: 176, 116, 66;  /* warm brown */
@@ -799,7 +808,9 @@
   }
   .dark[data-surface="clay"] {
     /* the dark card fill and page are left as they are (a lighter card lowers dark contrast figures that are already low) */
-    --clay-field: #1A1510;
+    --clay-field: #1A1510;           /* a SUNKEN field's fill */
+    --clay-field-raised-fill: #2A231D; /* a RAISED field's fill: a step lighter than a dark card (placeholder 4.9:1, boundary 3.6:1 on it) */
+    --border: #3A3029;               /* the same soft divider in dark theme, 1.33:1 on a card */
     --clay-boundary: #857868;        /* 4.0:1 on a dark card, 4.3 on the page, 4.2 on a field (the default dark border is 1.6:1) */
     --clay-hi-rgb: 255, 226, 190;
     --clay-shade-rgb: 12, 5, 0;
@@ -815,63 +826,70 @@
   :root:not(.dark)[data-surface="clay"] .recharts-wrapper {
     --border: #58514B;
   }
+  .dark[data-surface="clay"] .recharts-wrapper {
+    --border: #473C33;
+  }
 
   /* ═════ 3. THE RECIPE: one token per size, all built from section 1 ═════════════════════════════════════════════
-     Raised: one warm outer drop + inner light (top left) + inner warm shade (bottom right). Sunken (field, pressed): inner
-     shade (top left) + inner light (bottom right). Never a spread, never an offset of 0 on a drop. At most three layers. */
+     Raised: one warm outer drop + inner light (top left) + a faint inner warm shade (bottom right). Sunken (pressed, and a field
+     when switched): inner shade (top left) + inner light (bottom right). Never a spread, never an offset of 0 on a drop. At most
+     three layers. */
   :root[data-surface="clay"] {
     --clay-c-hi: rgba(var(--clay-hi-rgb), var(--clay-hi-a));
     --clay-c-lo: rgba(var(--clay-shade-rgb), var(--clay-lo-a));
     --clay-c-drop: rgba(var(--clay-drop-rgb), var(--clay-drop-a));
     --clay-c-drop-float: rgba(var(--clay-drop-rgb), calc(var(--clay-drop-a) * 1.3));
-    --clay-c-lo-deep: rgba(var(--clay-shade-rgb), calc(var(--clay-lo-a) * 1.8));
+    --clay-c-lo-deep: rgba(var(--clay-shade-rgb), calc(var(--clay-lo-a) * 2.5));
     --clay-c-acc-hi: rgba(255, 255, 255, var(--clay-acc-hi-a));
-    --clay-c-acc-lo: rgba(var(--clay-acc-lo-rgb), calc(var(--clay-lo-a) * 1.3));
+    --clay-c-acc-lo: rgba(var(--clay-acc-lo-rgb), calc(var(--clay-lo-a) * 1.6));
     --clay-c-acc-drop: rgba(var(--role-accent-rgb), var(--clay-acc-drop-a));
+    --clay-field-up: max(var(--clay-field-depth), 0);
+    --clay-field-fill: color-mix(in srgb, var(--clay-field-raised-fill) calc(var(--clay-field-up) * 100%), var(--clay-field));
 
     --shadow-clay-sm:
       calc(var(--clay-d-sm) * var(--clay-lx)) calc(var(--clay-d-sm) * var(--clay-ky) * var(--clay-ly)) calc(var(--clay-d-sm) * var(--clay-kb)) 0 var(--clay-c-drop),
       inset calc(var(--clay-d-sm) * var(--clay-lx)) calc(var(--clay-d-sm) * var(--clay-ly)) calc(var(--clay-d-sm) * var(--clay-kib)) var(--clay-c-hi),
-      inset calc(var(--clay-d-sm) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-sm) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-sm) * var(--clay-kib) * 1.2) var(--clay-c-lo);
+      inset calc(var(--clay-d-sm) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-sm) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-sm) * var(--clay-ksb)) var(--clay-c-lo);
     --shadow-clay-md:
       calc(var(--clay-d-md) * var(--clay-lx)) calc(var(--clay-d-md) * var(--clay-ky) * var(--clay-ly)) calc(var(--clay-d-md) * var(--clay-kb)) 0 var(--clay-c-drop),
       inset calc(var(--clay-d-md) * var(--clay-lx)) calc(var(--clay-d-md) * var(--clay-ly)) calc(var(--clay-d-md) * var(--clay-kib)) var(--clay-c-hi),
-      inset calc(var(--clay-d-md) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-md) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-md) * var(--clay-kib) * 1.2) var(--clay-c-lo);
+      inset calc(var(--clay-d-md) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-md) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-md) * var(--clay-ksb)) var(--clay-c-lo);
     --shadow-clay-lg:
       calc(var(--clay-d-lg) * var(--clay-lx)) calc(var(--clay-d-lg) * var(--clay-ky) * var(--clay-ly)) calc(var(--clay-d-lg) * var(--clay-kb)) 0 var(--clay-c-drop),
       inset calc(var(--clay-d-lg) * var(--clay-lx)) calc(var(--clay-d-lg) * var(--clay-ly)) calc(var(--clay-d-lg) * var(--clay-kib)) var(--clay-c-hi),
-      inset calc(var(--clay-d-lg) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-lg) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-lg) * var(--clay-kib) * 1.2) var(--clay-c-lo);
+      inset calc(var(--clay-d-lg) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-lg) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-lg) * var(--clay-ksb)) var(--clay-c-lo);
     --shadow-clay-float:
       calc(var(--clay-d-float) * var(--clay-lx)) calc(var(--clay-d-float) * var(--clay-ky) * var(--clay-ly)) calc(var(--clay-d-float) * var(--clay-kb)) 0 var(--clay-c-drop-float),
       inset calc(var(--clay-d-float) * var(--clay-lx)) calc(var(--clay-d-float) * var(--clay-ly)) calc(var(--clay-d-float) * var(--clay-kib)) var(--clay-c-hi),
-      inset calc(var(--clay-d-float) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-float) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-float) * var(--clay-kib) * 1.2) var(--clay-c-lo);
+      inset calc(var(--clay-d-float) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-float) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-float) * var(--clay-ksb)) var(--clay-c-lo);
     --shadow-clay-row:
       inset calc(var(--clay-d-row) * var(--clay-lx)) calc(var(--clay-d-row) * var(--clay-ly)) calc(var(--clay-d-row) * var(--clay-kib)) var(--clay-c-hi),
-      inset calc(var(--clay-d-row) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-row) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-row) * var(--clay-kib) * 1.2) var(--clay-c-lo);
+      inset calc(var(--clay-d-row) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-row) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-row) * var(--clay-ksb)) var(--clay-c-lo);
     --shadow-clay-pill:
       inset calc(var(--clay-d-pill) * var(--clay-lx)) calc(var(--clay-d-pill) * var(--clay-ly)) calc(var(--clay-d-pill) * var(--clay-kib)) var(--clay-c-hi),
-      inset calc(var(--clay-d-pill) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-pill) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-pill) * var(--clay-kib) * 1.2) var(--clay-c-lo);
+      inset calc(var(--clay-d-pill) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-pill) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-pill) * var(--clay-ksb)) var(--clay-c-lo);
     --shadow-clay-field:
-      inset calc(var(--clay-d-md) * var(--clay-lx)) calc(var(--clay-d-md) * var(--clay-ly)) calc(var(--clay-d-md) * var(--clay-kib) * 1.2) var(--clay-c-lo),
-      inset calc(var(--clay-d-md) * -1 * var(--clay-lx)) calc(var(--clay-d-md) * -1 * var(--clay-ly)) calc(var(--clay-d-md) * var(--clay-kib)) var(--clay-c-hi);
+      calc(var(--clay-d-sm) * var(--clay-lx) * var(--clay-field-up)) calc(var(--clay-d-sm) * var(--clay-ky) * var(--clay-ly) * var(--clay-field-up)) calc(var(--clay-d-sm) * var(--clay-kb) * var(--clay-field-up)) 0 rgba(var(--clay-drop-rgb), calc(var(--clay-drop-a) * var(--clay-field-up))),
+      inset calc(var(--clay-d-sm) * var(--clay-lx) * var(--clay-field-depth)) calc(var(--clay-d-sm) * var(--clay-ly) * var(--clay-field-depth)) calc(var(--clay-d-sm) * var(--clay-kib)) var(--clay-c-hi),
+      inset calc(var(--clay-d-sm) * -1 * var(--clay-klo) * var(--clay-lx) * var(--clay-field-depth)) calc(var(--clay-d-sm) * -1 * var(--clay-klo) * var(--clay-ly) * var(--clay-field-depth)) calc(var(--clay-d-sm) * var(--clay-ksb)) rgba(var(--clay-shade-rgb), calc(var(--clay-lo-a) * (1 + 2 * (1 - var(--clay-field-up)))));
     --shadow-clay-pressed:
-      inset calc(var(--clay-d-sm) * 1.5 * var(--clay-lx)) calc(var(--clay-d-sm) * 1.5 * var(--clay-ly)) calc(var(--clay-d-sm) * 1.5 * var(--clay-kib) * 1.2) var(--clay-c-lo-deep),
+      inset calc(var(--clay-d-sm) * 1.5 * var(--clay-lx)) calc(var(--clay-d-sm) * 1.5 * var(--clay-ly)) calc(var(--clay-d-sm) * 1.5 * var(--clay-ksb)) var(--clay-c-lo-deep),
       inset calc(var(--clay-d-sm) * -1 * var(--clay-lx)) calc(var(--clay-d-sm) * -1 * var(--clay-ly)) calc(var(--clay-d-sm) * var(--clay-kib)) var(--clay-c-hi);
     --shadow-clay-accent:
       calc(var(--clay-d-sm) * var(--clay-lx)) calc(var(--clay-d-sm) * var(--clay-ky) * var(--clay-ly)) calc(var(--clay-d-sm) * var(--clay-kb)) 0 var(--clay-c-acc-drop),
       inset calc(var(--clay-d-sm) * var(--clay-lx)) calc(var(--clay-d-sm) * var(--clay-ly)) calc(var(--clay-d-sm) * var(--clay-kib)) var(--clay-c-acc-hi),
-      inset calc(var(--clay-d-sm) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-sm) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-sm) * var(--clay-kib) * 1.2) var(--clay-c-acc-lo);
+      inset calc(var(--clay-d-sm) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-sm) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-sm) * var(--clay-ksb)) var(--clay-c-acc-lo);
     --shadow-clay-accent-hover:
       calc(var(--clay-d-sm) * 1.5 * var(--clay-lx)) calc(var(--clay-d-sm) * 1.5 * var(--clay-ky) * var(--clay-ly)) calc(var(--clay-d-sm) * 1.5 * var(--clay-kb)) 0 var(--clay-c-acc-drop),
       inset calc(var(--clay-d-sm) * var(--clay-lx)) calc(var(--clay-d-sm) * var(--clay-ly)) calc(var(--clay-d-sm) * var(--clay-kib)) var(--clay-c-acc-hi),
-      inset calc(var(--clay-d-sm) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-sm) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-sm) * var(--clay-kib) * 1.2) var(--clay-c-acc-lo);
+      inset calc(var(--clay-d-sm) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-sm) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-sm) * var(--clay-ksb)) var(--clay-c-acc-lo);
     --shadow-clay-accent-row:
       inset calc(var(--clay-d-row) * var(--clay-lx)) calc(var(--clay-d-row) * var(--clay-ly)) calc(var(--clay-d-row) * var(--clay-kib)) var(--clay-c-acc-hi),
-      inset calc(var(--clay-d-row) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-row) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-row) * var(--clay-kib) * 1.2) var(--clay-c-acc-lo);
+      inset calc(var(--clay-d-row) * -1 * var(--clay-klo) * var(--clay-lx)) calc(var(--clay-d-row) * -1 * var(--clay-klo) * var(--clay-ly)) calc(var(--clay-d-row) * var(--clay-ksb)) var(--clay-c-acc-lo);
     --shadow-clay-accent-pressed:
-      inset calc(var(--clay-d-sm) * 1.5 * var(--clay-lx)) calc(var(--clay-d-sm) * 1.5 * var(--clay-ly)) calc(var(--clay-d-sm) * 1.5 * var(--clay-kib) * 1.2) rgba(var(--clay-acc-lo-rgb), calc(var(--clay-lo-a) * 2.2)),
+      inset calc(var(--clay-d-sm) * 1.5 * var(--clay-lx)) calc(var(--clay-d-sm) * 1.5 * var(--clay-ly)) calc(var(--clay-d-sm) * 1.5 * var(--clay-ksb)) rgba(var(--clay-acc-lo-rgb), calc(var(--clay-lo-a) * 3)),
       inset calc(var(--clay-d-sm) * -1 * var(--clay-lx)) calc(var(--clay-d-sm) * -1 * var(--clay-ly)) calc(var(--clay-d-sm) * var(--clay-kib)) var(--clay-c-acc-hi);
-    /* the fill of a button or chip: a very subtle light on top, warm shade underneath, laid over its own colour */
+    /* the fill of a button or chip: a very subtle light on top, warm shade underneath, laid over its own colour (a field has none) */
     --clay-fill:
       linear-gradient(180deg, color-mix(in srgb, rgb(var(--clay-hi-rgb)) var(--clay-grad), transparent) 0%, color-mix(in srgb, rgb(var(--clay-shade-rgb)) var(--clay-grad), transparent) 100%);
   }
@@ -891,6 +909,14 @@
   }
   :root[data-surface="clay"] :is(.bg-card.border.border-border.rounded-xl, li.rounded-xl.border, [role="dialog"], [role="tooltip"]:not(.sr-only)) {
     border-color: transparent;
+  }
+  /* Decorative rules drawn with a gray token (a row separator, a section rule, a header band edge, a divide-y list) take the same soft
+     warm line as the default divider; none of them is on a control. */
+  :root[data-surface="clay"] :is(.border-gray-200, .border-gray-300) {
+    border-color: var(--border);
+  }
+  :root[data-surface="clay"] :is(.divide-gray-200, .divide-border) > :not(:last-child) {
+    border-color: var(--border);
   }
   :root[data-surface="clay"] .bg-card.border.border-border.rounded-xl:not(li *, [role="dialog"]) {
     box-shadow: var(--shadow-clay-md);
@@ -1015,7 +1041,10 @@
      global :focus-visible outline all show as they do without clay. A field inside a row gets the radius and fill only. */
   :root[data-surface="clay"] :is(input:not([type="checkbox"], [type="radio"], [type="file"], [type="range"], [type="hidden"], [type="color"], [type="button"], [type="submit"]), select, textarea):not(:disabled) {
     border-radius: var(--clay-radius-control);
-    background-color: var(--clay-field);
+    background-color: var(--clay-field-fill);
+  }
+  :root[data-surface="clay"] :is(input:is([type="text"], [type="search"], [type="email"], [type="password"], [type="tel"], [type="url"], [type="number"], :not([type])), textarea) {
+    cursor: text;
   }
   :root[data-surface="clay"] :is(input:not([type="checkbox"], [type="radio"], [type="file"], [type="range"], [type="hidden"], [type="color"], [type="button"], [type="submit"]), select, textarea):not(:disabled, :focus, li *, td *, th *) {
     box-shadow: var(--shadow-clay-field);
