@@ -22,8 +22,8 @@ import { manilaToday } from "../lib/transfers";
 import { formatDayMonth } from "../lib/dateFormat";
 import { requestUnitsText, type RequestRow } from "../lib/requestTypes";
 import {
-  basisSummary, canGiveText, expiryLine, limitedHistoryNote, orderLabel, orderPrefill, outlookFor, statusWord, supplySentence, technicalBasisFor,
-  waitingRequests, type Outlook,
+  LIMITED_NOTE, PATTERN_GROUP, TREND_GROUP, basisSummary, canGiveText, expiryLine, forecastGroups, limitedHistoryNote, orderLabel, orderPrefill, outlookFor,
+  statusWord, supplySentence, technicalBasisFor, waitingRequests, type Outlook,
 } from "../lib/bankDashboard";
 
 // What a blood bank came for: what to do today. It holds a stock it manages rather than consumes, so the page is three
@@ -168,7 +168,7 @@ function StockAndOutlook(p: BankDashboardProps) {
           )}
           {p.forecast?.forecast_source === "synthetic_model_stand_in" && (
             <p className="text-synthetic-text font-semibold">
-              This outlook comes from a reference model, not this facility's own history yet. See Forecast details.
+              This outlook is an example pattern, not your own records yet. See Forecast details.
             </p>
           )}
           {p.forecast?.forecast_source === "none" && (
@@ -543,7 +543,7 @@ function TotalStockChart({ f, totalMinimum }: { f: ForecastView; totalMinimum: n
           {hasInterval && (
             <button
               type="button" onClick={() => setShowInterval((v) => !v)} aria-expanded={showInterval}
-              aria-label="What does the shaded band mean, technically?"
+              aria-label="What does the shaded band mean?"
               className="shrink-0 w-4 h-4 rounded-full border border-border text-[10px] font-bold text-muted-foreground hover:text-foreground hover:border-foreground flex items-center justify-center leading-none"
             >
               ?
@@ -553,8 +553,7 @@ function TotalStockChart({ f, totalMinimum }: { f: ForecastView; totalMinimum: n
       )}
       {hasInterval && chart.hasForecast && showInterval && (
         <p className="text-[12.5px] text-muted-foreground leading-snug mt-1">
-          Technically, this is a {Math.round((f.interval_confidence as number) * 100)}% prediction interval: wider with less history on file or further into the
-          future, narrowing as more real days accumulate.
+          The band is the range the total could realistically fall in. It is wider when there is less history or when looking further ahead.
         </p>
       )}
     </div>
@@ -593,6 +592,59 @@ function MethodByType({ f }: { f: ForecastView }) {
         </p>
       )}
     </>
+  );
+}
+
+// The panel's plain view: which blood types follow the usual pattern in the records and which continue the recent direction. An
+// empty group is not drawn. Chips are the same blood-type badges as everywhere; each group's heading names its list.
+function PlainGroups({ f }: { f: ForecastView }) {
+  const g = forecastGroups(f);
+  const groups = [
+    { id: "fd-pattern", ...PATTERN_GROUP, types: g.pattern },
+    { id: "fd-trend", ...TREND_GROUP, types: g.trend },
+  ].filter((x) => x.types.length > 0);
+  if (groups.length === 0) return null;
+  return (
+    <div className="space-y-4">
+      {groups.map((x) => (
+        <section key={x.id} aria-labelledby={`${x.id}-h`}>
+          <h3 id={`${x.id}-h`} className="text-[15px] font-semibold text-foreground">{x.heading}</h3>
+          <p className="text-[14px] text-foreground mt-0.5">{x.text}</p>
+          <ul aria-labelledby={`${x.id}-h`} className="mt-2 flex flex-wrap gap-1.5">
+            {x.types.map((t) => <li key={t}><BloodTypeBadge type={t} size="sm" /></li>)}
+          </ul>
+        </section>
+      ))}
+      {g.limited.length > 0 && <p className="text-[14px] text-foreground">{LIMITED_NOTE(g.limited, g.need)}</p>}
+    </div>
+  );
+}
+
+// The technical layer for administrators, exactly what the panel used to show: the method per blood type, the settings and where
+// they came from, the linear-trend explanation. A real button with aria-expanded, closed by default, last in the panel.
+function TechnicalDetails({ f }: { f: ForecastView }) {
+  const [open, setOpen] = useState(false);
+  const summaryLine = basisSummary(f);
+  return (
+    <section aria-labelledby="fd-tech-h" className="border-t border-gray-200 pt-4 max-w-[75ch]">
+      <h3 id="fd-tech-h" className="text-[15px] font-semibold text-foreground">
+        <button
+          type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-controls="fd-tech-body"
+          className="flex items-center gap-1.5 rounded-sm hover:underline hover:underline-offset-2 text-left"
+        >
+          <ChevronDown size={16} aria-hidden="true" className={`shrink-0 transition-transform ${open ? "" : "-rotate-90"}`} />
+          Technical details (for administrators)
+        </button>
+      </h3>
+      <div id="fd-tech-body" hidden={!open} className="mt-2 space-y-1.5 text-[15px] text-foreground">
+        {open && (
+          <>
+            {summaryLine && <p>{summaryLine}</p>}
+            <MethodByType f={f} />
+          </>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -665,7 +717,6 @@ function ForecastDetailsBody(p: BankDashboardProps) {
   }
 
   const real = f !== null && isRealForecastSource(f.forecast_source);
-  const summaryLine = basisSummary(f);
 
   return (
     <div className="mt-4 space-y-8">
@@ -678,8 +729,7 @@ function ForecastDetailsBody(p: BankDashboardProps) {
             {f.forecast_source === "synthetic_model_stand_in" && "The outlook above comes from a reference model, not this facility's own history yet."}
             {real && `Built from ${f.days_of_history} days of this facility's recorded stock. These are estimates, not guarantees.`}
           </p>
-          {summaryLine && <p>{summaryLine}</p>}
-          {real && <MethodByType f={f} />}
+          {real && <div className="pt-2"><PlainGroups f={f} /></div>}
           {f.forecast_source === "synthetic_model_stand_in" && (
             <p className="rounded-md border border-synthetic-border bg-synthetic-tint px-3 py-2 text-synthetic-text">
               <FlaskConical size={14} className="inline mr-1.5 -mt-0.5" aria-hidden="true" />
@@ -735,6 +785,8 @@ function ForecastDetailsBody(p: BankDashboardProps) {
           <UploadHistoryPanel uploadType="historical_stock" refreshKey={historyKey} onUndone={p.onForecastChanged} variant="flat" />
         </div>
       </div>
+
+      {real && f !== null && <TechnicalDetails f={f} />}
     </div>
   );
 }

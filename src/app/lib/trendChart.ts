@@ -191,6 +191,6 @@ export function describeTrendChart(
         : `Status: stays at or above the combined minimum of ${opts.totalMinimum} units throughout the projection.`,
     );
   }
-  if (opts.standIn) parts.push("The projection comes from a reference model, not this facility's own stock history.");
+  if (opts.standIn) parts.push("The projection comes from an example pattern, not this facility's own records.");
   return parts.join(" ");
 }

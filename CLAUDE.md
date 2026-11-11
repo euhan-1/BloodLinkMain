@@ -238,7 +238,37 @@ requests, SARIMAX demand forecasting, donor broadcast.
   basis tag is plain words, two states**: "From its own history" (any SARIMAX fit) or "Simple trend line" (the linear trend),
   plus "Not from your records yet" for the stand-in; no model names, settings or "optimized"-style claims there. The technical
   layer (SARIMAX, grid-searched / AI-recommended / default order, the full order label) is `technicalBasisFor` in
-  **Forecast details**, per blood type, worded as the API names it. A hospital has no forecast and no such tag. And "Order 90 by 4 Nov" opens Source supply with type, quantity and Packed RBC
+  **Forecast details**, per blood type, worded as the API names it. A hospital has no forecast and no such tag. **Forecast details is
+  plain language first** (2026-11-11; `PlainGroups`, `TechnicalDetails` and `forecastGroups` / `PATTERN_GROUP` / `TREND_GROUP` /
+  `LIMITED_NOTE` in `lib/bankDashboard.ts`; a bank-only panel, since a hospital has none): the opening line ("Built from N days of this
+  facility's recorded stock. These are estimates, not guarantees."), then two groups of blood-type chips, each drawn only when it has a
+  type: **"Follows your usual pattern"** (any type with a fitted model) and **"Continues the recent direction"** (the linear trend, and a
+  type absent from `sarimax_orders`); a type still being calculated is in neither, and the synthetic stand-in and "none" keep their own
+  paragraphs, no groups. A type whose own history is below the model's minimum (`insufficient_history`, or a recommendation carrying
+  `limited_history`) keeps its group and gets one extra line saying it is under N recorded days and rough too, because the pattern group's
+  own sentence would otherwise promise a pattern that six days of records cannot show. **Rule for forecast text a user reads: no model
+  name, setting, statistical term or percentage, and no word of accuracy, in the main view or in a tooltip or `aria-label`;** the check
+  script bans SARIMAX, ARIMA, grid, exogenous, order, seasonal, MAPE, RMSE, AIC, linear, lag, fit, model, %, accurate, reliab, best, precise, optimi and better from
+  the two group texts and the limited-history note, and a second check bans "prediction interval", "technically", "more reliable" and "95%" from the Dashboard's source. Everything technical (the per-type method and settings, the grid-searched / AI-recommended /
+  default-order flag, the "SARIMAX for 3 blood types, linear trend for 5" line, the linear-trend explanation) is **only** inside "Technical
+  details (for administrators)", the last thing in the panel: a real `button` in an `h3` with `aria-expanded` and `aria-controls`,
+  **closed by default** (its body is `hidden`, so none of it is in the page's text or tab order until opened), with exactly the words the
+  panel showed before. **The pattern group's sentence makes no comparison** ("These pick up weekly ups and downs and dengue season in your recorded stock."):
+  an earlier version said "They are more reliable", a claim the data does not back (the order selector's decision tree was measured not to
+  beat the default order on synthetic data, and the AI-order backtest on the one real facility was worse; see the selector JSON). The stand-in
+  paragraph still says "Synthetic, not real data ... trained on generated data" and its first line "comes from a reference model" (a disclosure
+  kept as it was; the Dashboard's own stand-in line and the chart's text alternative say "an example pattern, not your own records").
+  **Other Dashboard wording, plain too**: the At risk sentence says "the low end of the range it could realistically fall in" (no 95%), and
+  the shaded-band help says "The band is the range the total could realistically fall in. It is wider when there is less history or when
+  looking further ahead." (no "prediction interval"). **The badge and the Upload history "Refresh" link were fixed for dark contrast
+  (2026-11-11)**: the unselected `BloodTypeBadge` text and Refresh are `text-primary dark:text-foreground` (bank 3.78 and 4.1, hospital 2.67
+  and 2.89 before; 14.53 and 15.77 after, light unchanged at 7.38 to 11.5). **Still under 4.5:1 in the dark theme, measured and not changed**:
+  every other `text-primary` text (bank maroon 3.59 to 4.1, hospital navy 2.51 to 2.67): the active nav label, the nav's unread count, "Order 90
+  by 21 Nov", "Open the incoming list", "Review in inventory", "View all requests", "Released, confirm receipt", and the thread card's
+  status lines "Accepted, confirm release" / "Awaiting your decision". The "Link" half of the wordmark is a logotype. The fix would be one dark
+  token for accent text (a lighter navy and maroon), which is a new token and so the owner's call; `BloodTypeBadge`'s `selected` state
+  (white on the accent) is not used by any screen. `check_bank_dashboard.ts` and `check_accessibility.ts` assert all
+  of this. And "Order 90 by 4 Nov" opens Source supply with type, quantity and Packed RBC
   prefilled. `/inventory/expiring` writes no notification: expiring units are not one (see **Notifications**).
 - **"At risk"** is a third Dashboard outlook, between On track and an order: the central projection holds at or above the minimum at
   every checkpoint, but the lower bound of the 95% interval is below it at one (`_compute_downside_risk`; `/forecast` returns

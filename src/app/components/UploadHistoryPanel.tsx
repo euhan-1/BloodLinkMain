@@ -211,7 +211,7 @@ export function UploadHistoryPanel({ uploadType, refreshKey, onUndone, variant =
       <section aria-labelledby={headingId}>
         <div className="flex items-baseline justify-between gap-4">
           <h2 id={headingId} className="font-display font-bold text-xl tracking-tight text-foreground">Upload history</h2>
-          <button onClick={load} className="text-[14px] font-semibold text-primary rounded-sm hover:underline hover:underline-offset-2">
+          <button onClick={load} className="text-[14px] font-semibold text-primary dark:text-foreground rounded-sm hover:underline hover:underline-offset-2">
             Refresh
           </button>
         </div>

@@ -195,4 +195,19 @@ for (const file of ["src/app/screens/Login.tsx", "src/app/screens/ResetPassword.
   yes(/\.length < 8\b/.test(read(file)) && /at least 8 characters/.test(read(file)), `${file} checks and says 8, as the server does`);
 }
 
+// ── Forecast details: plain groups under the panel's h2, and the technical layer behind a real, closed-by-default button
+{
+  const src = bank.replace(/\r\n/g, "\n");
+  const tech = src.slice(src.indexOf("function TechnicalDetails"), src.indexOf("function TrendTooltip"));
+  yes(/const \[open, setOpen\] = useState\(false\)/.test(tech), "the technical section is closed by default");
+  yes(/<button\s+type="button" onClick=\{\(\) => setOpen\(\(v\) => !v\)\} aria-expanded=\{open\} aria-controls="fd-tech-body"/.test(tech), "the technical section's toggle is a real button with aria-expanded and aria-controls");
+  yes(/<div id="fd-tech-body" hidden=\{!open\}/.test(tech), "the toggle controls a region that is hidden (out of the tab order and the reading order) while closed");
+  yes(/<h3 id="fd-tech-h"/.test(tech) && /Technical details \(for administrators\)/.test(tech), "the toggle is the section's h3, named Technical details (for administrators)");
+  const plain = src.slice(src.indexOf("function PlainGroups"), src.indexOf("// The technical layer for administrators"));
+  yes(/<h3 id=\{`\$\{x\.id\}-h`\} className="text-\[15px\]/.test(plain) && !/<h[12]\b/.test(plain), "the plain groups' headings are h3 with a size, one level under the panel's h2");
+  yes(!/\btitle=|aria-label=/.test(plain), "the plain groups carry no title or aria-label of their own (their words are in the page)");
+  const body = src.slice(src.indexOf("function ForecastDetailsBody"));
+  yes(body.indexOf("<TechnicalDetails") > body.indexOf("<UploadHistoryPanel"), "the technical section comes after the plain content in DOM order, so it is after it in the tab order");
+}
+
 console.log("ok");

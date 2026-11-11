@@ -133,7 +133,7 @@ if (hit) throw new Error(`accuracy wording in trendChart.ts: ${hit[0]}`);
   const calculating = say(buildTrendChart({ history: northside }), { totalMinimum: 300 });
   if (!calculating.includes("still being calculated") || calculating.includes("Projected total")) throw new Error(`no forecast yet: ${calculating}`);
   const standIn = say(buildTrendChart({ history: northside, series: series(400), standIn: true }), { totalMinimum: 300, standIn: true });
-  if (!standIn.includes("reference model, not this facility's own stock history")) throw new Error(`a stand-in projection says what it is: ${standIn}`);
+  if (!standIn.includes("example pattern, not this facility's own records")) throw new Error(`a stand-in projection says what it is: ${standIn}`);
   const none = say(buildTrendChart({ series: series(400) }), { totalMinimum: 300 });
   if (!none.includes("No recorded days yet")) throw new Error(`nothing recorded: ${none}`);
 }

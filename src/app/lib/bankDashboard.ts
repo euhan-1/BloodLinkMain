@@ -2,7 +2,7 @@
 // outlook and the basis it rests on, the order link's prefill, and the expiring-unit lines. Kept apart from the view so
 // scripts/check_bank_dashboard.ts can assert it.
 
-import type { ForecastView } from "./forecastTypes.ts";
+import { isRealForecastSource, type ForecastView } from "./forecastTypes.ts";
 import { forecastSourceTag } from "./forecastSource.ts";
 import { formatDayMonth } from "./dateFormat.ts";
 import type { InventorySummaryRow } from "./inventoryTypes.ts";
@@ -69,7 +69,7 @@ export type Outlook =
 
 // What "At risk" means, in plain words. The date is the checkpoint the interval first reaches below the minimum, not a prediction of the day.
 export const atRiskSentence = (byDate: string, minimum: number | null): string =>
-  `Projected to hold, but could fall below ${minimum === null ? "its minimum" : minimum} by ${formatDayMonth(byDate)}. This is the low end of the 95% range; no order is suggested.`;
+  `Projected to hold, but could fall below ${minimum === null ? "its minimum" : minimum} by ${formatDayMonth(byDate)}. This is the low end of the range it could realistically fall in; no order is suggested.`;
 
 // One blood type's outlook, from /forecast. The projection is an estimate; it is only ever a column of its own, never folded
 // into a current stock figure.
@@ -213,4 +213,38 @@ export function expiryLine(g: ExpiringGroup): string {
   const verb = g.units === 1 ? "expires" : "expire";
   const when = g.days_left === 0 ? "today" : g.days_left === 1 ? `tomorrow (${formatDayMonth(g.expires_date)})` : `in ${g.days_left} days (${formatDayMonth(g.expires_date)})`;
   return `${g.units} ${plural(g.units, "unit", "units")} of ${g.component} ${verb} ${when}`;
+}
+
+// ── Forecast details, plain language ────────────────────────────────────────────────────────────────────────────────────────
+// The panel's main view says two things only: which blood types follow the usual pattern in the records (any SARIMAX fit) and
+// which continue the recent direction (the linear trend). No model names, settings or accuracy claims here; those live in the
+// "Technical details" section (technicalBasisFor, basisSummary). The wording is fixed so a check can ban jargon from it.
+export const PATTERN_GROUP = {
+  heading: "Follows your usual pattern",
+  text: "These pick up weekly ups and downs and dengue season in your recorded stock.",
+};
+export const TREND_GROUP = {
+  heading: "Continues the recent direction",
+  text: "There is not enough pattern in your records yet, so these continue the recent direction in a straight line. Treat them as rough and check them by eye.",
+};
+export const LIMITED_NOTE = (types: string[], need: number) =>
+  `${types.join(", ")}: fewer than ${need} recorded days so far, so treat ${types.length === 1 ? "this one" : "these"} as rough too.`;
+
+// Which blood types land in which group, in the app's blood-type order. Only a real-history forecast has groups; a type still
+// being calculated has none yet. `limited` are types (in either group) whose own history is below the model's minimum: they
+// keep their group but the panel says so, because "follows your usual pattern" is not true of six days of records.
+export function forecastGroups(f: ForecastView | null): { pattern: string[]; trend: string[]; limited: string[]; need: number } {
+  const out = { pattern: [] as string[], trend: [] as string[], limited: [] as string[], need: f?.sarimax_min_days_required ?? 30 };
+  if (f === null || !isRealForecastSource(f.forecast_source)) return out;
+  const thin = new Set([
+    ...(f.insufficient_history ?? []).map((x) => x.blood_type),
+    ...f.restock_recommendations.filter((r) => r.limited_history).map((r) => r.blood_type),
+  ]);
+  for (const t of BLOOD_TYPE_ORDER) {
+    const basis = technicalBasisFor(f, t);
+    if (basis === null) continue;
+    (basis.text === "Linear trend" ? out.trend : out.pattern).push(t);
+    if (thin.has(t)) out.limited.push(t);
+  }
+  return out;
 }

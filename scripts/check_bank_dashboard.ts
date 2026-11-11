@@ -1,7 +1,7 @@
 // Asserts what the blood bank Dashboard says (src/app/lib/bankDashboard.ts). Run: node scripts/check_bank_dashboard.ts
 import { readFileSync } from "node:fs";
 import {
-  ORDER_COMPONENT, basisFor, basisSummary, basisSummaryPlain, canGiveText, expiryLine, forecastExplainer, orderLabel, orderPrefill, outlookFor, sortedRows, supplySentence, technicalBasisFor, waitingRequests,
+  ORDER_COMPONENT, basisFor, basisSummary, basisSummaryPlain, canGiveText, expiryLine, atRiskSentence, forecastExplainer, forecastGroups, LIMITED_NOTE, PATTERN_GROUP, TREND_GROUP, orderLabel, orderPrefill, outlookFor, sortedRows, supplySentence, technicalBasisFor, waitingRequests,
 } from "../src/app/lib/bankDashboard.ts";
 import { formatDayMonth } from "../src/app/lib/dateFormat.ts";
 import { BLOOD_COMPONENTS } from "../src/app/lib/bloodComponents.ts";
@@ -189,5 +189,38 @@ if (/\(est\.\)/.test(view)) throw new Error("BankDashboard shows an estimate whe
 // the API's per-type fields are the ones the view reads
 const server = readFileSync(new URL("../server/main.py", import.meta.url), "utf8");
 for (const key of ["can_give", "projected_low_units", '"window_days"', '"total_units"', '"groups"']) if (!server.includes(key)) throw new Error(`the server does not return ${key}`);
+
+// ── Forecast details, plain language: which blood types land in which group, and where the technical words live
+const groupsOf = (x: ForecastView) => { const g = forecastGroups(x); return { pattern: g.pattern, trend: g.trend, limited: g.limited }; };
+eq(groupsOf(f), { pattern: ["A+", "B+", "O+"], trend: ["A-", "AB-", "AB+", "B-", "O-"], limited: [] }, "a fit with an order is in the pattern group, the rest on the recent direction, in blood-type order");
+eq(groupsOf(forecast({ sarimax_orders: {}, pending_types: [] })).pattern, [], "no fitted type: the pattern group is empty (and the panel hides it)");
+eq(groupsOf(forecast({ forecast_source: "linear_trend", sarimax_orders: undefined })), { pattern: [], trend: ["A-", "A+", "AB-", "AB+", "B-", "B+", "O-", "O+"], limited: [] }, "all linear: only the recent-direction group");
+const allFit = forecast({ sarimax_orders: Object.fromEntries(["A-", "A+", "AB-", "AB+", "B-", "B+", "O-", "O+"].map((t) => [t, "SARIMAX(1,1,1)x(1,0,1,7)+dengue [grid-searched]"])) });
+eq(groupsOf(allFit), { pattern: ["A-", "A+", "AB-", "AB+", "B-", "B+", "O-", "O+"], trend: [], limited: [] }, "all fitted: only the pattern group (the trend group is empty and hidden)");
+eq(groupsOf(forecast({ pending_types: ["A+", "O-"] })), { pattern: ["B+", "O+"], trend: ["A-", "AB-", "AB+", "B-"], limited: [] }, "a type still being calculated is in neither group");
+for (const src of ["none", "synthetic_model_stand_in"] as const) eq(groupsOf(forecast({ forecast_source: src })), { pattern: [], trend: [], limited: [] }, `${src}: no groups, the panel says its own state`);
+eq(groupsOf(forecast({ restock_recommendations: [{ blood_type: "A+", breach_date: "2026-11-04", days_until_breach: 4, recommended_units: 9, limited_history: { observed_days: 6, min_days_required: 30 } }] })).limited, ["A+"], "a fit on too few days keeps its group and is marked limited");
+eq(groupsOf(forecast({ insufficient_history: [{ blood_type: "O-", observed_days: 6, min_days_required: 30 }] })).limited, ["O-"], "a type with no recommendation and too few days is marked limited");
+eq(forecastGroups(null).pattern, [], "nothing loaded");
+// the plain copy: the owner's words, no jargon and no numbers
+eq(PATTERN_GROUP.heading + "|" + TREND_GROUP.heading, "Follows your usual pattern|Continues the recent direction", "the two headings");
+const plainCopy = [PATTERN_GROUP.heading, PATTERN_GROUP.text, TREND_GROUP.heading, TREND_GROUP.text, LIMITED_NOTE(["A+", "O-"], 30)].join(" ");
+for (const w of ["SARIMAX", "ARIMA", "grid", "exogenous", "order", "seasonal", "MAPE", "RMSE", "AIC", "linear", "lag", "fit", "model", "%", "guarantee", "accurate", "accuracy", "optimi", "better", "reliab", "best", "precise"])
+  if (new RegExp(w, "i").test(plainCopy)) throw new Error(`the plain panel copy contains "${w}"`);
+eq(PATTERN_GROUP.text, "These pick up weekly ups and downs and dengue season in your recorded stock.", "the pattern group's sentence makes no comparison");
+if (/95%|prediction interval|technically|reference model/i.test(atRiskSentence("2026-11-09", 10))) throw new Error("the At risk sentence uses a statistical term");
+// the panel: the opening line stays, the groups are drawn from forecastGroups, and every technical word lives in TechnicalDetails
+const panel = readFileSync(new URL("../src/app/screens/BankDashboard.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+if (!panel.includes("Built from ${f.days_of_history} days of this facility's recorded stock. These are estimates, not guarantees.")) throw new Error("the opening line changed");
+for (const w of ["prediction interval", "Technically", "technically", "more reliable", "95%"]) if (panel.includes(w)) throw new Error(`the Dashboard still says "${w}"`);
+const afterTech = panel.slice(panel.indexOf("function TechnicalDetails"), panel.indexOf("function TrendTooltip"));
+const body = panel.slice(panel.indexOf("function ForecastDetailsBody"));
+const bodyMain = body.slice(0, body.indexOf("{real && f !== null && <TechnicalDetails"));
+for (const w of ["basisSummary(", "<MethodByType", "SARIMAX", "grid-searched", "Linear trend"]) if (bodyMain.includes(w)) throw new Error(`the main view of the panel mentions ${w}`);
+if (!afterTech.includes("<MethodByType f={f} />") || !afterTech.includes("basisSummary(f)")) throw new Error("the technical section lost the method list or the summary line");
+if (!panel.includes("Technical details (for administrators)")) throw new Error("the technical section's title");
+const method = panel.slice(panel.indexOf("function MethodByType"), panel.indexOf("function PlainGroups"));
+for (const s of ["Linear trend</span> — a straight-line projection used where no SARIMAX fit was selected:", "r.label ?? r.basis!.title", "{r.basis!.text}"]) if (!method.includes(s)) throw new Error(`the technical list no longer shows: ${s}`);
+if (bodyMain.indexOf("<PlainGroups") < 0 || body.indexOf("<TechnicalDetails") < body.indexOf("<UploadHistoryPanel")) throw new Error("the groups are in the main view and the technical section comes after the upload");
 
 console.log("ok");

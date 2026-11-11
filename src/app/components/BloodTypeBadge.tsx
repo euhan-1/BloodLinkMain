@@ -28,6 +28,8 @@ export function StatusDot({ status }: { status: StatusLevel }) {
 // every 2-character type at the same size, so a column of badges never
 // actually lined up. Fixed width is sized for the widest case (AB-/AB+) and
 // every type sits inside the identical box regardless of its own length.
+// The unselected badge's text is the accent in the light theme and the foreground colour in the dark one: the dark accent is
+// 3.78:1 (bank maroon) and 2.67:1 (hospital navy) against a dark card, the foreground is above 14:1 on it.
 export const BLOOD_BADGE_SIZES = {
   sm: "h-6 w-[38px] text-[11.5px]",
   md: "h-7 w-11 text-[13px]",
@@ -49,7 +51,7 @@ export function BloodTypeBadge({ type, size = "md", selected = false, className 
       className={`inline-flex items-center justify-center rounded-md font-display font-bold tracking-tight leading-none ${BLOOD_BADGE_SIZES[size]} ${
         selected
           ? "bg-primary text-white"
-          : "bg-card text-primary border border-primary/25 shadow-sm"
+          : "bg-card text-primary dark:text-foreground border border-primary/25 shadow-sm"
       } ${className}`}
     >
       {type}
