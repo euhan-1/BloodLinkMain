@@ -2,9 +2,9 @@
 -- PostgreSQL database dump
 --
 
-\restrict CF9HgnSGDSkUdKkASL8JWeOPONGpib6Q42Jf7uwwgrzCZUcZyPr4rtOec0SVjMJ
+\restrict URPhQ7I1naZtgxqzL07fhLHXzfj1hH0ZLCv08ICuoGi4dTMtSbYsdFmfrrIs6dp
 
--- Dumped from database version 17.6
+-- Dumped from database version 17.11
 -- Dumped by pg_dump version 17.11
 
 SET statement_timeout = 0;
@@ -161,6 +161,45 @@ CREATE TABLE public.blood_units (
 
 ALTER TABLE public.blood_units ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
     SEQUENCE NAME public.blood_units_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: conversation_reads; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.conversation_reads (
+    conversation_id bigint NOT NULL,
+    facility_id bigint NOT NULL,
+    last_read_message_id bigint DEFAULT 0 NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: conversations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.conversations (
+    id bigint NOT NULL,
+    facility_low_id bigint NOT NULL,
+    facility_high_id bigint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT conversations_pair_ordered CHECK ((facility_low_id < facility_high_id))
+);
+
+
+--
+-- Name: conversations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.conversations ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.conversations_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -519,10 +558,11 @@ ALTER TABLE public.password_reset_requests ALTER COLUMN id ADD GENERATED ALWAYS 
 
 CREATE TABLE public.request_messages (
     id bigint NOT NULL,
-    request_id bigint NOT NULL,
+    request_id bigint,
     sender_facility_id bigint NOT NULL,
     message text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    conversation_id bigint
 );
 
 
@@ -898,6 +938,30 @@ ALTER TABLE ONLY public.blood_units
 
 
 --
+-- Name: conversation_reads conversation_reads_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_reads
+    ADD CONSTRAINT conversation_reads_pkey PRIMARY KEY (conversation_id, facility_id);
+
+
+--
+-- Name: conversations conversations_pair_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversations
+    ADD CONSTRAINT conversations_pair_unique UNIQUE (facility_low_id, facility_high_id);
+
+
+--
+-- Name: conversations conversations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversations
+    ADD CONSTRAINT conversations_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: donors donors_facility_id_phone_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1221,6 +1285,13 @@ CREATE INDEX idx_password_reset_requests_token_hash ON public.password_reset_req
 
 
 --
+-- Name: idx_request_messages_conversation; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_request_messages_conversation ON public.request_messages USING btree (conversation_id, id);
+
+
+--
 -- Name: idx_request_messages_request_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1349,6 +1420,38 @@ ALTER TABLE ONLY public.blood_units
 
 
 --
+-- Name: conversation_reads conversation_reads_conversation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_reads
+    ADD CONSTRAINT conversation_reads_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id);
+
+
+--
+-- Name: conversation_reads conversation_reads_facility_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversation_reads
+    ADD CONSTRAINT conversation_reads_facility_id_fkey FOREIGN KEY (facility_id) REFERENCES public.facilities(id);
+
+
+--
+-- Name: conversations conversations_facility_high_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversations
+    ADD CONSTRAINT conversations_facility_high_id_fkey FOREIGN KEY (facility_high_id) REFERENCES public.facilities(id);
+
+
+--
+-- Name: conversations conversations_facility_low_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.conversations
+    ADD CONSTRAINT conversations_facility_low_id_fkey FOREIGN KEY (facility_low_id) REFERENCES public.facilities(id);
+
+
+--
 -- Name: donors donors_facility_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1458,6 +1561,14 @@ ALTER TABLE ONLY public.otp_codes
 
 ALTER TABLE ONLY public.password_reset_requests
     ADD CONSTRAINT password_reset_requests_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id);
+
+
+--
+-- Name: request_messages request_messages_conversation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_messages
+    ADD CONSTRAINT request_messages_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES public.conversations(id);
 
 
 --
@@ -1592,5 +1703,5 @@ ALTER TABLE ONLY public.users
 -- PostgreSQL database dump complete
 --
 
-\unrestrict CF9HgnSGDSkUdKkASL8JWeOPONGpib6Q42Jf7uwwgrzCZUcZyPr4rtOec0SVjMJ
+\unrestrict URPhQ7I1naZtgxqzL07fhLHXzfj1hH0ZLCv08ICuoGi4dTMtSbYsdFmfrrIs6dp
 

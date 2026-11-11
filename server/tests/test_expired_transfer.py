@@ -48,11 +48,15 @@ def make_pair(test, tag):
 
 def delete_facilities(ids):
     reqs = "(SELECT id FROM requests WHERE requesting_facility_id = ANY(:f) OR supplying_facility_id = ANY(:f))"
+    convs = "(SELECT id FROM conversations WHERE facility_low_id = ANY(:f) OR facility_high_id = ANY(:f))"
     with engine.begin() as c:
         for sql in (
             f"DELETE FROM request_units WHERE request_id IN {reqs}",
             f"DELETE FROM request_unit_failures WHERE request_id IN {reqs}",
+            f"DELETE FROM conversation_reads WHERE conversation_id IN {convs}",
+            f"DELETE FROM request_messages WHERE conversation_id IN {convs}",
             f"DELETE FROM request_messages WHERE request_id IN {reqs}",
+            "DELETE FROM conversations WHERE facility_low_id = ANY(:f) OR facility_high_id = ANY(:f)",
             "DELETE FROM blood_units WHERE facility_id = ANY(:f)",
             "DELETE FROM requests WHERE requesting_facility_id = ANY(:f) OR supplying_facility_id = ANY(:f)",
             "DELETE FROM users WHERE facility_id = ANY(:f)",  # after requests: requests.*_by point at users

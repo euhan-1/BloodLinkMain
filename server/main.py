@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, EmailStr, StrictBool, field_validator
+from pydantic import BaseModel, EmailStr, Field, StrictBool, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
@@ -2464,8 +2464,9 @@ def list_notifications(limit: int = NOTIFICATIONS_PAGE_SIZE, before_id: Optional
 # screen polling its own endpoint. It answers "did anything change for my facility?" with small opaque tokens, one per section; the
 # page refetches only the section whose token moved. No websocket and no SSE: those hold a connection open per user on a one-worker,
 # 512 MB instance. Properties that matter, each tested in tests/test_sync.py:
-#   - ONE statement on the read engine (three aggregates and a tiny fourth, cross-joined: one round trip), so a poll costs 1 statement,
-#     plus the 30-second active-account check every other authenticated request has. It writes nothing and touches no rate limiter.
+#   - ONE statement on the read engine (three aggregates and a tiny fourth, and the two for messages, cross-joined: one round trip), so a
+#     poll costs 1 statement, plus the 30-second active-account check every other authenticated request has, plus (only until the process
+#     has seen the conversations migration) the readiness check. It writes nothing and touches no rate limiter.
 #   - Scoped to the caller's facility by construction: every aggregate is filtered by the acting facility, and tokens are hashes, so
 #     they say "something changed", never what, and never anything about another facility.
 #   - A token is a hash of (a count, a version value) over that facility's own rows:
@@ -2473,6 +2474,11 @@ def list_notifications(limit: int = NOTIFICATIONS_PAGE_SIZE, before_id: Optional
 #       inventory   every unit that still matters (not archived, or archived but not yet expired) hashed row by row, plus the facility's
 #                   thresholds, plus the Manila date (midnight expires units without touching a row)
 #       expiring    the same hash over the units a bank can still offer within NOTIFY_EXPIRY_NEAR_DAYS, plus the date
+#       messages    count + max id of the messages in the caller's own conversations (by conversation, or by request for a row with no
+#                   conversation yet) plus a hash of the caller's own read positions: it moves when a message arrives or is sent in any of
+#                   its conversations and when its read position moves (another tab), and says nothing about any other facility. Until the
+#                   conversations migration has been run the statement leaves the conversation parts out (_conversations_ready) and the token
+#                   covers the messages on the caller's requests alone.
 #     notifications is not a token but the two numbers the bell draws (unread and latest_id), which replace /notifications/unread-count's polling.
 #   - ETag / If-None-Match: the ETag is a hash of the whole payload; an unchanged answer is a bodyless 304.
 #   - Forecasts are NOT part of it: they are cached per Manila day and refetched by the Dashboard's own rules.
@@ -2488,7 +2494,7 @@ _SYNC_SQL = f"""
     SELECT ns.unread, ns.latest_id,
            rs.in_count, rs.in_max_id, rs.in_stamp, rs.out_count, rs.out_max_id, rs.out_stamp,
            us.units, us.units_hash, us.expiring_units, us.expiring_hash,
-           ts.thresholds_hash
+           ts.thresholds_hash/*@COLS*/
     FROM (
         SELECT (SELECT count(*) FROM notifications n
                 WHERE n.facility_id = :facility_id AND n.read_at IS NULL AND NOT COALESCE({_STALE_NOTIFICATION_SQL}, false)) AS unread,
@@ -2520,15 +2526,40 @@ _SYNC_SQL = f"""
     (
         SELECT COALESCE(sum(hashtextextended(concat_ws('|', blood_type, minimum_units, maximum_units), 0)), 0) AS thresholds_hash
         FROM blood_type_thresholds WHERE facility_id = :facility_id
-    ) ts
+    ) ts/*@FROM*/
 """
+_SYNC_SQL_TEMPLATE = _SYNC_SQL
+
+# The messages section. With the conversations migration in: the messages of the caller's conversations, or, for a row with no conversation
+# (written by an old server instance, or before the backfill), of its request's pair, plus the caller's own read positions.
+_SYNC_SQL = _SYNC_SQL_TEMPLATE.replace("/*@COLS*/", ", ms.msg_count, ms.msg_max_id, cr.reads_count, cr.reads_hash").replace("/*@FROM*/", """,
+    (
+        SELECT count(*) AS msg_count, COALESCE(max(m.id), 0) AS msg_max_id
+        FROM request_messages m
+        LEFT JOIN conversations c ON c.id = m.conversation_id
+        LEFT JOIN requests r ON r.id = m.request_id AND m.conversation_id IS NULL
+        WHERE (c.id IS NOT NULL AND :facility_id IN (c.facility_low_id, c.facility_high_id))
+           OR (r.id IS NOT NULL AND :facility_id IN (r.requesting_facility_id, r.supplying_facility_id))
+    ) ms,
+    (
+        SELECT count(*) AS reads_count, COALESCE(sum(hashtextextended(concat_ws('|', conversation_id, last_read_message_id), 0)), 0) AS reads_hash
+        FROM conversation_reads WHERE facility_id = :facility_id
+    ) cr""")
+# Before the migration: the messages on the caller's requests only, and no read positions.
+_SYNC_SQL_NO_CONVERSATIONS = _SYNC_SQL_TEMPLATE.replace("/*@COLS*/", ", ms.msg_count, ms.msg_max_id, 0 AS reads_count, 0 AS reads_hash").replace("/*@FROM*/", """,
+    (
+        SELECT count(*) AS msg_count, COALESCE(max(m.id), 0) AS msg_max_id
+        FROM request_messages m JOIN requests r ON r.id = m.request_id
+        WHERE :facility_id IN (r.requesting_facility_id, r.supplying_facility_id)
+    ) ms""")
 
 
 @retry_read
 def _read_sync_state(facility_id: int, today: date):
+    sql = _SYNC_SQL if _conversations_ready() else _SYNC_SQL_NO_CONVERSATIONS
     with read_engine.connect() as conn:
         return conn.execute(
-            text(_SYNC_SQL),
+            text(sql),
             {"facility_id": facility_id, "today": today, "last_day": today + timedelta(days=NOTIFY_EXPIRY_NEAR_DAYS)},
         ).mappings().first()
 
@@ -2543,6 +2574,7 @@ def _sync_payload(facility_id: int, today: date) -> dict:
         },
         "inventory": _token("inv", today, r["units"], r["units_hash"], r["thresholds_hash"]),
         "expiring": _token("exp", today, r["expiring_units"], r["expiring_hash"]),
+        "messages": _token("msg", r["msg_count"], r["msg_max_id"], r["reads_count"], r["reads_hash"]),
     }
 
 
@@ -5856,6 +5888,13 @@ def list_request_messages(request_id: int, facility_id: int = Depends(get_acting
 def send_request_message(
     request_id: int, body: SendRequestMessageBody, facility_id: int = Depends(get_acting_facility_id)
 ):
+    # Limited together with POST /conversations/{id}/messages (one allowance per facility, or the old endpoint would be the way round it).
+    keys = [f"fac:{facility_id}"]
+    _raise_if_limited(_MESSAGE_LIMITER, keys, "You are sending messages too quickly.")
+    _record_attempt(_MESSAGE_LIMITER, keys)
+    # The same table as the conversations: once the migration is in, the message also names its conversation (made if need be), so it
+    # shows in the pair's thread at once; before it, the old insert, unchanged (and the new code reads such a row by its request).
+    conversations = _conversations_ready()
     with engine.begin() as conn:
         req = _require_request_participant(conn, request_id, facility_id)
         # Coordination chat is for coordinating an actual transfer — sending
@@ -5869,20 +5908,526 @@ def send_request_message(
                 status_code=400,
                 detail=f"cannot send a message on a request with status {req['status']!r} — only accepted, completed or failed requests support messaging",
             )
-        row = conn.execute(
-            text(
-                """
-                INSERT INTO request_messages (request_id, sender_facility_id, message)
-                VALUES (:request_id, :facility_id, :message)
-                RETURNING id, request_id, sender_facility_id, message, created_at
-                """
-            ),
-            {"request_id": request_id, "facility_id": facility_id, "message": body.message},
-        ).mappings().first()
+        if conversations:
+            other = req["supplying_facility_id"] if req["requesting_facility_id"] == facility_id else req["requesting_facility_id"]
+            row = conn.execute(
+                text(
+                    """
+                    INSERT INTO request_messages (conversation_id, request_id, sender_facility_id, message)
+                    VALUES (:cid, :request_id, :facility_id, :message)
+                    RETURNING id, request_id, sender_facility_id, message, created_at
+                    """
+                ),
+                {"cid": _ensure_conversation(conn, facility_id, other), "request_id": request_id, "facility_id": facility_id, "message": body.message},
+            ).mappings().first()
+        else:
+            row = conn.execute(
+                text(
+                    """
+                    INSERT INTO request_messages (request_id, sender_facility_id, message)
+                    VALUES (:request_id, :facility_id, :message)
+                    RETURNING id, request_id, sender_facility_id, message, created_at
+                    """
+                ),
+                {"request_id": request_id, "facility_id": facility_id, "message": body.message},
+            ).mappings().first()
         sender_name = conn.execute(
             text("SELECT name FROM facilities WHERE id = :id"), {"id": facility_id}
         ).scalar()
     return {**dict(row), "sender_facility_name": sender_name}
+
+
+# ─── Conversations (one per pair of facilities) ─────────────────────────────
+# The Messages redesign, stage 1 (server only). A conversation is the whole exchange between two facilities, whatever requests exist between
+# them: the messages and, merged in time order, the status events of every request between the pair. Until now a chat was one per request
+# (GET/POST /requests/{id}/messages, kept below unchanged for the current frontend); both write the same table, request_messages.
+#
+#   - Lazy rows. A `conversations` row (one per pair, smaller facility id first) is created by the first message sent or the first time a
+#     thread is opened (POST /conversations/{id}/read), NEVER by create_request or a transition: those do not touch the table, so a
+#     missing row can never break one. Every read builds the pair list from the union of requests and conversations, so a pair with
+#     requests and no row still appears, and a message whose conversation_id is NULL (an old server instance, or a request's chat before the
+#     backfill) is read by way of its request's pair.
+#   - Who can see what. Every endpoint is the CALLER's view of the pair (caller, other_facility_id): a third facility asking about a pair it
+#     is not in is simply asking about its own pair with someone, which does not exist (404). Nothing here takes both facility ids.
+#   - Messaging is allowed whenever the pair has at least one request (any status). The old per-request gate (accepted, completed or failed)
+#     existed so one side could not write something the other could not see; in a conversation both sides see it.
+#   - Unread is a per-conversation count of the OTHER facility's messages after my read position (conversation_reads, one row per facility per
+#     conversation, moved forward only, only my own row). "Needs action" mirrors the frontend's rowActions / needsAction: the nav badge's
+#     rule, computed once here in SQL (_ACTION_SQL) and once in Python (_request_needs_my_action), and a test asserts they agree.
+#   - Rolling out. Run server/migrate_add_conversations.sql first. A server that comes up before it keeps working: _conversations_ready()
+#     says whether the tables exist (asked at most every CONVERSATIONS_RECHECK_SECONDS until it is true, then remembered), GET /sync omits the
+#     conversation parts of its statement until then, the old message endpoint writes the old way, and the new endpoints answer 503.
+CONVERSATION_FINISHED_PAGE = 5          # finished requests (completed, failed, declined, cancelled) shown before "show earlier"
+CONVERSATION_FINISHED_MAX_PAGE = 50
+CONVERSATION_MESSAGES_MAX = 500         # the newest this many messages of the window; `messages_truncated` says when some were left out
+CONVERSATION_PREVIEW_CHARS = 200        # the list's last-message text is cut to this
+MESSAGE_SEND_LIMIT = 30                 # messages per facility per window, across the new and the old send endpoint
+MESSAGE_SEND_WINDOW_SECONDS = 60
+CONVERSATIONS_RECHECK_SECONDS = 30
+OPEN_REQUEST_STATUSES = ("pending", "accepted")
+
+_MESSAGE_LIMITER = auth.AttemptLimiter(limit=MESSAGE_SEND_LIMIT, window=MESSAGE_SEND_WINDOW_SECONDS)
+
+_conversations_seen = False
+_conversations_checked_at: Optional[float] = None
+
+
+@retry_read
+def _conversations_ready() -> bool:
+    """True once server/migrate_add_conversations.sql has been applied (both tables and the column exist). A positive answer is remembered
+    for the life of the process; a negative one is asked again after CONVERSATIONS_RECHECK_SECONDS, so a deploy that went out before the
+    migration costs one extra statement every half minute, says so in the log, and starts using the tables by itself once they exist."""
+    global _conversations_seen, _conversations_checked_at
+    if _conversations_seen:
+        return True
+    now = time.monotonic()
+    if _conversations_checked_at is not None and now - _conversations_checked_at < CONVERSATIONS_RECHECK_SECONDS:
+        return False
+    with read_engine.connect() as conn:
+        ready = bool(conn.execute(
+            text(
+                "SELECT to_regclass('public.conversations') IS NOT NULL AND to_regclass('public.conversation_reads') IS NOT NULL "
+                "AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' "
+                "AND table_name = 'request_messages' AND column_name = 'conversation_id')"
+            )
+        ).scalar())
+    _conversations_checked_at = now
+    if ready:
+        _conversations_seen = True
+    else:
+        print("[conversations] the conversation tables are missing (run server/migrate_add_conversations.sql): the Messages endpoints answer 503")
+    return ready
+
+
+def _require_conversations() -> None:
+    if not _conversations_ready():
+        raise HTTPException(status_code=503, detail="messages are not available yet: the conversations migration has not been run on this database")
+
+
+def _pair(a: int, b: int) -> tuple[int, int]:
+    """The two facility ids as a conversation stores them: smaller first."""
+    return (a, b) if a < b else (b, a)
+
+
+# This facility has a move to make on the request: accept or decline an incoming one, confirm release of an accepted incoming one, confirm
+# receipt of an accepted outgoing one that was released. (Cancelling one's own pending request is not a move waiting on this facility.)
+# The same rule as needsAction / rowActions in src/app/lib/requestInbox.ts; _request_needs_my_action is the Python form of it.
+_ACTION_SQL = """(
+    (supplying_facility_id = :me AND (status = 'pending' OR (status = 'accepted' AND supplier_confirmed_at IS NULL)))
+    OR (requesting_facility_id = :me AND status = 'accepted' AND supplier_confirmed_at IS NOT NULL AND requester_confirmed_at IS NULL)
+)"""
+
+
+def _request_needs_my_action(req: dict, me: int) -> bool:
+    if req["supplying_facility_id"] == me:
+        return req["status"] == "pending" or (req["status"] == "accepted" and req["supplier_confirmed_at"] is None)
+    if req["requesting_facility_id"] == me:
+        return req["status"] == "accepted" and req["supplier_confirmed_at"] is not None and req["requester_confirmed_at"] is None
+    return False
+
+
+# Everything the list needs, in ONE statement: the pairs (requests and conversation rows united), each pair's request counts, last message,
+# my unread count and last activity. A message belongs to the conversation named by its conversation_id, or, when that is NULL, to its
+# request's pair.
+_CONVERSATION_LIST_SQL = f"""
+    WITH my_requests AS (
+        SELECT r.*, CASE WHEN r.requesting_facility_id = :me THEN r.supplying_facility_id ELSE r.requesting_facility_id END AS other_id
+        FROM requests r WHERE r.requesting_facility_id = :me OR r.supplying_facility_id = :me
+    ), my_conversations AS (
+        SELECT c.id AS conversation_id, c.created_at AS conversation_created_at,
+               CASE WHEN c.facility_low_id = :me THEN c.facility_high_id ELSE c.facility_low_id END AS other_id
+        FROM conversations c WHERE c.facility_low_id = :me OR c.facility_high_id = :me
+    ), my_messages AS (
+        SELECT m.id, m.sender_facility_id, m.message, m.created_at, COALESCE(mc.other_id, mr.other_id) AS other_id
+        FROM request_messages m
+        LEFT JOIN my_conversations mc ON mc.conversation_id = m.conversation_id
+        LEFT JOIN my_requests mr ON mr.id = m.request_id AND m.conversation_id IS NULL
+        WHERE mc.other_id IS NOT NULL OR mr.other_id IS NOT NULL
+    ), pairs AS (
+        SELECT other_id FROM my_requests UNION SELECT other_id FROM my_conversations
+    ), request_totals AS (
+        SELECT other_id, count(*) AS request_count,
+               count(*) FILTER (WHERE status IN ('pending', 'accepted')) AS open_count,
+               count(*) FILTER (WHERE {_ACTION_SQL}) AS action_count,
+               max(GREATEST(created_at, accepted_at, declined_at, cancelled_at, supplier_confirmed_at, requester_confirmed_at)) AS last_request_at
+        FROM my_requests GROUP BY other_id
+    ), last_message AS (
+        SELECT DISTINCT ON (other_id) other_id, id, sender_facility_id, message, created_at FROM my_messages ORDER BY other_id, id DESC
+    ), my_read AS (
+        SELECT mc.other_id, cr.last_read_message_id
+        FROM my_conversations mc JOIN conversation_reads cr ON cr.conversation_id = mc.conversation_id AND cr.facility_id = :me
+    ), unread AS (
+        SELECT mm.other_id, count(*) AS unread
+        FROM my_messages mm LEFT JOIN my_read r ON r.other_id = mm.other_id
+        WHERE mm.sender_facility_id <> :me AND mm.id > COALESCE(r.last_read_message_id, 0)
+        GROUP BY mm.other_id
+    )
+    SELECT p.other_id AS facility_id, f.name, f.facility_type, f.is_active,
+           lm.id AS last_message_id, lm.sender_facility_id AS last_message_sender_id,
+           left(lm.message, {CONVERSATION_PREVIEW_CHARS}) AS last_message_text, lm.created_at AS last_message_at,
+           COALESCE(u.unread, 0) AS unread, COALESCE(rt.action_count, 0) AS action_count,
+           COALESCE(rt.open_count, 0) AS open_count, COALESCE(rt.request_count, 0) AS request_count,
+           COALESCE(GREATEST(lm.created_at, rt.last_request_at), mc.conversation_created_at) AS last_activity_at
+    FROM pairs p
+    JOIN facilities f ON f.id = p.other_id
+    LEFT JOIN request_totals rt ON rt.other_id = p.other_id
+    LEFT JOIN last_message lm ON lm.other_id = p.other_id
+    LEFT JOIN unread u ON u.other_id = p.other_id
+    LEFT JOIN my_conversations mc ON mc.other_id = p.other_id
+    ORDER BY (COALESCE(rt.action_count, 0) > 0) DESC, last_activity_at DESC NULLS LAST, p.other_id
+"""
+
+
+@app.get("/conversations")
+@retry_read
+def list_conversations(facility_id: int = Depends(get_acting_facility_id)):
+    """One row per other facility this one has a request or a conversation with: the facility, the last message (cut to
+    CONVERSATION_PREVIEW_CHARS characters), how many of the other facility's messages are unread after my read position, how many
+    requests need MY action (the nav badge's rule), how many are open (pending or accepted), and the last activity (the newer of the last
+    message and a request moving; the conversation row's creation only for a pair with neither, so opening a thread never reorders the list). Ordered with a pair that needs my action first, then by latest activity, newest first.
+    `needs_action` at the top is the sum, the same figure the Requests tab badge shows. A pure read, one statement, on the read engine."""
+    _require_conversations()
+    with read_engine.connect() as conn:
+        rows = conn.execute(text(_CONVERSATION_LIST_SQL), {"me": facility_id}).mappings().all()
+    conversations = [
+        {
+            "facility": {"id": r["facility_id"], "name": r["name"], "facility_type": r["facility_type"], "is_active": r["is_active"]},
+            "last_message": None if r["last_message_id"] is None else {
+                "id": r["last_message_id"], "sender_facility_id": r["last_message_sender_id"], "text": r["last_message_text"],
+                "created_at": r["last_message_at"],
+            },
+            "unread": r["unread"],
+            "needs_action": r["action_count"],
+            "open_requests": r["open_count"],
+            "requests_total": r["request_count"],
+            "last_activity_at": r["last_activity_at"],
+        }
+        for r in rows
+    ]
+    return {"conversations": conversations, "needs_action": sum(c["needs_action"] for c in conversations)}
+
+
+# The pair's own facts in one statement: both facilities, the conversation row (if any), my read position, my unread count and the newest
+# message id. `conv` is empty for a pair that has requests and no row yet; the messages of such a pair are found by their request.
+_CONVERSATION_HEAD_SQL = """
+    WITH conv AS (SELECT id FROM conversations WHERE facility_low_id = :low AND facility_high_id = :high),
+    pair_requests AS (
+        SELECT id FROM requests
+        WHERE (requesting_facility_id = :low AND supplying_facility_id = :high) OR (requesting_facility_id = :high AND supplying_facility_id = :low)
+    ), pair_messages AS (
+        SELECT m.id, m.sender_facility_id FROM request_messages m
+        WHERE m.conversation_id IN (SELECT id FROM conv) OR (m.conversation_id IS NULL AND m.request_id IN (SELECT id FROM pair_requests))
+    ), pos AS (
+        SELECT COALESCE(max(cr.last_read_message_id), 0) AS p FROM conversation_reads cr
+        WHERE cr.facility_id = :me AND cr.conversation_id IN (SELECT id FROM conv)
+    )
+    SELECT f.id, f.name, f.facility_type, f.address, f.is_active,
+           (SELECT id FROM conv) AS conversation_id,
+           (SELECT p FROM pos) AS read_position,
+           (SELECT count(*) FROM pair_messages pm WHERE pm.sender_facility_id <> :me AND pm.id > (SELECT p FROM pos)) AS unread,
+           (SELECT COALESCE(max(id), 0) FROM pair_messages) AS last_message_id
+    FROM facilities f WHERE f.id IN (:me, :other)
+"""
+
+
+@app.get("/conversations/{other_facility_id}")
+@retry_read
+def get_conversation(
+    other_facility_id: int,
+    finished_limit: int = CONVERSATION_FINISHED_PAGE,
+    finished_before: Optional[int] = None,
+    facility_id: int = Depends(get_acting_facility_id),
+):
+    """The conversation between the caller's facility and `other_facility_id`, merged in time order: the messages and the status events of
+    every request between them (`thread`), plus each request's card data (`requests`: the request block, who did what and when, the units
+    released and received, whether it needs my action). 404 when the pair has no request and no conversation (which is all a third
+    facility can ever see of someone else's pair: it is asking about its own pair with the other).
+
+    Open requests (pending, accepted) are always in the first response. Finished ones (completed, failed, declined, cancelled) come as the
+    newest `finished_limit` (default 5, at most 50); `finished.has_more` says there are older ones, and `finished_before` = the oldest finished
+    request id already held returns the next page of older ones (only finished requests, with the messages and events of that time window).
+    Messages are limited to the window of the requests shown: from the oldest shown request's creation, or all of them when no finished
+    request is held back, at most CONVERSATION_MESSAGES_MAX (`messages_truncated`).
+
+    A pure read on the read engine, six statements, and it never creates the conversation row: opening the thread is POST
+    /conversations/{id}/read, which does."""
+    _require_conversations()
+    if other_facility_id == facility_id:
+        raise HTTPException(status_code=400, detail="a conversation is between two different facilities")
+    finished_limit = max(1, min(finished_limit, CONVERSATION_FINISHED_MAX_PAGE))
+    low, high = _pair(facility_id, other_facility_id)
+    with read_engine.connect() as conn:
+        heads = conn.execute(text(_CONVERSATION_HEAD_SQL), {"me": facility_id, "other": other_facility_id, "low": low, "high": high}).mappings().all()
+        facilities = {h["id"]: {"id": h["id"], "name": h["name"], "facility_type": h["facility_type"], "address": h["address"]} for h in heads}
+        if other_facility_id not in facilities:
+            raise HTTPException(status_code=404, detail="no conversation with this facility")
+        head = next(h for h in heads if h["id"] == other_facility_id)
+        reqs = [dict(r) for r in conn.execute(
+            text(
+                "SELECT * FROM requests WHERE (requesting_facility_id = :a AND supplying_facility_id = :b) "
+                "OR (requesting_facility_id = :b AND supplying_facility_id = :a) ORDER BY id"
+            ),
+            {"a": facility_id, "b": other_facility_id},
+        ).mappings().all()]
+        if not reqs and head["conversation_id"] is None:
+            raise HTTPException(status_code=404, detail="no conversation with this facility")
+
+        open_reqs = [r for r in reqs if r["status"] in OPEN_REQUEST_STATUSES]
+        finished = sorted((r for r in reqs if r["status"] not in OPEN_REQUEST_STATUSES), key=lambda r: r["id"], reverse=True)
+        until = None
+        if finished_before is None:
+            page = finished[:finished_limit]
+            shown = open_reqs + page
+            more = len(finished) > len(page)
+        else:
+            cursor = next((r for r in reqs if r["id"] == finished_before), None)
+            if cursor is None:
+                raise HTTPException(status_code=400, detail="finished_before is not a request of this conversation")
+            older = [r for r in finished if r["id"] < finished_before]
+            page = older[:finished_limit]
+            shown = page
+            more = len(older) > len(page)
+            until = cursor["created_at"]
+        since = min((r["created_at"] for r in shown), default=None) if more else None
+
+        shown_ids = [r["id"] for r in shown]
+        units, failures, emails = [], [], {}
+        if shown_ids:
+            units = [dict(r) for r in conn.execute(
+                text(
+                    "SELECT request_id, din, blood_type, component, volume_ml, collected_date, expires_date, origin_location, "
+                    "days_remaining_at_release, outcome, reason, days_remaining_at_receipt FROM request_units "
+                    "WHERE request_id = ANY(:ids) ORDER BY request_id, din"
+                ),
+                {"ids": shown_ids},
+            ).mappings().all()]
+            failures = [dict(r) for r in conn.execute(
+                text("SELECT request_id, din, reason FROM request_unit_failures WHERE request_id = ANY(:ids) ORDER BY request_id, din"),
+                {"ids": shown_ids},
+            ).mappings().all()]
+            actor_ids = sorted({r[k] for r in shown for k in ("accepted_by", "declined_by", "cancelled_by", "released_by", "received_by") if r[k] is not None})
+            if actor_ids:
+                emails = dict(conn.execute(text("SELECT id, email FROM users WHERE id = ANY(:ids)"), {"ids": actor_ids}).all())
+        messages = [dict(m) for m in conn.execute(
+            text(
+                """
+                SELECT m.id, m.request_id, m.sender_facility_id, f.name AS sender_facility_name, m.message, m.created_at
+                FROM request_messages m JOIN facilities f ON f.id = m.sender_facility_id
+                WHERE (m.conversation_id = :cid OR (m.conversation_id IS NULL AND m.request_id IN (
+                          SELECT id FROM requests
+                          WHERE (requesting_facility_id = :low AND supplying_facility_id = :high) OR (requesting_facility_id = :high AND supplying_facility_id = :low))))
+                  AND (CAST(:since AS timestamptz) IS NULL OR m.created_at >= :since)
+                  AND (CAST(:until AS timestamptz) IS NULL OR m.created_at < :until)
+                ORDER BY m.created_at DESC, m.id DESC LIMIT :cap
+                """
+            ),
+            {"cid": head["conversation_id"], "low": low, "high": high, "since": since, "until": until, "cap": CONVERSATION_MESSAGES_MAX + 1},
+        ).mappings().all()]
+    truncated = len(messages) > CONVERSATION_MESSAGES_MAX
+    messages = list(reversed(messages[:CONVERSATION_MESSAGES_MAX]))
+
+    names = {fid: f["name"] for fid, f in facilities.items()}
+    by_request_units: dict[int, list[dict]] = {}
+    for u in units:
+        by_request_units.setdefault(u["request_id"], []).append(u)
+    by_request_failures: dict[int, list[dict]] = {}
+    for f in failures:
+        by_request_failures.setdefault(f["request_id"], []).append(f)
+
+    cards, items = [], []
+    for req in sorted(shown, key=lambda r: r["id"]):
+        ledger = by_request_units.get(req["id"], [])
+        timeline = _request_timeline(req, names, emails, ledger, by_request_failures.get(req["id"], []))
+        received = next((e["outcome"] for e in timeline if e["kind"] == "received"), None)
+        cards.append({
+            "request": _request_block(req, facilities),
+            "direction": "outgoing" if req["requesting_facility_id"] == facility_id else "incoming",
+            "needs_my_action": _request_needs_my_action(req, facility_id),
+            "timeline": timeline,
+            "units": [{k: v for k, v in u.items() if k != "request_id"} for u in ledger],
+            "units_recorded": bool(ledger),
+            "summary": {
+                "asked": req["quantity"],
+                "received": received["arrived"] if received else None,
+                "failed": len(received["failed"]) if received else None,
+            },
+        })
+        for event in timeline:
+            items.append({"type": "event", "request_id": req["id"], **event})
+    for m in messages:
+        items.append({"type": "message", **m})
+    # Time order: an event at its own time (`order_at`, the previous event's when it has none), a message at its creation. At the same
+    # instant an event comes before a message, then by request id or message id; a request's events keep their lifecycle order (stable sort).
+    items.sort(key=lambda i: (i["order_at"], 0, i["request_id"]) if i["type"] == "event" else (i["created_at"], 1, i["id"]))
+
+    oldest_finished_shown = page[-1]["id"] if page else None
+    return {
+        "facility": facilities[other_facility_id],
+        "conversation_id": head["conversation_id"],
+        "read_position": head["read_position"],
+        "unread": head["unread"],
+        "last_message_id": head["last_message_id"],
+        "counts": {
+            "open_requests": len(open_reqs),
+            "needs_action": sum(1 for r in reqs if _request_needs_my_action(r, facility_id)),
+            "requests_total": len(reqs),
+        },
+        "requests": cards,
+        "thread": items,
+        "finished": {
+            "total": len(finished), "shown": len(page), "has_more": more,
+            "next_cursor": oldest_finished_shown if more else None,
+        },
+        "messages_truncated": truncated,
+    }
+
+
+def _pair_has_request(conn, a: int, b: int) -> bool:
+    return conn.execute(
+        text(
+            "SELECT 1 FROM requests WHERE (requesting_facility_id = :a AND supplying_facility_id = :b) "
+            "OR (requesting_facility_id = :b AND supplying_facility_id = :a) LIMIT 1"
+        ),
+        {"a": a, "b": b},
+    ).first() is not None
+
+
+def _ensure_conversation(conn, a: int, b: int) -> int:
+    """The conversation row of the pair, made if it does not exist yet. Safe under a race: the unique pair constraint decides, and the
+    loser reads the winner's row."""
+    low, high = _pair(a, b)
+    row = conn.execute(
+        text(
+            "INSERT INTO conversations (facility_low_id, facility_high_id) VALUES (:low, :high) "
+            "ON CONFLICT (facility_low_id, facility_high_id) DO NOTHING RETURNING id"
+        ),
+        {"low": low, "high": high},
+    ).first()
+    if row is not None:
+        return row[0]
+    return conn.execute(
+        text("SELECT id FROM conversations WHERE facility_low_id = :low AND facility_high_id = :high"), {"low": low, "high": high}
+    ).scalar()
+
+
+class SendConversationMessageBody(SendRequestMessageBody):
+    """`message` is trimmed, non-blank, at most 2000 characters (SendRequestMessageBody). `request_id`, when given, says which request the
+    message is about; it must be a request between the caller and the other facility."""
+    request_id: Optional[int] = None
+
+
+@app.post("/conversations/{other_facility_id}/messages")
+def send_conversation_message(
+    other_facility_id: int, body: SendConversationMessageBody, facility_id: int = Depends(get_acting_facility_id),
+):
+    """Send a message to another facility, optionally about one of the requests between them. Allowed whenever the two have at least one
+    request, whatever its status. Creates the conversation row if this is the first message. At most MESSAGE_SEND_LIMIT messages a minute
+    per facility (429 with Retry-After), counted whatever happens to the message, across this endpoint and POST /requests/{id}/messages."""
+    _require_conversations()
+    if other_facility_id == facility_id:
+        raise HTTPException(status_code=400, detail="a conversation is between two different facilities")
+    keys = [f"fac:{facility_id}"]
+    _raise_if_limited(_MESSAGE_LIMITER, keys, "You are sending messages too quickly.")
+    _record_attempt(_MESSAGE_LIMITER, keys)
+    with engine.begin() as conn:
+        other = conn.execute(
+            text("SELECT id, name, is_active FROM facilities WHERE id = :id"), {"id": other_facility_id}
+        ).mappings().first()
+        # An unknown facility and a facility with no request in common read the same, so this cannot be used to look facilities up.
+        if other is None or not _pair_has_request(conn, facility_id, other_facility_id):
+            raise HTTPException(status_code=404, detail="no conversation with this facility")
+        if body.request_id is not None:
+            about = conn.execute(
+                text(
+                    "SELECT 1 FROM requests WHERE id = :r AND ((requesting_facility_id = :a AND supplying_facility_id = :b) "
+                    "OR (requesting_facility_id = :b AND supplying_facility_id = :a))"
+                ),
+                {"r": body.request_id, "a": facility_id, "b": other_facility_id},
+            ).first()
+            if about is None:
+                raise HTTPException(status_code=400, detail="request_id is not a request between you and this facility")
+        if not other["is_active"]:
+            raise HTTPException(status_code=400, detail="this facility is not currently accepting messages")
+        cid = _ensure_conversation(conn, facility_id, other_facility_id)
+        row = conn.execute(
+            text(
+                """
+                INSERT INTO request_messages (conversation_id, request_id, sender_facility_id, message)
+                VALUES (:cid, :request_id, :facility_id, :message)
+                RETURNING id, conversation_id, request_id, sender_facility_id, message, created_at
+                """
+            ),
+            {"cid": cid, "request_id": body.request_id, "facility_id": facility_id, "message": body.message},
+        ).mappings().first()
+        sender_name = conn.execute(text("SELECT name FROM facilities WHERE id = :id"), {"id": facility_id}).scalar()
+    return {**dict(row), "sender_facility_name": sender_name}
+
+
+class MarkConversationReadBody(BaseModel):
+    up_to_message_id: Optional[int] = Field(default=None, ge=0)
+
+
+@app.post("/conversations/{other_facility_id}/read")
+def mark_conversation_read(
+    other_facility_id: int, body: Optional[MarkConversationReadBody] = None, facility_id: int = Depends(get_acting_facility_id),
+):
+    """Move MY read position in this conversation forward: to `up_to_message_id` (what the screen actually showed; never beyond the newest
+    message there is) or, with no body, to the newest message. Forward only (a smaller value changes nothing) and only my own row
+    (facility_id comes from the token, never the body). Creates the conversation row if this is the first time the thread is opened, which
+    is when the conversation row is made when no message has been sent yet."""
+    _require_conversations()
+    if other_facility_id == facility_id:
+        raise HTTPException(status_code=400, detail="a conversation is between two different facilities")
+    with engine.begin() as conn:
+        low, high = _pair(facility_id, other_facility_id)
+        exists = conn.execute(text("SELECT 1 FROM facilities WHERE id = :id"), {"id": other_facility_id}).first() is not None
+        has_row = conn.execute(
+            text("SELECT 1 FROM conversations WHERE facility_low_id = :low AND facility_high_id = :high"), {"low": low, "high": high}
+        ).first() is not None
+        if not exists or not (has_row or _pair_has_request(conn, facility_id, other_facility_id)):
+            raise HTTPException(status_code=404, detail="no conversation with this facility")
+        cid = _ensure_conversation(conn, facility_id, other_facility_id)
+        latest = conn.execute(
+            text(
+                """
+                SELECT COALESCE(max(m.id), 0) FROM request_messages m
+                WHERE m.conversation_id = :cid OR (m.conversation_id IS NULL AND m.request_id IN (
+                      SELECT id FROM requests
+                      WHERE (requesting_facility_id = :low AND supplying_facility_id = :high) OR (requesting_facility_id = :high AND supplying_facility_id = :low)))
+                """
+            ),
+            {"cid": cid, "low": low, "high": high},
+        ).scalar()
+        target = latest if body is None or body.up_to_message_id is None else min(body.up_to_message_id, latest)
+        position = conn.execute(
+            text(
+                """
+                INSERT INTO conversation_reads (conversation_id, facility_id, last_read_message_id)
+                VALUES (:cid, :me, :target)
+                ON CONFLICT (conversation_id, facility_id) DO UPDATE
+                SET last_read_message_id = GREATEST(conversation_reads.last_read_message_id, EXCLUDED.last_read_message_id),
+                    updated_at = CASE WHEN EXCLUDED.last_read_message_id > conversation_reads.last_read_message_id
+                                      THEN now() ELSE conversation_reads.updated_at END
+                RETURNING last_read_message_id
+                """
+            ),
+            {"cid": cid, "me": facility_id, "target": target},
+        ).scalar()
+        unread = conn.execute(
+            text(
+                """
+                SELECT count(*) FROM request_messages m
+                WHERE m.sender_facility_id <> :me AND m.id > :pos
+                  AND (m.conversation_id = :cid OR (m.conversation_id IS NULL AND m.request_id IN (
+                      SELECT id FROM requests
+                      WHERE (requesting_facility_id = :low AND supplying_facility_id = :high) OR (requesting_facility_id = :high AND supplying_facility_id = :low))))
+                """
+            ),
+            {"cid": cid, "me": facility_id, "pos": position, "low": low, "high": high},
+        ).scalar()
+    return {"conversation_id": cid, "last_read_message_id": position, "unread": unread}
+
+
 
 
 # ─── Auth (Step 6A) ─────────────────────────────────────────────────────────

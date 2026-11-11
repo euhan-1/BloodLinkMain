@@ -388,7 +388,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
   403 for a deactivated facility or an admin; the facility is whichever `get_acting_facility_id` resolves, like every facility endpoint), on
   `read_engine` (in `READ_ONLY_FUNCTIONS`) and **one statement** (measured 2026-11-10 through the logging proxy: 1 round trip, plus 1 more
   at most every 30 s for the active-account check, which any request shares); it writes nothing and no rate limiter sees it. It returns
-  `{notifications: {unread, latest_id}, requests: {incoming, outgoing}, inventory, expiring}` (about 150 bytes) with an `ETag`
+  `{notifications: {unread, latest_id}, requests: {incoming, outgoing}, inventory, expiring, messages}` (about 175 bytes) with an `ETag`
   (a hash of the payload) and `Cache-Control: private, no-cache`; a matching `If-None-Match` gets a bodyless 304. Tokens are 12 hex
   characters hashed from a count and a version value over the caller's own rows, so they say "something changed", never what, and
   nothing about another facility. **`requests.*`**: count + max id + the newest of `created_at`/`accepted_at`/`declined_at`/
@@ -396,7 +396,12 @@ requests, SARIMAX demand forecasting, donor broadcast.
   to that `GREATEST`). **`inventory`**: a row-by-row hash (`sum(hashtextextended(...))`, order-independent, since `blood_units` has no
   `updated_at`) of every unit that still matters (not archived, or archived but not yet expired: the units `USABLE_COUNTS_SQL` can
   count) plus the facility's thresholds plus the Manila date (midnight expires units without touching a row). **`expiring`**: the same
-  hash over `OFFERABLE_UNITS_SQL`'s units inside `NOTIFY_EXPIRY_NEAR_DAYS`, plus the date. **notifications** are two numbers, not a token;
+  hash over `OFFERABLE_UNITS_SQL`'s units inside `NOTIFY_EXPIRY_NEAR_DAYS`, plus the date. **`messages`** (added with the conversations, 2026-11-11): count + max id of the messages in the caller's own conversations (a message with
+  no `conversation_id` is counted by its request's pair) plus a hash of the caller's own `conversation_reads` rows, so it moves when a
+  message arrives or is sent in any of its conversations and when its own read position moves (another tab), and says nothing about any other
+  facility; still one statement. **Until the conversations migration has been run** the statement leaves the conversation parts out (the token
+  then covers the messages on the caller's requests alone), chosen by `_conversations_ready()`, which costs one extra statement the first
+  time per process (and one every 30 s while the migration is missing), then none. No frontend uses the token yet (stage 2). **notifications** are two numbers, not a token;
   they replace the unread-count polling, and `_STALE_NOTIFICATION_SQL` is the one definition of "resolved" for the sweep, the count and
   `/sync`. The 12 hex characters are not secret, only unreadable. **Frontend**: `LiveSync` (pure, injected network, clock and visibility)
   has exactly one pending timer for the whole app (the check script asserts it). **Each subscription carries its own baseline**, the
@@ -418,6 +423,49 @@ requests, SARIMAX demand forecasting, donor broadcast.
   never a lost update; a facility's own write moves its own token, so it costs one extra silent refetch; `latest_id` is `max(id)` over the
   facility's notifications, which scans more as history grows (an `(facility_id, id DESC)` index would make it a lookup: not added);
   the admin screens, the donor list and the hospital sourcing search are not covered.
+- **Conversations** (Messages redesign, **stage 1 of 2: server side only, no frontend yet**; `main.py`, "Conversations";
+  `server/migrate_add_conversations.sql` and `server/migrate_conversations_part2_not_null.sql`, **both files only, never run by anything in
+  the repo and not yet applied to production**; `tests/test_conversations.py`, `tests/test_sync.py`, `docs/build_data_dictionary.py`). One
+  conversation per **pair of facilities**, whatever requests exist between them (`conversations`: the pair stored once, smaller id first, a
+  CHECK and a UNIQUE keep it so; `conversation_reads`: one row per facility per conversation, the id of the last message it has read;
+  `request_messages` gained a nullable `conversation_id` and `request_id` is nullable: a message may be about no request).
+  **Rows are lazy**: a `conversations` row is made by the first message sent or the first time a thread is opened (`POST
+  /conversations/{id}/read`), **never by `create_request` or a transition**, and a test fails if any of those six functions' source mentions
+  a conversation. Every read builds the pair list from the union of requests and conversation rows, and a message whose `conversation_id` is
+  NULL (an old server instance, or before the backfill) is read by way of its request's pair, so a missing row breaks nothing and nothing is
+  hidden. Endpoints (the caller's own view of the pair; the other facility is the path, named `other_facility_id`, and **nothing takes both ids,
+  so a third facility is only ever asking about its own pair with someone, which is 404**; an unknown facility and a facility with no request in
+  common read the same):
+  `GET /conversations` (**one statement, `read_engine`**: per other facility the facility, last message cut to 200 characters, unread count after
+  my read position, requests needing MY action, open requests, total, last activity; ordered **action-waiting first, then latest activity**, the
+  conversation row's creation counting only for a pair with neither a message nor a request, so opening a thread never reorders the list);
+  `GET /conversations/{id}` (**six statements at most, `read_engine`, creates nothing**: `thread` = the messages and every request's status events
+  merged in time order, an event at its own time or the previous event's when it has none, an event before a message at the same instant;
+  `requests` = each card's data: the `_request_block`, direction, `needs_my_action`, the timeline with who did what and when, the units
+  released and received, the summary, identical to `GET /requests/{id}`; `counts`; `unread`, `read_position`; **open requests always, finished
+  ones the newest 5 (`finished_limit`, at most 50) with `finished.has_more` and `finished_before` = the oldest finished id held for "show
+  earlier"**, the messages limited to the shown requests' window and to 500, `messages_truncated`);
+  `POST /conversations/{id}/messages` (body trimmed, non-blank, 2000 characters in Pydantic, optional `request_id` that must be a request
+  between the two, else 400; **allowed whenever the pair has at least one request of any status**, which replaces the old accepted/completed/
+  failed gate because in a conversation both sides see the message; a deactivated counterpart cannot be messaged; **30 a minute per facility**,
+  `_MESSAGE_LIMITER`, the existing `AttemptLimiter` design, every attempt counted, 429 with `Retry-After`, **shared with the old endpoint** so it
+  is not a way round); `POST /conversations/{id}/read` (moves **my** read position forward only, never beyond the newest message, only my own
+  row: the facility is the token's, the body can only carry `up_to_message_id`). **"Needs action" is the nav badge's rule** (accept or decline an
+  incoming pending request, confirm release of an accepted incoming one, confirm receipt of an accepted outgoing one that was released; never
+  cancel), written once in SQL (`_ACTION_SQL`) and once in Python (`_request_needs_my_action`, the form of `rowActions` / `needsAction` in
+  `lib/requestInbox.ts`), and a test asserts they agree on every status. **The old per-request endpoints are unchanged to a caller**
+  (`GET`/`POST /requests/{id}/messages`, the same gate and shapes), and write the same table: once the migration is in the old POST also sets
+  `conversation_id` (making the row if need be) so its message is in the conversation at once, and it draws on the same send allowance. A message sent
+  the new way with a `request_id` shows in the old per-request list; one about no request does not. **Deploy-order safety**:
+  `_conversations_ready()` (positive answers remembered for the process, negative ones re-asked every 30 s and logged) lets a server that comes
+  up **before** the migration keep working: the new endpoints answer 503 ("the conversations migration has not been run"), `/sync` leaves the
+  conversation parts out, the old POST writes the old way. **Order**: backup, part 1, deploy the server, then part 2 (NOT NULL), which is the
+  only step that can make an old writer fail and has its own file; see the header of each file, which is the instruction. The unread count is
+  per facility and server-side (`conversation_reads`), after the owner's decision for option 2 of the proposal; the nav badge stays
+  "needs action". The privacy notice's chat statements ("what you type in a request's chat", "they also see ... the chat") are still true
+  while no screen sends a message about no request; **stage 2 should reword them to a conversation and mention the stored read position**, and
+  raise the consent version only if a statement becomes false. `docs/DATA_DICTIONARY.md` was **not** regenerated (it introspects production,
+  which does not have the tables yet): `docs/build_data_dictionary.py` has the descriptions and was dry-run against the scratch database.
 - **Privacy notice and consent (RA 10173)** (`/privacy`, `screens/PrivacyNotice.tsx`, text as data in `lib/privacyNotice.ts`,
   `scripts/check_privacy.ts`, `tests/test_privacy_consent.py`, `server/migrate_add_privacy_consent.sql`). `/privacy` is handled in `App.tsx`
   before the signed-in branches (works signed out and signed in) and is linked from sign-in, Register and the account menu. **Every
@@ -490,7 +538,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (765 tests plus
+  local scratch Postgres: `python -m pytest server/tests -q` (844 tests plus
   160 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
@@ -527,6 +575,11 @@ requests, SARIMAX demand forecasting, donor broadcast.
   and add what differs by hand in `pg_dump`'s format. That compares table, column, constraint and index **names**; it does not compare
   column types, defaults or index definitions of indexes the file already has, so it is weaker than a real dump. Only the five indexes
   above differed. The pytest run (conftest rebuilds the scratch schema from this file) confirms the file loads, nothing more.
+  **2026-11-11 the file was regenerated from the scratch Postgres, not from production**: a real `pg_dump` 17 (`C:\Program Files\PostgreSQL\17\bin`,
+  the scratch server is 17.11) of the scratch database after `migrate_add_conversations.sql` (part 1 only) was applied to it. Against the previous
+  file the only differences are the two new tables, the `conversation_id` column, `request_id` losing NOT NULL, one index, the constraints and
+  keys of the new tables, and the header's server version (17.6 to 17.11). It reflects production **after part 1**, not after part 2. Regenerate
+  it from production once the migration has been run, as above, and the two should match.
 - **Don't report a measurement you didn't take.** Say UNKNOWN. Check that the
   deployed code actually contains the feature before measuring it there.
 - **Check what you fed a statistical test** before believing its result. Use

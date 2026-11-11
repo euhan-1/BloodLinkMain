@@ -28,7 +28,7 @@ def payload(facility, today=TODAY):
 def flat(p):
     return {"unread": p["notifications"]["unread"], "latest_id": p["notifications"]["latest_id"],
             "incoming": p["requests"]["incoming"], "outgoing": p["requests"]["outgoing"],
-            "inventory": p["inventory"], "expiring": p["expiring"]}
+            "inventory": p["inventory"], "expiring": p["expiring"], "messages": p["messages"]}
 
 
 def moved(before, after):
@@ -63,6 +63,7 @@ class SyncBase(TransitionBase):
 
     def setUp(self):
         app._active_account_until.clear()
+        self.assertTrue(app._conversations_ready())   # remembered from here on: a poll is then one statement (the first call per process asks)
         super().setUp()
         self.other_bank, self.other_hospital = make_pair(self, self.tag + "X")
         with engine.begin() as c:
@@ -86,12 +87,12 @@ class SyncBase(TransitionBase):
 class ShapeTests(SyncBase):
     def test_the_payload_is_small_and_opaque(self):
         p = payload(self.bank)
-        self.assertEqual(set(p), {"notifications", "requests", "inventory", "expiring"})
+        self.assertEqual(set(p), {"notifications", "requests", "inventory", "expiring", "messages"})
         self.assertEqual(set(p["notifications"]), {"unread", "latest_id"})
         self.assertEqual(set(p["requests"]), {"incoming", "outgoing"})
-        for token in (p["requests"]["incoming"], p["requests"]["outgoing"], p["inventory"], p["expiring"]):
+        for token in (p["requests"]["incoming"], p["requests"]["outgoing"], p["inventory"], p["expiring"], p["messages"]):
             self.assertRegex(token, TOKEN)
-        self.assertLess(len(json.dumps(p)), 250)
+        self.assertLess(len(json.dumps(p)), 280)
 
     def test_the_same_state_gives_the_same_answer(self):
         self.assertEqual(payload(self.bank), payload(self.bank))
@@ -252,6 +253,104 @@ class IsolationTests(SyncBase):
         self.assertNotEqual(payload(self.bank)["requests"]["incoming"], nothing)
         self.assertEqual(payload(self.other_bank)["requests"]["incoming"], nothing)       # still nothing for the unrelated bank
         self.assertEqual(payload(self.other_hospital)["requests"]["outgoing"], app._token("out", 0, 0, None))
+
+
+class MessageTokenTests(SyncBase):
+    """The messages token moves when a message arrives or is sent in any of the caller's conversations and when its own read position
+    moves, and for no one else (see "Live sync" in main.py)."""
+
+    def setUp(self):
+        super().setUp()
+        self.rid = self.new_request()
+
+    def send(self, sender, other, text_="hi", request_id=None):
+        return app.send_conversation_message(other, app.SendConversationMessageBody(message=text_, request_id=request_id), facility_id=sender)
+
+    def test_a_new_message_moves_both_partys_token_and_nothing_else_for_anyone(self):
+        before = self.snapshot()
+        self.send(self.hospital, self.bank)
+        self.assertOnlyMoved(before, {self.bank: ["messages"], self.hospital: ["messages"]})
+
+    def test_a_message_sent_the_old_way_moves_it_too(self):
+        self.accept(self.rid)
+        before = self.snapshot()
+        app.send_request_message(self.rid, app.SendRequestMessageBody(message="old"), facility_id=self.bank)
+        self.assertOnlyMoved(before, {self.bank: ["messages"], self.hospital: ["messages"]})
+
+    def test_a_row_with_no_conversation_id_moves_it_by_way_of_its_request(self):
+        before = self.snapshot()
+        with engine.begin() as c:
+            c.execute(text("INSERT INTO request_messages (request_id, sender_facility_id, message) VALUES (:r, :s, 'from an old instance')"),
+                      {"r": self.rid, "s": self.hospital})
+        self.assertOnlyMoved(before, {self.bank: ["messages"], self.hospital: ["messages"]})
+
+    def test_reading_moves_only_the_readers_token_and_a_read_that_changes_nothing_moves_nothing(self):
+        self.send(self.hospital, self.bank)
+        before = self.snapshot()
+        app.mark_conversation_read(self.hospital, None, facility_id=self.bank)
+        after = self.assertOnlyMoved(before, {self.bank: ["messages"]})
+        app.mark_conversation_read(self.hospital, None, facility_id=self.bank)       # forward only: nothing to move
+        self.assertEqual(self.snapshot(), after)
+
+    def test_opening_a_thread_that_has_no_messages_yet_moves_only_the_openers_token(self):
+        before = self.snapshot()
+        app.mark_conversation_read(self.hospital, None, facility_id=self.bank)
+        self.assertOnlyMoved(before, {self.bank: ["messages"]})
+
+    def test_another_pairs_conversation_is_invisible(self):
+        with engine.begin() as c:
+            rid = c.execute(text("INSERT INTO requests (requesting_facility_id, supplying_facility_id, blood_type, quantity, emergency_type, status, component) "
+                                 "VALUES (:h, :b, 'O+', 1, 'restock', 'pending', 'Packed RBC') RETURNING id"), {"h": self.other_hospital, "b": self.other_bank}).scalar()
+        before = self.snapshot()
+        self.send(self.other_hospital, self.other_bank, "elsewhere", request_id=rid)
+        app.mark_conversation_read(self.other_hospital, None, facility_id=self.other_bank)
+        self.assertOnlyMoved(before, {self.other_bank: ["messages"], self.other_hospital: ["messages"]})
+
+    def test_the_token_says_nothing_but_that_something_changed(self):
+        a = payload(self.bank)["messages"]
+        self.send(self.hospital, self.bank, "secret text")
+        b = payload(self.bank)["messages"]
+        self.assertNotEqual(a, b)
+        self.assertRegex(b, TOKEN)
+        self.assertNotIn("secret", json.dumps(payload(self.bank)))
+
+    def test_the_etag_and_the_304_follow_it(self):
+        with engine.begin() as c:
+            uid = c.execute(text("INSERT INTO users (email, password_hash, facility_id, role) VALUES (:e, 'x', :f, 'staff') RETURNING id"),
+                            {"e": f"msg-{self.tag}@example.com", "f": self.bank}).scalar()
+        token = auth.create_access_token(user_id=uid, email="x@example.com", facility_id=self.bank, role="staff")
+        headers = [("authorization", f"Bearer {token}")]
+        status, h, _ = get("/sync", headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(get("/sync", headers + [("if-none-match", h["etag"])])[0], 304)
+        self.send(self.hospital, self.bank)
+        status, h2, _ = get("/sync", headers + [("if-none-match", h["etag"])])
+        self.assertEqual(status, 200)
+        self.assertNotEqual(h2["etag"], h["etag"])
+
+    def test_the_first_poll_of_a_process_also_asks_if_the_migration_is_in_and_never_again(self):
+        def count():
+            seen = []
+            record = lambda c, cur, statement, *a: seen.append(statement)  # noqa: E731
+            event.listen(read_engine, "before_cursor_execute", record)
+            try:
+                payload(self.bank)
+            finally:
+                event.remove(read_engine, "before_cursor_execute", record)
+            return seen
+        app._conversations_seen, app._conversations_checked_at = False, None
+        self.assertEqual(len(count()), 2)     # the readiness question, then the one sync statement
+        self.assertEqual(len(count()), 1)     # a positive answer is remembered for the life of the process
+
+    def test_a_poll_is_still_one_statement_with_the_messages_token(self):
+        seen = []
+        record = lambda c, cur, statement, *a: seen.append(statement)  # noqa: E731
+        event.listen(read_engine, "before_cursor_execute", record)
+        try:
+            payload(self.bank)
+        finally:
+            event.remove(read_engine, "before_cursor_execute", record)
+        self.assertEqual(len(seen), 1, seen)
 
 
 class EndpointTests(SyncBase):

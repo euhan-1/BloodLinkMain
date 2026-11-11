@@ -35,7 +35,9 @@ TABLE_DOC = {
     "blood_units": "The blood inventory: one row per physical unit (bag/component) identified by its DIN. The core operational table. Operational.",
     "blood_type_thresholds": "Per-facility minimum and maximum stock levels for each blood type; they drive low-stock and overstock status and restock recommendations. Operational configuration.",
     "requests": "Blood transfer requests between two facilities (one requests, one supplies) and their lifecycle from pending to completed. Operational.",
-    "request_messages": "The chat thread attached to a transfer request, letting the two facilities coordinate. Operational.",
+    "request_messages": "The messages the two facilities of a pair send each other. Each belongs to the pair's conversation and may name the request it is about. Until 2026-11 a message could only be sent on a request (request_id was required); the conversation_id column came with server/migrate_add_conversations.sql. Operational.",
+    "conversations": "One row per pair of facilities that have exchanged or opened messages: the pair stored once, smaller facility id first. Created lazily by the server (the first message sent, or the first time a thread is opened), never by creating a request, so a pair with requests and no row is normal. Operational.",
+    "conversation_reads": "Where each facility has read up to in a conversation: the id of the last message it has read, moved forward only, one row per facility per conversation. The unread count of a conversation is the other facility's messages after this position. Operational.",
     "request_units": "The per-unit ledger of a transfer: one row per unit the supplier reserved at release, copied as it stood then (DIN, type, component, volume, dates, shelf), then settled as received or failed when the requester confirms receipt. A snapshot, so a later CSV re-upload cannot rewrite what was released. Operational (audit).",
     "request_unit_failures": "One row per reserved unit that could not be received because it expired between the supplier's release and the requester's receipt. Records which DIN failed and why, so a short delivery is never unexplained. Operational (audit).",
     "notifications": "In-app notifications shown to a facility (incoming requests, expiring units, forecast shortages, and so on). Operational.",
@@ -159,11 +161,24 @@ D = {
         "component": "The blood component requested ('Packed RBC' or 'Platelets'); release reserves only units of exactly this component. NULL on requests made before components were recorded, meaning not recorded, and such a request cannot be released. Free text; no database CHECK.",
     },
     "request_messages": {
-        "id": "Unique identifier of the message.",
-        "request_id": "The request whose chat thread this message belongs to.",
+        "id": "Unique identifier of the message. Also the order messages are read in, and the unit a read position counts in.",
+        "request_id": "The request the message was sent on or is about. NULL for a message sent in a conversation about no request in particular. Before the conversations migration this was required.",
         "sender_facility_id": "The facility that wrote the message.",
         "message": "The message text.",
         "created_at": "When it was sent.",
+        "conversation_id": "The conversation (the pair of facilities) the message belongs to. Nullable until the migration's second part has been run: the server reads a message with no conversation by way of its request's pair, so a row written by an older server instance still shows.",
+    },
+    "conversations": {
+        "id": "Unique identifier of the conversation.",
+        "facility_low_id": "The facility of the pair with the smaller id (a CHECK keeps the pair ordered, so (A, B) and (B, A) cannot both exist).",
+        "facility_high_id": "The facility of the pair with the larger id.",
+        "created_at": "When the row was made: the first message sent or the first time a thread was opened, not when the first request was made.",
+    },
+    "conversation_reads": {
+        "conversation_id": "The conversation.",
+        "facility_id": "The facility whose read position this is. The server only ever writes the caller's own row.",
+        "last_read_message_id": "The id of the newest message this facility has read in the conversation; 0 when none. Moves forward only and never beyond the newest message.",
+        "updated_at": "When the position last moved forward.",
     },
     "request_units": {
         "id": "Unique identifier of the ledger row.",
@@ -479,7 +494,7 @@ deployed; example values are real values from actual rows, with the exceptions d
 
 * **{total} tables** in the `public` schema, {sum(v[1] for v in totals.values())} columns in all, {len(fkrows)} foreign keys. Views: {', '.join(views) or 'none'}.
 * **No unexpected tables.** Every table maps to a feature: identity (`facilities`, `users`, `password_reset_requests`, `facility_registration_requests`, `otp_codes`), inventory
-  (`blood_units`, `blood_type_thresholds`, `upload_history`, `inventory_snapshot_write_log`), transfers (`requests`, `request_messages`, `request_units`, `request_unit_failures`), notification
+  (`blood_units`, `blood_type_thresholds`, `upload_history`, `inventory_snapshot_write_log`), transfers and messages (`requests`, `request_messages`, `conversations`, `conversation_reads`, `request_units`, `request_unit_failures`), notification
   (`notifications`), donor outreach (`donors`, `blasts`, `blast_messages`, `blast_replies`) and forecasting (`inventory_snapshots`,
   `facility_forecast_cache`, `facility_sarimax_order`, `forecast_alert_state`, `synthetic_inventory_snapshots`, `synthetic_forecast_cache`). The ones easiest to
   overlook are `facility_sarimax_order` (the SARIMAX order chosen offline per facility and blood type), `forecast_alert_state` (alert de-duplication), `upload_history` (audit; holds the raw CSV text and drives undo), `inventory_snapshot_write_log` (lets undo restore overwritten snapshots) and the
