@@ -68,7 +68,10 @@ export const WINDOW_OPTIONS: { value: WindowFilter; label: string }[] = [
   { value: "30", label: "Within 30 days" },
 ];
 
-export type UnitFilters = { component: string; window: WindowFilter; state: "any" | UnitState };
+// "usable" is a hospital's Status filter: a unit that is not expired, which is exactly what its "units held" counts. A bank's
+// states (reserved, inside the release margin) are a supplier's: only blood banks release units, so a hospital's units are never
+// in them and its filter does not offer them.
+export type UnitFilters = { component: string; window: WindowFilter; state: "any" | "usable" | UnitState };
 export const NO_UNIT_FILTERS: UnitFilters = { component: "", window: "any", state: "any" };
 export const hasUnitFilters = (f: UnitFilters): boolean => f.component !== "" || f.window !== "any" || f.state !== "any";
 
@@ -76,10 +79,26 @@ export function filterUnits(units: InventoryUnit[], f: UnitFilters): InventoryUn
   return units.filter((u) => {
     if (f.component && u.component !== f.component) return false;
     if (f.window !== "any" && !(u.daysLeft >= 0 && u.daysLeft <= Number(f.window))) return false;
+    if (f.state === "usable") return u.daysLeft >= 0;
     if (f.state !== "any" && unitState(u) !== f.state) return false;
     return true;
   });
 }
+
+// The Status options each Inventory offers. Data, so scripts/check_bank_inventory.ts can assert that every option is a real state.
+export type StateFilterOption = { value: UnitFilters["state"]; label: string };
+export const BANK_STATE_FILTER_OPTIONS: StateFilterOption[] = [
+  { value: "any", label: "Any status" },
+  { value: "available", label: STATE_LABELS.available },
+  { value: "reserved", label: STATE_LABELS.reserved },
+  { value: "inside_margin", label: STATE_LABELS.inside_margin },
+  { value: "expired", label: STATE_LABELS.expired },
+];
+export const HOSPITAL_STATE_FILTER_OPTIONS: StateFilterOption[] = [
+  { value: "any", label: "Any status" },
+  { value: "usable", label: "Usable (counted in units held)" },
+  { value: "expired", label: STATE_LABELS.expired },
+];
 
 // ─── Paging ─────────────────────────────────────────────────────────────────
 

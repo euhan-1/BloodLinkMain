@@ -298,7 +298,18 @@ requests, SARIMAX demand forecasting, donor broadcast.
   DIN, Component, Location, Volume, Collected, Expires, Time left, Remove (the raw `collected` / `expires` strings as before, no bank
   Note column: release-margin and reservation notes are a supplier's). Search results add the Type column. The old per-type search
   (shown above 8 units) stays. The Thresholds button keeps its visible label below `lg` (the bank's is icon-only there). Rows start
-  collapsed, as before. No data logic, API or accent changed.
+  collapsed, as before. No data logic, API or accent changed. **The per-unit filter** (Component, Expires, Status, Clear filters) is
+  one component, `components/UnitFilterBar.tsx`, drawn by both an opened bank type and an opened hospital type (neither screen has its
+  own `<select>`; `check_bank_inventory.ts` fails if one grows back, if the bar loses a label, or if it gains an accent colour: the
+  maroon and the navy only appear on the focus ring, which is the role's own accent). What differs is data: the Status options
+  (`BANK_STATE_FILTER_OPTIONS`: any, available, reserved, not released: inside the margin, expired; `HOSPITAL_STATE_FILTER_OPTIONS`:
+  any, **usable (counted in units held)**, expired). A hospital has no reserved or inside-the-margin state because only blood banks
+  release units (`create_request` refuses a hospital as supplier), so `filterUnits` got a `"usable"` state (`daysLeft >= 0`, the figure
+  "units held" counts) and the hospital filter does not offer the release states. In the hospital panel it combines with the existing
+  per-type text search; the bank's paging is not on the hospital panel (it lists every unit of the type, as before). Verified in a
+  headless browser on a mock inventory: filters narrow and combine, Clear filters restores, Tab reaches the three selects in order each
+  with its label, focus stays on a select after it changes, the navy 2px focus ring, no overflow at 390 px, and the bank's expanded
+  page renders byte-identically before and after.
 - **Accounts: one way in.** A facility account is made by registration approval only (`POST /facilities/register`, email proof,
   `admin_approve_registration`). The admin-side "Create Facility Account" form and the table's "Add account" button, with their
   endpoints (`POST /admin/facilities`, `POST /admin/facilities/{id}/accounts`), the request models, `_create_staff_account`, the

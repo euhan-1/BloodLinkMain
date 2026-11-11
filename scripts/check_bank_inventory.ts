@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import {
   PAGE_SIZE, RELEASE_FLOOR_DAYS, RELEASE_MARGIN_DAYS, SEARCH_LIMIT, backlog, filterUnits, pageOf, releaseCutoffDays, searchUnits, sortUnits, typeSummaries,
-  unitNote, unitState, NO_UNIT_FILTERS,
+  unitNote, unitState, NO_UNIT_FILTERS, BANK_STATE_FILTER_OPTIONS, HOSPITAL_STATE_FILTER_OPTIONS,
 } from "../src/app/lib/bankInventory.ts";
 import { formatCalendarDate } from "../src/app/lib/dateFormat.ts";
 import { EXPIRY_NEAR_DAYS } from "../src/app/lib/statusTokens.ts";
@@ -63,6 +63,26 @@ eq(ids({ state: "reserved" }), ["F"], "reserved");
 eq(ids({ state: "inside_margin" }), ["A"], "inside the margin");
 eq(ids({ state: "available" }), ["B", "C", "E"], "available");
 eq(ids({ component: "Packed RBC", window: "30", state: "available" }), ["B", "C"], "filters combine");
+
+// ── the hospital's filter is the same filter with its own Status options (a hospital never releases units, so it has no reserved or
+// inside-the-margin state): "usable" is every unit that is not expired, the figure its "units held" counts
+eq(ids({ state: "usable" }), ["A", "B", "C", "E", "F"], "usable: not expired, whatever the release margin says");
+eq(ids({ state: "usable", window: "7" }), ["A", "B"], "usable combines with the window");
+eq(ids({ state: "usable", component: "Platelets" }), ["E"], "usable combines with the component");
+const stateValues = new Set(["any", "usable", "available", "reserved", "inside_margin", "expired"]);
+for (const o of [...BANK_STATE_FILTER_OPTIONS, ...HOSPITAL_STATE_FILTER_OPTIONS]) if (!stateValues.has(o.value)) throw new Error(`a Status option with no state: ${o.value}`);
+eq(BANK_STATE_FILTER_OPTIONS.map((o) => o.value), ["any", "available", "reserved", "inside_margin", "expired"], "the bank's Status options");
+eq(HOSPITAL_STATE_FILTER_OPTIONS.map((o) => o.value), ["any", "usable", "expired"], "the hospital's Status options: no release states");
+eq(ids({ state: "usable" }).length, set.filter((u) => u.daysLeft >= 0).length, "usable is exactly the not-expired units");
+// one component draws the filter for both screens; neither screen draws its own selects
+for (const f of ["BankInventory.tsx", "HospitalInventory.tsx"]) {
+  const src = readFileSync(new URL(`../src/app/screens/${f}`, import.meta.url), "utf8");
+  if (!/<UnitFilterBar\b/.test(src)) throw new Error(`${f} does not use the shared UnitFilterBar`);
+  if (/<select\b/.test(src)) throw new Error(`${f} draws its own <select>: the filter belongs in components/UnitFilterBar.tsx`);
+}
+const bar = readFileSync(new URL("../src/app/components/UnitFilterBar.tsx", import.meta.url), "utf8");
+if ((bar.match(/<label\b/g) ?? []).length !== 3 || (bar.match(/<select\b/g) ?? []).length !== 3) throw new Error("UnitFilterBar: each of the three selects needs its own wrapping <label>");
+if (/bg-primary|text-primary|border-primary|ring-primary/.test(bar.replace(/hover:text-primary/g, ""))) throw new Error("UnitFilterBar carries an accent colour: it must stay neutral so the maroon and the navy are each role's own");
 
 // ── paging, fifty to a page
 eq(PAGE_SIZE, 50, "fifty to a page");

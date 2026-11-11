@@ -3,13 +3,14 @@ import { Archive, ChevronDown, SlidersHorizontal, Trash2 } from "lucide-react";
 import { BloodTypeBadge, StatusDot } from "../components/BloodTypeBadge";
 import { Tip } from "../components/Tip";
 import { SearchResultsFrame, UnitSearchBox } from "../components/UnitSearch";
+import { UnitFilterBar } from "../components/UnitFilterBar";
 import { Skeleton } from "../components/Skeleton";
 import { formatCalendarDate } from "../lib/dateFormat";
 import { type InventorySummaryRow, type InventoryUnit } from "../lib/inventoryTypes";
 import { BLOOD_TYPE_ORDER, EXPIRY_NEAR_DAYS, STATUS_STYLES, STOCK_LABELS, getExpiryStatus } from "../lib/statusTokens";
 import {
-  NO_UNIT_FILTERS, STATE_LABELS, WINDOW_OPTIONS, backlog, filterUnits, hasUnitFilters, pageOf,
-  searchUnits, sortUnits, typeSummaries, unitNote, type TypeSummary, type UnitFilters, type UnitState, type WindowFilter,
+  BANK_STATE_FILTER_OPTIONS, NO_UNIT_FILTERS, backlog, filterUnits, pageOf,
+  searchUnits, sortUnits, typeSummaries, unitNote, type TypeSummary, type UnitFilters,
 } from "../lib/bankInventory";
 
 // What a blood bank came to Inventory for: where every unit it holds is, and which ones need it to act. It holds hundreds of
@@ -27,7 +28,6 @@ const HAIRLINE = "border-gray-200";
 const TYPE_COLUMNS = "lg:grid-cols-[4.75rem_5rem_minmax(9.5rem,1fr)_5.5rem_5.5rem_9rem]";
 const UNIT_COLUMNS = "lg:grid-cols-[10.5rem_7rem_6.5rem_5rem_7.5rem_8.5rem_minmax(10rem,1fr)_2.5rem]";
 const SEARCH_COLUMNS = "lg:grid-cols-[10.5rem_3.5rem_7rem_6.5rem_5rem_7.5rem_8.5rem_minmax(9rem,1fr)_2.5rem]";
-const FIELD = "h-9 px-2.5 text-[14px] text-foreground border border-border rounded-md bg-card";
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
 export type BankInventoryProps = {
@@ -210,50 +210,19 @@ function TypeRow({
 
 // ─── One type's units ───────────────────────────────────────────────────────
 
-const STATE_FILTER_OPTIONS: { value: "any" | UnitState; label: string }[] = [
-  { value: "any", label: "Any status" },
-  { value: "available", label: STATE_LABELS.available },
-  { value: "reserved", label: STATE_LABELS.reserved },
-  { value: "inside_margin", label: STATE_LABELS.inside_margin },
-  { value: "expired", label: STATE_LABELS.expired },
-];
-
 function UnitsPanel({ type, units, onRemoveUnit }: { type: string; units: InventoryUnit[]; onRemoveUnit: (din: string) => void }) {
   const [filters, setFilters] = useState<UnitFilters>(NO_UNIT_FILTERS);
   const [page, setPage] = useState(1);
   const components = useMemo(() => Array.from(new Set(units.map((u) => u.component))).sort(), [units]);
   const sorted = useMemo(() => sortUnits(units), [units]);
   const shown = useMemo(() => filterUnits(sorted, filters), [sorted, filters]);
-  const set = (patch: Partial<UnitFilters>) => { setFilters((f) => ({ ...f, ...patch })); setPage(1); };
+  const changeFilters = (next: UnitFilters) => { setFilters(next); setPage(1); };
   const pg = pageOf(shown, page);
 
   if (units.length === 0) return <p className="text-[15px] text-foreground py-2">No {type} units on the list.</p>;
   return (
     <div>
-      <div className="flex flex-wrap items-end gap-x-4 gap-y-2 pb-3">
-        <label className="text-[13px] font-semibold text-foreground">
-          <span className="block mb-1">Component</span>
-          <select value={filters.component} onChange={(e) => set({ component: e.target.value })} className={`${FIELD} w-[9.5rem]`}>
-            <option value="">Any component</option>
-            {components.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
-        </label>
-        <label className="text-[13px] font-semibold text-foreground">
-          <span className="block mb-1">Expires</span>
-          <select value={filters.window} onChange={(e) => set({ window: e.target.value as WindowFilter })} className={`${FIELD} w-[9.5rem]`}>
-            {WINDOW_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </label>
-        <label className="text-[13px] font-semibold text-foreground">
-          <span className="block mb-1">Status</span>
-          <select value={filters.state} onChange={(e) => set({ state: e.target.value as "any" | UnitState })} className={`${FIELD} w-[15rem] max-w-full`}>
-            {STATE_FILTER_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </label>
-        {hasUnitFilters(filters) && (
-          <button onClick={() => { setFilters(NO_UNIT_FILTERS); setPage(1); }} className="h-9 text-[14px] text-foreground underline underline-offset-2 hover:text-primary">Clear filters</button>
-        )}
-      </div>
+      <UnitFilterBar filters={filters} onChange={changeFilters} components={components} stateOptions={BANK_STATE_FILTER_OPTIONS} />
       <UnitTable units={pg.items} showType={false} onRemoveUnit={onRemoveUnit} empty={`No ${type} units match these filters.`} />
       <Pager pg={pg} noun="units" onPage={setPage} />
     </div>

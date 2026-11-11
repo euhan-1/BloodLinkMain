@@ -3,9 +3,10 @@ import { ChevronDown, Search, SlidersHorizontal, Trash2 } from "lucide-react";
 import { BloodTypeBadge, StatusDot } from "../components/BloodTypeBadge";
 import { Skeleton } from "../components/Skeleton";
 import { SearchResultsFrame, UnitSearchBox } from "../components/UnitSearch";
+import { UnitFilterBar } from "../components/UnitFilterBar";
 import { BLOOD_TYPE_ORDER, STATUS_STYLES, STOCK_LABELS, isNotStocked, stockStatus } from "../lib/statusTokens";
 import { type InventorySummaryRow, type InventoryUnit } from "../lib/inventoryTypes";
-import { searchUnits } from "../lib/bankInventory";
+import { HOSPITAL_STATE_FILTER_OPTIONS, NO_UNIT_FILTERS, filterUnits, hasUnitFilters, searchUnits, type UnitFilters } from "../lib/bankInventory";
 
 // The hospital's Inventory: the same page as a blood bank's (BankInventory.tsx): a search across every unit at the top, then a
 // table of the eight types, each of which opens to its units. The columns are the hospital's own: units held, Status (the column
@@ -150,12 +151,15 @@ function TypeRow({
 
 function UnitList({ type, units, onRemoveUnit }: { type: string; units: InventoryUnit[]; onRemoveUnit: (din: string) => void }) {
   const [query, setQuery] = useState("");
+  const [filters, setFilters] = useState<UnitFilters>(NO_UNIT_FILTERS);
+  const components = useMemo(() => Array.from(new Set(units.map((u) => u.component))).sort(), [units]);
   if (units.length === 0) return <p className="text-[15px] text-foreground py-2">No {type} units on file.</p>;
 
   // Soonest-to-expire first, the same first-expired-first-out order the backend uses for real transfers.
   const sorted = [...units].sort((a, b) => a.daysLeft - b.daysLeft);
   const q = query.trim().toLowerCase();
-  const shown = q === "" ? sorted : sorted.filter((u) => [u.din, u.location, u.component].some((v) => v.toLowerCase().includes(q)));
+  const searched = q === "" ? sorted : sorted.filter((u) => [u.din, u.location, u.component].some((v) => v.toLowerCase().includes(q)));
+  const shown = filterUnits(searched, filters);
   const expired = units.filter((u) => u.daysLeft < 0).length;
 
   return (
@@ -180,8 +184,11 @@ function UnitList({ type, units, onRemoveUnit }: { type: string; units: Inventor
           )}
         </div>
       )}
+      <UnitFilterBar filters={filters} onChange={setFilters} components={components} stateOptions={HOSPITAL_STATE_FILTER_OPTIONS} />
       {shown.length === 0
-        ? <p className="text-[15px] text-foreground py-3">No {type} units match "{query.trim()}".</p>
+        ? <p className="text-[15px] text-foreground py-3">
+            {q !== "" ? `No ${type} units match "${query.trim()}"${hasUnitFilters(filters) ? " with these filters" : ""}.` : `No ${type} units match these filters.`}
+          </p>
         : <UnitTable units={shown} showType={false} onRemoveUnit={onRemoveUnit} />}
     </div>
   );
