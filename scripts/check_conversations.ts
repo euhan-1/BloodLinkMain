@@ -125,36 +125,88 @@ eq(finishedSummaryText({ request: req(1, "declined", ME), summary: { asked: 3, r
 eq(finishedSummaryText({ request: req(1, "cancelled", ME), summary: { asked: 3, received: null, failed: null } }), "Cancelled", "finished summary: cancelled");
 
 const rows = threadRows(thread, ME, { readAtOpen: 4 });
-const sideOf = (key: string) => (rows.find((r) => r.key === key) as { side: string }).side;
-// the shape: a finished request is one line at the moment it was sent; its later events are hidden until it is expanded
-eq(rows.filter((r) => r.kind === "finished").map((r) => r.key), ["f-31"], "the finished request is a one-line summary");
-yes(!rows.some((r) => r.kind === "event" && r.requestId === 31), "a collapsed request's events are hidden");
-eq(rows.filter((r) => r.kind === "request").map((r) => r.key), ["r-38", "r-41"], "open requests are always cards");
-eq(rows.filter((r) => r.kind === "event").map((r) => r.key), ["e-38-accepted"], "open requests keep their events as chips");
+const keys = (rs: { key: string }[]) => rs.map((r) => r.key);
+const find = <T,>(rs: unknown[], key: string) => (rs as { key: string }[]).find((r) => r.key === key) as unknown as T;
+const sideOf = (key: string) => find<{ side: string }>(rows, key).side;
+type Live = { kind: "request"; key: string; side: string; label: string; sentence: string | null; detailsLabel: string | null; card: RequestCard };
+type Trail = { kind: "trail"; key: string; side: string; label: string; line: string; sentence: string; detailsLabel: string | null };
+
+// ── ONE live card per open request, at its latest status event, on the side of whoever did that event
+eq(rows.filter((r) => r.kind === "request").map((r) => (r as Live).card.request.id).sort(), [38, 41], "one live card for each open request, and none for a finished one");
+eq(keys(rows.filter((r) => r.kind === "request")), ["live-38-accepted", "live-41-sent"], "the key names the request and its latest event");
+eq(sideOf("live-38-accepted"), "me", "#38: I accepted last, so its live card is on my right");
+eq(sideOf("live-41-sent"), "them", "#41: nothing but its creation, by them, so it is on their left");
+eq(find<Live>(rows, "live-38-accepted").sentence, "You accepted request #38", "the live card says what the latest event was");
+eq(find<Live>(rows, "live-38-accepted").label, "You", "labelled with the actor");
+eq(find<Live>(rows, "live-41-sent").sentence, null, "a request with no event yet: the creation is the label, not a sentence");
+eq(find<Live>(rows, "live-41-sent").label, "Riverside General Hospital requested", "a request's label");
+// the earlier event of #38 is a one-line trail where it happened, on the side of the facility that did it
+eq(keys(rows.filter((r) => r.kind === "trail")), ["e-38-sent"], "earlier events are trails");
+eq(find<Trail>(rows, "e-38-sent").line, "Request #38 · 5 units of Packed RBC · Requested", "a trail line: request, what, status then");
+eq(find<Trail>(rows, "e-38-sent").side, "them", "a trail is aligned like the actor of its event");
+yes(!rows.some((r) => r.kind === "trail" && r.requestId === 31), "a collapsed finished request has no trails");
+// a finished request is unchanged: one line at the moment it was sent, its later events hidden
+eq(keys(rows.filter((r) => r.kind === "finished")), ["f-31"], "the finished request is a one-line summary");
+eq(sideOf("f-31"), "them", "on the side of the facility that made it");
+eq(keys(rows).indexOf("f-31") < keys(rows).indexOf("m-1"), true, "at the moment it was sent");
 // alignment: mine on the right, theirs on the left, for every kind of row
 eq([sideOf("m-1"), sideOf("m-2"), sideOf("m-4"), sideOf("m-5")], ["them", "me", "me", "them"], "messages by their sender");
-eq(sideOf("e-38-accepted"), "me", "an event by the facility that did it (I accepted)");
-eq([sideOf("r-38"), sideOf("r-41"), sideOf("f-31")], ["them", "them", "them"], "a request on the side of the facility that made it");
 const myReq = req(50, "pending", ME);
-eq((threadRows({ requests: [card(myReq, [ev("sent", day(11, 8), ME, "Probe Bank")])], thread: asItems([[50, ev("sent", day(11, 8), ME, "Probe Bank")]], []) }, ME).find((r) => r.kind === "request") as { side: string }).side, "me", "my own request is on my side");
+eq((threadRows({ requests: [card(myReq, [ev("sent", day(11, 8), ME, "Probe Bank")])], thread: asItems([[50, ev("sent", day(11, 8), ME, "Probe Bank")]], []) }, ME).find((r) => r.kind === "request") as Live).side, "me", "my own request's live card is on my side");
 // labels: "You" or the facility's name, on every row, and the time
 for (const r of rows) {
   if (r.kind === "day" || r.kind === "new-messages") continue;
   yes(r.label === "You" || r.label.includes("Riverside General Hospital"), `row ${r.key} carries a label`);
   eq((r.side === "me") === r.label.startsWith("You"), true, `row ${r.key}: the label agrees with the side`);
 }
-eq((rows.find((r) => r.key === "r-38") as { label: string }).label, "Riverside General Hospital requested", "a request's label");
-eq((rows.find((r) => r.key === "e-38-accepted") as { sentence: string }).sentence, "You accepted request #38", "the chip's sentence");
 // no account email anywhere in the rows' own text (it belongs inside the expandable details only)
 yes(!JSON.stringify(rows.map((r) => ("sentence" in r ? [r.sentence, r.label] : "label" in r ? [r.label] : []))).includes("@"), "no email in a label or a sentence");
-// expanding a finished request shows its card and its events, in place
+yes(!JSON.stringify(rows.map((r) => ("line" in r ? r.line : ""))).includes("@"), "nor in a trail line");
+
+// ── a new status event moves the live card to the new event, and the old event becomes a trail
+const rel38 = ev("released", day(10, 10, 45), ME, "Probe Bank", { units: { count: 4, dins: ["D0", "D1", "D2", "D3"], components: ["Packed RBC"] } });
+const card38b = card({ ...r38, supplier_confirmed_at: day(10, 10, 45) }, [...cards[1].timeline, rel38], { units: ledger(4, "reserved"), units_recorded: true, needs_my_action: false });
+const cardsB = [cards[0], card38b, cards[2]];
+const threadB: ConversationThread = { ...thread, requests: cardsB, thread: asItems(cardsB.flatMap((c) => c.timeline.map((e): [number, TimelineEvent] => [c.request.id, e])), messages) };
+const rowsB = threadRows(threadB, ME, { readAtOpen: 4 });
+eq(keys(rowsB.filter((r) => r.kind === "request")), ["live-41-sent", "live-38-released"], "after I release #38 its live card is the release, not the acceptance");
+eq(find<Live>(rowsB, "live-38-released").sentence, "You released 4 units for request #38", "…saying what just happened");
+eq(find<Live>(rowsB, "live-38-released").detailsLabel, "Units released (4)", "…with its units behind a toggle inside it");
+eq(keys(rowsB.filter((r) => r.kind === "trail")), ["e-38-sent", "e-38-accepted"], "the acceptance is now a trail");
+eq(find<Trail>(rowsB, "e-38-accepted").line, "Request #38 · 5 units of Packed RBC · Accepted", "its one-line trail");
+eq(find<Trail>(rowsB, "e-38-accepted").side, "me", "on the side of whoever did it");
+eq(keys(rowsB).filter((k) => !keys(rows).includes(k)), ["e-38-accepted", "live-38-released"], "only those two are new");
+eq(keys(rows).filter((k) => !keys(rowsB).includes(k)), ["live-38-accepted"], "and only the old live card is gone: nothing is duplicated");
+// time order, with messages interleaved: the card sits where the event was (10:45), below the messages before it and above the one after
+const orderB = keys(rowsB);
+yes(orderB.indexOf("m-5") < orderB.indexOf("live-38-released") && orderB.indexOf("live-38-released") < orderB.indexOf("m-6"), "the live card is among the messages by the time of its event");
+// the other side acts: the card moves to their side
+const recv38 = ev("received", day(10, 11, 10), OTHER, "Riverside General Hospital", { outcome: { arrived: 5, failed: [], from_ledger: true } });
+const card38c = card({ ...r38, status: "completed", supplier_confirmed_at: day(10, 10, 45), requester_confirmed_at: day(10, 11, 10) }, [...card38b.timeline, recv38], { units: ledger(5), units_recorded: true, summary: { asked: 5, received: 5, failed: 0 } });
+const threadC: ConversationThread = { ...thread, requests: [cards[0], card38c, cards[2]], thread: asItems([cards[0], card38c, cards[2]].flatMap((c) => c.timeline.map((e): [number, TimelineEvent] => [c.request.id, e])), messages) };
+eq(keys(threadRows(threadC, ME).filter((r) => r.kind === "finished")), ["f-31", "f-38"], "a request that just finished collapses like any finished one");
+const rowsC = threadRows(threadC, ME, { expanded: new Set([38]) });
+eq(find<Live>(rowsC, "live-38-received").side, "them", "expanded, a finished request's live card is at its final event, on the actor's side");
+eq(find<Live>(rowsC, "live-38-received").sentence, "Riverside General Hospital confirmed receipt for request #38: 5 of 5 arrived", "…saying the result");
+eq(find<Live>(rowsC, "live-38-received").detailsLabel, "Units and outcome (5)", "…with the outcome toggle");
+eq(keys(rowsC.filter((r) => r.kind === "trail" && r.requestId === 38)), ["e-38-sent", "e-38-accepted", "e-38-released"], "and its earlier events as trails");
+eq(keys(rowsC).includes("f-38"), false, "no summary while it is expanded");
+// a message never moves a live card; only a status event does
+const later = withMessage(threadB, msg(7, OTHER, day(10, 11, 5), "one more"));
+const rowsL = threadRows(later, ME, { readAtOpen: 4 });
+eq(keys(rowsL).filter((k) => !orderB.includes(k)), ["m-7"], "a message adds one row");
+eq(keys(rowsL).filter((k) => k !== "m-7"), orderB, "and every other row keeps its key and its place, the live card included");
+const earlier = withMessage(threadB, msg(8, ME, day(10, 9, 30), "an older message arriving late"));
+eq(keys(threadRows(earlier, ME, { readAtOpen: 4 })).filter((k) => k.startsWith("live-")), ["live-41-sent", "live-38-released"], "a message at any time leaves the live cards' keys alone");
+yes(keys(threadRows(later, ME)).indexOf("m-7") > keys(threadRows(later, ME)).indexOf("live-38-released"), "a message after the latest event sits below the live card");
+// an expanded finished request (31) in the base thread
 const open31 = threadRows(thread, ME, { expanded: new Set([31]), readAtOpen: 4 });
-eq(open31.filter((r) => r.kind === "event" && r.requestId === 31).map((r) => (r as { eventKind: string }).eventKind), ["accepted", "released", "received"], "an expanded request shows its events");
-eq(open31.find((r) => r.key === "r-31")?.kind, "request", "and its card, where the summary was");
-eq(open31.some((r) => r.key === "f-31"), false, "the summary is gone");
-eq((open31.find((r) => r.key === "e-31-released") as { side: string }).side, "me", "I released: on my side");
-eq((open31.find((r) => r.key === "e-31-received") as { side: string }).side, "them", "they confirmed receipt: on theirs");
-eq((open31.find((r) => r.key === "e-31-released") as { detailsLabel: string }).detailsLabel, "Units released (5)", "the details stay an expandable section");
+eq(find<Live>(open31, "live-31-received").side, "them", "#31 expanded: its live card is the receipt, theirs");
+eq(keys(open31.filter((r) => r.kind === "trail" && r.requestId === 31)), ["e-31-sent", "e-31-accepted", "e-31-released"], "and the rest are trails, in time order");
+eq(find<Trail>(open31, "e-31-released").side, "me", "I released: on my side");
+eq(find<Trail>(open31, "e-31-released").detailsLabel, "Units released (5)", "the details stay an expandable section");
+eq(find<Trail>(open31, "e-31-released").line, "Request #31 · 5 units of Packed RBC · Released", "trail line");
+eq(keys(open31).includes("f-31"), false, "the summary is gone");
 // day separators: before the first item of each day
 eq(rows.filter((r) => r.kind === "day").map((r) => (r as { label: string }).label), ["3 Nov 2026", "10 Nov 2026"], "a separator at each new day");
 eq(rows[0].kind, "day", "the first row is a day");
@@ -169,9 +221,10 @@ eq(threadRows(thread, ME).some((r) => r.kind === "new-messages"), false, "no pos
 eq(threadRows(thread, ME, { readAtOpen: 0 }).filter((r) => r.kind === "new-messages").map((r) => (r as { count: number }).count), [4], "a position of 0: every message of theirs is new");
 // stable keys: nothing is renamed between polls, so a screen reader is not told old messages again
 const again = threadRows({ ...thread, thread: [...thread.thread] }, ME, { readAtOpen: 4 });
-eq(again.map((r) => r.key), rows.map((r) => r.key), "the same thread gives the same keys");
+eq(keys(again), keys(rows), "the same thread gives the same keys");
 const grown = threadRows(withMessage(thread, msg(7, OTHER, day(10, 11, 0), "one more")), ME, { readAtOpen: 4 });
-eq(grown.map((r) => r.key).filter((k) => !rows.some((r) => r.key === k)), ["m-7"], "a new message adds one key and renames none");
+eq(keys(grown).filter((k) => !keys(rows).includes(k)), ["m-7"], "a new message adds one key and renames none");
+eq(new Set(keys(rowsB)).size, keys(rowsB).length, "no key is used twice");
 
 // ── pages of older finished requests
 const old30 = req(30, "cancelled", OTHER, { created_at: day(2) });
@@ -246,7 +299,7 @@ yes(!/>Receipt</.test(messagesTab) && !/showReceipt/.test(messagesTab), "no Rece
 yes(/hasReceipt\(req\)[\s\S]{0,200}href=\{`\/receipt\/\$\{req\.id\}`\}/.test(parts), "a Receipt link on a released or finished card");
 yes(read("src/app/screens/TransferHistory.tsx").includes("href={`/receipt/${r.id}`}"), "Transfer history's Receipt link is the same /receipt/{id} page");
 // no account email on a card or a chip: only inside the expandable details
-yes((parts.match(/eventAccountText\(/g) ?? []).length === 1 && /function EventDetails[\s\S]*eventAccountText\(row\.event\)/.test(parts), "the account email appears only inside the expandable details");
+yes((parts.match(/eventAccountText\(/g) ?? []).length === 1 && /function EventDetails[\s\S]*eventAccountText\(event\)/.test(parts), "the account email appears only inside the expandable details");
 yes(!/account_email/.test(parts) && !/account_email/.test(messagesTab), "no component reads account_email directly");
 // composer: attaches to the conversation, an optional chip set by "Message about this", announced errors, 429 told apart, focus stays
 yes(/sendConversationMessage\(facilityId, text\.trim\(\), about\)/.test(messagesTab) && /useState<number \| null>\(null\);\s*\n\s*const \[sending/.test(messagesTab), "the composer attaches to the conversation, with no request by default");
@@ -268,7 +321,7 @@ yes(/bg-primary text-white border-primary/.test(parts) && /border px-3\.5 py-2\.
 yes(/font-bold text-foreground/.test(parts) && !/text-primary/.test(parts.replace(/hover:bg-primary-hover|bg-primary-tint/g, "")), "no accent-coloured text in a thread (names are the foreground colour)");
 const partsCode = parts.replace(/\/\/.*$/gm, "");
 yes(!/#[0-9a-fA-F]{3,8}\b/.test(partsCode) && !/maroon|navy/i.test(partsCode), "no hard-coded colour: the role accent comes from the tokens");
-yes(/msg-bubble-own/.test(parts) && /thread-chip/.test(parts) && /\.msg-bubble-own/.test(read("src/styles/theme.css")), "the clay rules have their marker classes");
+yes(/msg-bubble-own/.test(parts) && /\.msg-bubble-own/.test(read("src/styles/theme.css")) && !/thread-chip/.test(parts + read("src/styles/theme.css")), "the clay rules have their marker classes (the chip is gone: a status event is a trail line or the live card)");
 // the old per-request server endpoints stay
 const server = read("server/main.py");
 yes(server.includes('@app.get("/requests/{request_id}/messages")') && server.includes('@app.post("/requests/{request_id}/messages")'), "the old per-request message endpoints are still on the server");

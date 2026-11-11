@@ -378,14 +378,24 @@ requests, SARIMAX demand forecasting, donor broadcast.
   conversation opens, then the thread with a back link (focus returns to the row). **Alignment by actor**: every message, status event and
   request is aligned by who did it, mine on the right and theirs on the left, never centred or full width; each carries a visible label,
   "You" or the facility's name, plus the time, so alignment is never the only cue. A message is a bubble (mine in the role's accent with
-  white text: maroon, navy; theirs neutral); a status event is a compact chip with a sentence naming its actor ("You accepted request #38",
-  "You released 5 units for request #31", "Riverside General Hospital confirmed receipt for request #31: 5 of 5 arrived"); a request is a
-  compact card on the side of the facility that made it (blood type, quantity, component, emergency type, status). "Units released (N)"
-  and "Units and outcome (N)" stay expandable inside the chip, and **the account email is only inside that expansion ("Recorded by")**,
-  never on a card or chip. **Requests in the thread**: open requests are always cards; finished ones (completed, failed, declined,
+  white text: maroon, navy; theirs neutral). **The live-card rule** (`threadRows` in `lib/conversations.ts`): every OPEN request has exactly
+  one live card, rendered at the position of the request's most recent status event (its creation when it has none), on the side of the
+  facility that did that event, mine on the right and theirs on the left; so after I accept or release, the card is the "You accepted request
+  #65" / "You released 4 units for request #38" card on my right, at the bottom, with the next button in it, and when the other side acts
+  it moves to their left with whatever I now need to do. It shows blood type, quantity, component, emergency type, the status pill, the event
+  sentence ("You accepted request #38", "Riverside General Hospital confirmed receipt for request #31: 5 of 5 arrived"), the `rowActions`
+  buttons, "Message about this" and the Receipt link where it applies. "Units released (N)" and "Units and outcome (N)" stay expandable inside
+  it, and **the account email is only inside that expansion ("Recorded by")**, never on a card or line. **Earlier events of the same
+  request collapse into one-line muted trails** ("Request #65 · 4 units of Packed RBC · Accepted", no buttons, aligned like the actor of that
+  event, "Details" expands the sentence and the units): only the live card has actions, so nothing can disagree. **A message never moves a
+  live card; only a new status event does** (rows are in time order and a message is just another item): a message sent after the latest
+  event sits below the card. Keys: the live card is `live-<request>-<latest event kind>` (so a new event is a new node at its new place, and
+  while nothing happens its node never changes), a trail is `e-<request>-<kind>`, a message `m-<id>`; the card keeps its DOM id
+  `req-card-<id>` and its status `req-status-<id>` (one live card per request, so no duplicates). After an action the thread scrolls the new card
+  into view (the whole card, `block: "nearest"`) and focuses its status text. **Requests in the thread**: finished ones (completed, failed, declined,
   cancelled) are a one-line summary ("Request #31 · 5 units of Packed RBC · Completed, 5 of 5 received" and "Show history") that expands
   in place, the newest 5 first and "Show earlier requests (N more)" through `finished_before`; **a request this facility just acted on
-  stays a card with its result until the conversation is reopened or "Hide history"**, so the result does not fold away under the
+  stays expanded (its live card at its final event, with the result) until the conversation is reopened or "Hide history"**, so the result does not fold away under the
   reader. The header says how many requests are open and how many need my action, with "Go to the first one" (scrolls to that card and
   focuses its status). **Actions are on the request card only**, from `rowActions` (the one list the badge counts), through
   `RequestActionButtons`: Accept and Decline (the only pair), Confirm release, Confirm receipt, Cancel request (keeps its confirmation
@@ -404,7 +414,13 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `GET /requests/{id}`, opens that conversation, expands and focuses the card, and loads older pages until it is found. **Accessibility**:
   the thread is `role="log" aria-live="polite" aria-relevant="additions" tabindex="0"` with a name; own-sender labels are the foreground
   colour (the old accent-coloured label failed contrast on a dark card); a bubble and a chip have a **border** (so forced colors still
-  shows them; the clay rules make it transparent). **Contrast measured in the browser** (computed colours against the composited
+  shows them; the clay rules make it transparent). **The selected conversation row** (`ConversationList.tsx`): `aria-current="true"`, a stronger accent tint (`bg-primary/15`), a **4 px
+  accent bar on its left edge that is a real border** (so forced colors and `prefers-contrast: more` still draw it: measured 4px solid in
+  both), a bold name, and foreground-coloured preview, time and action line (the amber action text was 4.06 to 4.32:1 on the selected tint
+  and failed; foreground is 12.2 to 13.0:1). A row with something waiting on me that is not selected has its own light amber tint
+  (`bg-status-watch-tint/40`), no bar and a semibold name, so the two are told apart when both apply: the selected row keeps its amber
+  "needs your action" line and dot. On a phone the list and the thread alternate, so a selected row is only visible from lg up.
+  **Contrast measured in the browser** (computed colours against the composited
   background; bank maroon and hospital navy, light and dark, clay on and off; every text in the screen): all at or above 4.5:1, the lowest
   being my bubble in the bank's dark theme at **4.5036:1** (white on #C94A68: it passes by 0.004, so a change to that token needs this
   re-measured), then list previews 4.9 to 5.1. Under forced colors, `prefers-contrast: more` and print the bubbles and chips keep a real 1px border. Clay: `msg-bubble`, `msg-bubble-own`,

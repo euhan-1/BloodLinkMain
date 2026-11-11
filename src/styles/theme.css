@@ -1057,15 +1057,15 @@
     opacity: 1;
   }
 
-  /* ═════ 8. KIND: message bubbles and status chips (screens/Messages.tsx, components/ThreadParts.tsx) ═════════════════
+  /* ═════ 8. KIND: message bubbles (screens/Messages.tsx, components/ThreadParts.tsx) ═════════════════
      Selected by their marker classes, not by tag, so nothing else changes. A bubble is a small raised thing: the other facility's with
-     the small recipe, mine in the role's accent with the accent recipe (white text, as before). A status chip has the small recipe too.
-     Neither has a visible outline: the base look gives them a border (so a forced-colors user still sees where each begins), and here
-     its colour goes transparent and the shading draws the edge. A request card in the thread is an ordinary card (section 4). */
-  :root[data-surface="clay"] :is(.msg-bubble, .thread-chip) {
+     the small recipe, mine in the role's accent with the accent recipe (white text, as before). Neither has a visible outline: the base
+     look gives them a border (so a forced-colors user still sees where each begins), and here its colour goes transparent and the shading
+     draws the edge. A request's live card in the thread is an ordinary card (section 4); a trail line is flat on purpose (muted, no shadow). */
+  :root[data-surface="clay"] .msg-bubble {
     border-color: transparent;
   }
-  :root[data-surface="clay"] :is(.msg-bubble-other, .thread-chip) {
+  :root[data-surface="clay"] .msg-bubble-other {
     box-shadow: var(--shadow-clay-sm);
   }
   :root[data-surface="clay"] .msg-bubble-own {

@@ -4,7 +4,7 @@ import { apiPost, errorStatus, getConversation, markConversationRead, sendConver
 import { Modal } from "../components/Modal";
 import { ConversationList } from "../components/ConversationList";
 import {
-  DaySeparator, EventChip, FinishedSummaryRow, MessageBubble, MessageComposer, NewMessagesDivider, RequestCardView,
+  DaySeparator, FinishedSummaryRow, MessageBubble, MessageComposer, NewMessagesDivider, RequestCardView, TrailRowView,
 } from "../components/ThreadParts";
 import {
   SEND_LIMIT_TEXT, composerState, firstWaitingRequest, markedRead, mergeEarlier, readTarget, threadRows, threadSummaryText, withMessage,
@@ -174,7 +174,12 @@ export function MessagesTab({
     const ids = pendingFocus.current;
     if (!ids) return;
     const el = ids.map((id) => document.getElementById(id)).find((e): e is HTMLElement => e !== null);
-    if (el) { pendingFocus.current = null; el.focus(); }
+    if (el) {
+      pendingFocus.current = null;
+      el.focus();
+      // the whole card, not just the status text, in view (it is where the next button is)
+      (el.closest("article") ?? el).scrollIntoView({ block: "nearest" });
+    }
   });
 
   // A card to go to (a notification, Transfer history's "Chat"): expanded if it is a finished one, loaded if it is older than the pages
@@ -358,10 +363,7 @@ export function MessagesTab({
                     case "day": return <DaySeparator key={row.key} row={row} />;
                     case "new-messages": return <NewMessagesDivider key={row.key} row={row} />;
                     case "message": return <MessageBubble key={row.key} row={row} />;
-                    case "event": {
-                      const card = cards.get(row.requestId);
-                      return card ? <EventChip key={row.key} row={row} card={card} /> : null;
-                    }
+                    case "trail": return <TrailRowView key={row.key} row={row} />;
                     case "finished": return <FinishedSummaryRow key={row.key} row={row} onExpand={expand} />;
                     case "request":
                       return (

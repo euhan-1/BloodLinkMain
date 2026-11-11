@@ -49,7 +49,14 @@ yes(/headingLevel\?: HeadingLevel/.test(read("src/app/components/ReceiptRecord.t
   yes(/<h2 id="conversation-heading"/.test(messagesTab) && /<h3 className=/.test(parts), "the conversation title is an h2 and a request card's title an h3");
   yes(/function Label\b[\s\S]*font-bold text-foreground[\s\S]*<time dateTime=\{at\}>/.test(parts) && /<Label text=\{row\.label\}/.test(parts), "every message, event and request carries a visible label (You or the facility's name) and its time");
   yes(/<label htmlFor=\{`\$\{uid\}-input`\} className="sr-only">Message/.test(parts), "the composer's field has a label");
-  yes(/msg-bubble[^"]*\bborder\b/.test(parts) && /thread-chip[^"`]* border /.test(parts), "a bubble and a chip have a border, so they survive forced colors");
+  yes(/msg-bubble[^"]*\bborder\b/.test(parts) && /thread-trail[^"`]* border /.test(parts) && /<article[\s\S]*?border border-border/.test(parts), "a bubble, a trail line and a request card have a border, so they survive forced colors");
+  // the selected conversation: aria-current, and not by colour alone (a 4 px accent bar that is a real border, a bold name, a stronger tint)
+  const list = read("src/app/components/ConversationList.tsx");
+  yes(/aria-current=\{selected \? "true" : undefined\}/.test(list), "the selected conversation row says aria-current=\"true\"");
+  yes(/selected \? "bg-primary\/15 border-l-4 border-primary"/.test(list) && /selected \? "font-bold" : "font-semibold"/.test(list), "the selected row has a 4px accent bar (a real border) and a bold name besides its tint");
+  yes(/c\.needs_action > 0 \? "bg-status-watch-tint\/40/.test(list) && !/selected \? "bg-primary-tint"/.test(list), "a row with something waiting on me has its own amber tint, distinct from the selected one");
+  // only a request's live card has buttons: trails and summaries have none
+  yes(!/RequestActionButtons/.test(parts.slice(parts.indexOf("export function TrailRowView"), parts.indexOf("const linkClass"))), "a trail line has no action buttons");
   yes(/aria-expanded=\{open\}/.test(parts) && /aria-controls=\{id\}/.test(parts), "the units toggles say whether they are open");
   yes(/aria-label=\{`Remove request #\$\{aboutRequestId\} from this message`\}/.test(parts), "the chip's remove button has a name");
 }

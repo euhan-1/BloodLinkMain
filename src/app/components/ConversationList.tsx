@@ -3,7 +3,10 @@ import { actionLine, initials, listSubline, listTimeText, previewText, type Conv
 // The left pane of Messages: one row per other facility, newest conversation with something waiting on me first (the order the server
 // sends). Each row: the facility's initials in a circle, its name and the time of the last activity, the last message (or "You: ..."),
 // an unread badge, and what is waiting on me. A row is one button (so the whole row is the target and the keyboard has one stop per
-// conversation); the selected one is `aria-current`. The list's heading is the screen's one h1.
+// conversation); the selected one is `aria-current="true"` and shown three ways so colour is never the only one: a stronger accent tint, a
+// 4 px accent bar on its left edge (a real border, so forced colors and prefers-contrast: more still draw it) and a bold name. A conversation
+// with something waiting on me (not selected) has a light amber tint instead, so the two can be told apart when both apply: the selected row
+// keeps its amber "needs your action" line. The list's heading is the screen's one h1.
 export function ConversationList({
   list, me, selectedId, loading, error, onSelect, sourcingLabel, onOpenSourcing, className,
 }: {
@@ -46,21 +49,26 @@ export function ConversationList({
               const action = actionLine(c);
               const selected = c.facility.id === selectedId;
               return (
-                <li key={c.facility.id} className={`rounded-xl ${selected ? "bg-primary-tint" : "hover:bg-secondary"} transition-colors`}>
+                <li
+                  key={c.facility.id}
+                  className={`rounded-xl transition-colors ${
+                    selected ? "bg-primary/15 border-l-4 border-primary" : c.needs_action > 0 ? "bg-status-watch-tint/40 hover:bg-secondary" : "hover:bg-secondary"
+                  }`}
+                >
                   <button
                     type="button" id={`conv-row-${c.facility.id}`} onClick={() => onSelect(c.facility.id)}
-                    aria-current={selected ? "true" : undefined} className="flex w-full gap-3 p-3 text-left rounded-xl"
+                    aria-current={selected ? "true" : undefined} className={`flex w-full gap-3 py-3 ${selected ? "pl-2 pr-3" : "px-3"} text-left rounded-xl`}
                   >
                     <span aria-hidden="true" className="shrink-0 w-11 h-11 rounded-full border border-border bg-card text-foreground text-[14px] font-bold flex items-center justify-center">
                       {initials(c.facility.name)}
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex items-baseline justify-between gap-2">
-                        <span className="truncate text-[15px] font-semibold text-foreground">{c.facility.name}</span>
-                        <span className="shrink-0 text-[12px] text-muted-foreground tabular-nums">{listTimeText(c.last_activity_at)}</span>
+                        <span className={`truncate text-[15px] text-foreground ${selected ? "font-bold" : "font-semibold"}`}>{c.facility.name}</span>
+                        <span className={`shrink-0 text-[12px] tabular-nums ${selected ? "text-foreground" : "text-muted-foreground"}`}>{listTimeText(c.last_activity_at)}</span>
                       </span>
                       <span className="mt-0.5 flex items-center justify-between gap-2">
-                        <span className={`truncate text-[13.5px] ${c.unread > 0 ? "font-semibold text-foreground" : "text-muted-foreground"}`}>{previewText(c, me)}</span>
+                        <span className={`truncate text-[13.5px] ${c.unread > 0 ? "font-semibold text-foreground" : selected ? "text-foreground" : "text-muted-foreground"}`}>{previewText(c, me)}</span>
                         {c.unread > 0 && (
                           <span className="shrink-0 min-w-5 h-5 px-1.5 rounded-full bg-primary text-white text-[12px] font-bold leading-5 text-center">
                             <span aria-hidden="true">{c.unread}</span>
@@ -68,7 +76,7 @@ export function ConversationList({
                           </span>
                         )}
                       </span>
-                      <span className={`mt-1.5 flex items-center gap-1.5 text-[12.5px] ${action.tone === "yours" ? "font-semibold text-status-watch-text" : "text-muted-foreground"}`}>
+                      <span className={`mt-1.5 flex items-center gap-1.5 text-[12.5px] ${action.tone === "yours" ? (selected ? "font-semibold text-foreground" : "font-semibold text-status-watch-text") : selected ? "text-foreground" : "text-muted-foreground"}`}>
                         <span aria-hidden="true" className={`w-2 h-2 rounded-full ${action.tone === "yours" ? "bg-status-watch" : "bg-gray-400"}`} />
                         {action.text}
                       </span>

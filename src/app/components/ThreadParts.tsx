@@ -5,16 +5,17 @@ import { ReasonTag } from "./ReasonTag";
 import { RequestActionButtons, StatusPill } from "./RequestStatusParts";
 import { UnitsTable, type UnitColumn } from "./TransferUnits";
 import { formatTime } from "../lib/dateFormat";
-import { eventAccountText, type TimelineKind } from "../lib/requestTimeline";
+import { eventAccountText, type TimelineEvent, type TimelineKind } from "../lib/requestTimeline";
 import { rowActions, rowFromDetail, type RowAction } from "../lib/requestInbox";
-import { cardWhatText, hasReceipt, isFinished, type DayRow, type DividerRow, type EventRow, type FinishedRow, type MessageRow, type RequestCard, type RequestRowItem } from "../lib/conversations";
+import { cardWhatText, hasReceipt, isFinished, type DayRow, type DividerRow, type FinishedRow, type LiveCardRow, type MessageRow, type RequestCard, type TrailRow } from "../lib/conversations";
 
 // The pieces of a conversation thread (screens/Messages.tsx lays them out). Every row is aligned by who did it: mine on the right, the
 // other facility's on the left, and every one carries a visible label ("You" or the facility's name, and the time) so alignment is
-// never the only cue. A message is a bubble; a status event is a compact chip; a request is a compact card; none is ever full width
-// or centred. Colour: my bubbles are the role's accent with white text (maroon for a bank, navy for a hospital), the other facility's
-// are neutral; every bubble and chip has a border, so a forced-colors (high-contrast) user still sees where each one begins. The clay
-// look (theme.css, "message bubbles") is selectors on the marker classes msg-bubble / thread-chip, so with it off they look as written here.
+// never the only cue. A message is a bubble; a request is ONE live compact card, at its latest status event, and its earlier events are
+// one-line trails; none is ever full width or centred. Colour: my bubbles are the role's accent with white text (maroon for a bank, navy for
+// a hospital), the other facility's are neutral; every bubble, card and trail has a border, so a forced-colors (high-contrast) user still sees
+// where each one begins. The clay look (theme.css, "message bubbles") is selectors on the marker classes msg-bubble, msg-bubble-own and
+// msg-bubble-other, so with it off they look as written here.
 
 const ICONS: Record<TimelineKind, LucideIcon> = { sent: Send, accepted: CheckCircle, released: Package, received: PackageCheck, declined: XCircle, cancelled: Ban };
 const RELEASED_COLUMNS: UnitColumn[] = ["din", "type", "component", "volume", "expires", "daysRelease", "origin"];
@@ -31,6 +32,11 @@ function Label({ text, at, side, extra }: { text: string; at: string | null; sid
       {extra && <><span aria-hidden="true">·</span><span>{extra}</span></>}
     </div>
   );
+}
+
+function EventIcon({ kind }: { kind: TimelineKind }) {
+  const Icon = ICONS[kind];
+  return <Icon size={16} aria-hidden="true" className="mt-0.5 shrink-0" />;
 }
 
 const lane = (side: "me" | "them") => `flex ${side === "me" ? "justify-end" : "justify-start"}`;
@@ -75,43 +81,57 @@ export function MessageBubble({ row }: { row: MessageRow }) {
 }
 
 // "Units released (9)" / "Units and outcome (9)": the ledger behind a release or receipt event, from the same shared table the receipt
-// prints. The account that recorded the event is in here too (never on the chip itself): the transfer record needs it, the thread does not.
-function EventDetails({ row, card }: { row: EventRow; card: RequestCard }) {
+// prints. The account that recorded the event is in here too (never on the card or the line itself): the transfer record needs it, the
+// thread does not.
+function EventDetails({ label, eventKind, event, card }: { label: string | null; eventKind: TimelineKind; event: TimelineEvent; card: RequestCard }) {
   const id = useId();
   const [open, setOpen] = useState(false);
-  if (!row.detailsLabel) return null;
+  if (!label) return null;
   return (
     <div className="mt-1.5">
       <button
         type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-controls={id}
         className="inline-flex items-center gap-1 text-[13px] font-semibold text-foreground underline underline-offset-2 hover:no-underline"
       >
-        {row.detailsLabel}
+        {label}
         <ChevronDown size={14} aria-hidden="true" className={`transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
       {open && (
         <div id={id} className="mt-1.5 max-w-full overflow-x-auto">
-          <p className="mb-1.5 text-[12px] text-muted-foreground">Recorded by {eventAccountText(row.event)}</p>
-          <div className="min-w-[30rem]"><UnitsTable units={card.units} columns={row.eventKind === "released" ? RELEASED_COLUMNS : RECEIVED_COLUMNS} /></div>
+          <p className="mb-1.5 text-[12px] text-muted-foreground">Recorded by {eventAccountText(event)}</p>
+          <div className="min-w-[30rem]"><UnitsTable units={card.units} columns={eventKind === "released" ? RELEASED_COLUMNS : RECEIVED_COLUMNS} /></div>
         </div>
       )}
     </div>
   );
 }
 
-export function EventChip({ row, card }: { row: EventRow; card: RequestCard }) {
-  const Icon = ICONS[row.eventKind];
-  const mine = row.side === "me";
+// An EARLIER status event of a request: one muted line where it happened, on the side of the facility that did it, no buttons (only the
+// request's live card has any, so nothing can disagree). "Details" opens what the event was, and its units if it moved some.
+export function TrailRowView({ row }: { row: TrailRow }) {
+  const id = useId();
+  const [open, setOpen] = useState(false);
   return (
     <div className={lane(row.side)}>
       <div className={stack(row.side, "max-w-[82%]")}>
         <Label text={row.label} at={row.at} side={row.side} />
-        <div className={`thread-chip min-w-0 max-w-full border rounded-2xl px-3 py-2 text-[13.5px] leading-snug text-foreground ${mine ? "bg-primary-tint border-primary/40" : "bg-secondary border-border"}`}>
-          <p className="flex items-start gap-2">
-            <Icon size={16} aria-hidden="true" className="mt-0.5 shrink-0" />
-            <span><span className="sr-only">Status event: </span>{row.sentence}</span>
-          </p>
-          <EventDetails row={row} card={card} />
+        <div className="thread-trail min-w-0 max-w-full border border-border rounded-lg px-3 py-1.5 text-[12.5px] leading-snug text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5">
+            <span>{row.line}</span>
+            <button
+              type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-controls={id}
+              className="inline-flex items-center gap-1 text-[12.5px] font-semibold text-foreground underline underline-offset-2 hover:no-underline"
+            >
+              Details<span className="sr-only"> of request #{row.requestId}, {row.event.kind}</span>
+              <ChevronDown size={13} aria-hidden="true" className={`transition-transform ${open ? "rotate-180" : ""}`} />
+            </button>
+          </div>
+          {open && (
+            <div id={id} className="mt-1.5 text-[13px] text-foreground">
+              <p><span className="sr-only">Status event: </span>{row.sentence}</p>
+              <EventDetails label={row.detailsLabel} eventKind={row.eventKind} event={row.event} card={row.card} />
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -120,13 +140,14 @@ export function EventChip({ row, card }: { row: EventRow; card: RequestCard }) {
 
 const linkClass = "text-[13px] font-semibold text-foreground underline underline-offset-2 hover:no-underline rounded-sm";
 
-// A request, compact, on the side of the facility that made it. The buttons are rowActions (lib/requestInbox.ts): the same list the
-// nav badge counts, so they cannot disagree with it. One button per step; Accept and Decline are the only pair. An action's error is shown
-// here, and afterwards focus goes to the status text (`req-status-<id>`), which is where the result is said.
+// THE live card of a request, compact, at the request's latest status event and on the side of the facility that did it (lib/conversations.ts,
+// LiveCardRow). It says what that event was (the sentence, with its units behind a toggle), where the request stands, and has the buttons
+// rowActions gives this facility (the same list the nav badge counts, so they cannot disagree): one button per step, Accept and Decline the only
+// pair. An action's error is shown here, and afterwards focus goes to the status text (`req-status-<id>`), which is where the result is said.
 export function RequestCardView({
   row, me, busy, error, onAction, onMessageAbout, onCollapse,
 }: {
-  row: RequestRowItem;
+  row: LiveCardRow;
   me: number | null;
   busy: boolean;
   error: string | null;
@@ -154,6 +175,15 @@ export function RequestCardView({
             <BloodTypeBadge type={req.blood_type} size="sm" />
             <span>{cardWhatText(card)}</span>
           </div>
+          {row.sentence && (
+            <div className="text-[13.5px] leading-snug text-foreground">
+              <p className="flex items-start gap-2">
+                <EventIcon kind={row.event.kind} />
+                <span><span className="sr-only">Status event: </span>{row.sentence}</span>
+              </p>
+              <EventDetails label={row.detailsLabel} eventKind={row.event.kind} event={row.event} card={card} />
+            </div>
+          )}
           <div>
             <span id={`req-status-${req.id}`} tabIndex={-1} className="inline-block rounded-full outline-none focus-visible:outline-2 focus-visible:outline-offset-2">
               <StatusPill row={inbox} />

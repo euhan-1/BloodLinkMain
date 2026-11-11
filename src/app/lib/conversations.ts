@@ -183,24 +183,47 @@ export const hasReceipt = (req: Pick<RequestDetail["request"], "status" | "suppl
 export type MessageRow = {
   kind: "message"; key: string; side: Side; label: string; at: string; id: number; text: string; requestId: number | null;
 };
-export type EventRow = {
-  kind: "event"; key: string; side: Side; label: string; at: string | null; requestId: number; eventKind: TimelineEvent["kind"];
-  sentence: string; detailsLabel: string | null; event: TimelineEvent;
+/** An earlier status event of a request, collapsed to one muted line (no buttons): "Request #65 · 4 units of Packed RBC · Accepted". */
+export type TrailRow = {
+  kind: "trail"; key: string; side: Side; label: string; at: string | null; requestId: number; eventKind: TimelineEvent["kind"];
+  line: string; sentence: string; detailsLabel: string | null; event: TimelineEvent; card: RequestCard;
 };
-export type RequestRowItem = { kind: "request"; key: string; side: Side; label: string; at: string; card: RequestCard };
+/**
+ * THE live card of a request: exactly one per open request (and per finished request that is expanded), at the position of the request's
+ * most recent status event (its creation when it has no other), on the side of the facility that did that event. It carries the request's
+ * buttons, so only this card can act. `sentence` says what the latest event was ("You accepted request #65"); null for the creation, which
+ * the label ("Riverside General Hospital requested") already says. Its key names the latest event, so when a new event arrives the card is a
+ * new thing at its new position, and while nothing new happens its key, and therefore its DOM node, never changes.
+ */
+export type LiveCardRow = {
+  kind: "request"; key: string; side: Side; label: string; at: string | null; card: RequestCard; event: TimelineEvent;
+  sentence: string | null; detailsLabel: string | null;
+};
 export type FinishedRow = { kind: "finished"; key: string; side: Side; label: string; at: string; card: RequestCard; summary: string };
 export type DayRow = { kind: "day"; key: string; label: string };
 export type DividerRow = { kind: "new-messages"; key: string; count: number };
-export type ThreadRow = MessageRow | EventRow | RequestRowItem | FinishedRow | DayRow | DividerRow;
+export type ThreadRow = MessageRow | TrailRow | LiveCardRow | FinishedRow | DayRow | DividerRow;
 
 const eventTime = (e: TimelineEvent): string => e.at ?? e.order_at;
 
+/** The status word of a request right after an event, for its trail line. */
+export const TRAIL_STATUS: Record<TimelineEvent["kind"], string> = {
+  sent: "Requested", accepted: "Accepted", released: "Released", received: "Receipt confirmed", declined: "Declined", cancelled: "Cancelled",
+};
+
 /**
- * The thread as rows, in order. Mine on the right, theirs on the left: a message by its sender, an event by the facility that did it, a
- * request by the facility that made it. A request appears as its card at the moment it was sent; a FINISHED request collapses to one
- * line there (its later events are hidden) until it is in `expanded`. A day separator goes before the first item of each day. The
- * "N new messages" divider goes before the first message from the other facility that is after `readAtOpen` (my read position when the
- * thread was opened), with how many there are; null means no divider.
+ * The thread as rows, in order. Mine on the right, theirs on the left: a message by its sender, a status event by the facility that did it.
+ *
+ * A request has ONE live card: at its latest status event (see LiveCardRow), so what needs doing is where the reader is looking, at the
+ * bottom, not up at the request's creation. Its earlier events are one-line trails (TrailRow) where they happened, aligned to their own
+ * actor. A message never moves a live card: only a new status event does (rows are in the server's time order, and a message is just
+ * another item in it).
+ *
+ * A FINISHED request collapses to one line at the moment it was sent (its other events are hidden) until it is in `expanded`; expanded, it
+ * is a live card at its final event (no buttons, it has none) with its earlier events as trails, so a result just produced is at the bottom.
+ *
+ * A day separator goes before the first item of each day. The "N new messages" divider goes before the first message from the other
+ * facility that is after `readAtOpen` (my read position when the thread was opened), with how many there are; null means no divider.
  */
 export function threadRows(
   thread: Pick<ConversationThread, "requests" | "thread">, me: number | null,
@@ -219,22 +242,33 @@ export function threadRows(
     }
     const card = cards.get(item.request_id);
     if (!card) continue;
-    const collapsed = isFinished(card.request.status) && !expanded.has(card.request.id);
-    const side: Side = item.facility_id === me ? "me" : "them";
-    if (item.kind === "sent") {
-      const requesterId = card.request.requesting_facility.id;
-      const label = `${actorLabel(requesterId, card.request.requesting_facility.name, me)} requested`;
-      const rowSide: Side = requesterId === me ? "me" : "them";
-      rows.push(collapsed
-        ? { kind: "finished", key: `f-${card.request.id}`, side: rowSide, label, at: eventTime(item), card, summary: finishedSummaryText(card) }
-        : { kind: "request", key: `r-${card.request.id}`, side: rowSide, label, at: eventTime(item), card });
+    const req = card.request;
+    if (isFinished(req.status) && !expanded.has(req.id)) {
+      if (item.kind === "sent") {
+        const requesterId = req.requesting_facility.id;
+        rows.push({
+          kind: "finished", key: `f-${req.id}`, side: requesterId === me ? "me" : "them", at: eventTime(item), card, summary: finishedSummaryText(card),
+          label: `${actorLabel(requesterId, req.requesting_facility.name, me)} requested`,
+        });
+      }
       continue;
     }
-    if (collapsed) continue;
-    rows.push({
-      kind: "event", key: `e-${item.request_id}-${item.kind}`, side, label: actorLabel(item.facility_id, item.facility_name, me), at: item.at,
-      requestId: item.request_id, eventKind: item.kind, sentence: eventSentence(item, card.request, me), detailsLabel: eventDetailsLabel(item, card), event: item,
-    });
+    const side: Side = item.facility_id === me ? "me" : "them";
+    const latest = card.timeline[card.timeline.length - 1];
+    if (latest && item.kind === latest.kind) {
+      const created = item.kind === "sent";
+      rows.push({
+        kind: "request", key: `live-${req.id}-${item.kind}`, side, at: item.at, card, event: item,
+        label: created ? `${actorLabel(item.facility_id, item.facility_name, me)} requested` : actorLabel(item.facility_id, item.facility_name, me),
+        sentence: created ? null : eventSentence(item, req, me), detailsLabel: eventDetailsLabel(item, card),
+      });
+    } else {
+      rows.push({
+        kind: "trail", key: `e-${req.id}-${item.kind}`, side, label: item.kind === "sent" ? `${actorLabel(item.facility_id, item.facility_name, me)} requested` : actorLabel(item.facility_id, item.facility_name, me),
+        at: item.at, requestId: req.id, eventKind: item.kind, line: `Request #${req.id} · ${cardWhatText(card)} · ${TRAIL_STATUS[item.kind]}`,
+        sentence: eventSentence(item, req, me), detailsLabel: eventDetailsLabel(item, card), event: item, card,
+      });
+    }
   }
 
   const out: ThreadRow[] = [];

@@ -218,13 +218,17 @@ conversations (one row per other facility: an initials circle, the name and the 
 on you) beside one thread, and on a phone the list and then the thread with a back link. In the thread **everything is aligned by who did it:
 mine on the right, theirs on the left, never centred and never full width**, each with a visible label ("You" or the facility's name, and the
 time). A message is a bubble with an asymmetric corner (the tail toward its side); mine is the role's accent with white text (maroon on a bank,
-navy on a hospital), theirs a neutral grey. A status event is a compact chip (an icon and one sentence naming its actor, such as "You accepted
-request #38"; mine tinted with the accent, theirs neutral), with "Units released (9)" and "Units and outcome (9)" as expandable sections inside it
-(the table scrolls inside the chip, the page never widens). A request is a compact card (at most 26rem wide) on the side of the facility that
-made it: blood type, quantity, component, emergency type, a status pill, and the one button for its next step (Accept and Decline are the only
-pair); a finished request is a one-line summary that expands in place. Names and times use the foreground and muted text colours: an
+navy on a hospital), theirs a neutral grey. **The live-card rule**: an open request is ONE compact card (at most 26rem wide), placed at its most recent status event and on the side of
+whoever did that event (so after you accept or release it is the "You accepted request #65" card on your right, at the bottom, with the next
+button in it; when the other side acts it moves to their left). It shows blood type, quantity, component, emergency type, a status pill, the event
+sentence, and the one button for its next step (Accept and Decline are the only pair), with "Units released (9)" and "Units and outcome (9)" as
+expandable sections inside it (the table scrolls inside, the page never widens). The request's earlier events are one-line muted **trails** ("Request
+#65 · 4 units of Packed RBC · Accepted"), flat, bordered, no buttons, aligned like the actor, with a Details toggle. A message sent after the latest
+event sits below the card; only a new status event moves a card. A finished request is a one-line summary that expands in place. Names and times use the foreground and muted text colours: an
 accent-coloured name was under 3:1 on a dark card. Every bubble and chip has a real 1px border (so forced colors still shows where each
-begins); under the clay look its colour is transparent and the shading draws the edge. The composer is a pill-shaped field and a round accent send
+begins); under the clay look its colour is transparent and the shading draws the edge. **The selected conversation** in the list has a stronger accent tint, a 4px accent bar on its left edge (a real border, so forced colors and
+high-contrast modes still draw it) and a bold name; a row with something waiting on you has a light amber tint instead, so the two differ
+when both apply. The composer is a pill-shaped field and a round accent send
 button; an "About: request #N ×" chip sits above it on one line, also at 390px. Measured contrast of every text on the screen, in the browser
 and for both accents, light and dark, clay on and off, is 4.5:1 or more (lowest: my bubble in the bank's dark theme, 4.5036:1).
 
@@ -247,7 +251,7 @@ A blood-unit ID (DIN) is plain mono text (JetBrains Mono, per the Mono-Means-Phy
 | 6 Floating surface | modal, popover, tooltip | no outline, a stronger drop (`float`; a tooltip `sm`) |
 | 7 Status-tinted panel | the hospital's Action required | the same radius and a light inner edge; its fill, text and outer drop are as before |
 | 8 Flat controls | icon buttons, navigation, text links, the unselected half of a segmented control | unchanged on purpose: they are not objects |
-| 9 Message bubble and status chip | the Messages thread (`.msg-bubble-own`, `.msg-bubble-other`, `.thread-chip`) | small raised look: `sm` for theirs and for chips, the accent recipe for mine; the border colour is transparent (it stays in the off look and in forced colors) |
+| 9 Message bubble | the Messages thread (`.msg-bubble-own`, `.msg-bubble-other`) | small raised look: `sm` for theirs, the accent recipe for mine; the border colour is transparent (it stays in the off look and in forced colors). A request's live card is an ordinary card; a trail line is flat |
 
 A small control inside a list or table row (a button that is `h-6`, `h-7` or `h-8` in an `li`, `td` or `th`: Deactivate, Decline, Accept) gets the **inner shading only and no outer drop**, and a smaller radius, so a table of them stays calm; the same control outside a row has the full recipe. At most three shadow layers on any element.
 
