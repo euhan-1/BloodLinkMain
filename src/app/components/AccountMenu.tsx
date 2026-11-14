@@ -313,7 +313,7 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
       {open && (
         <DialogPanel
           labelledBy={headingId} onClose={() => setOpen(false)} returnFocusRef={triggerRef}
-          className="absolute left-4 right-4 sm:left-auto sm:right-0 top-full mt-2 sm:w-80 bg-card border border-border rounded-xl shadow-lg z-50 overflow-hidden"
+          className="absolute left-4 right-4 sm:left-auto sm:right-0 top-full mt-2 sm:w-96 sm:max-w-[calc(100vw-1rem)] bg-card border border-border rounded-xl shadow-lg z-50 overflow-hidden"
         >
           <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3">
             <div>
@@ -326,28 +326,28 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
               </button>
             )}
           </div>
-          <div className="max-h-96 overflow-y-auto">
-            {loading && notifications.length === 0 && <div className="px-4 py-8 text-center text-[14px] text-muted-foreground">Loading…</div>}
+          <div className="max-h-[min(30rem,calc(100dvh-10rem))] overflow-y-auto px-4 pt-3 pb-4 space-y-2">
+            {loading && notifications.length === 0 && <div className="px-4 py-8 text-center text-[15px] text-muted-foreground">Loading…</div>}
             {loadError && notifications.length === 0 && !loading && (
-              <div className="px-4 py-8 text-center text-[14px] text-status-critical-text">Couldn't load notifications.</div>
+              <div className="px-4 py-8 text-center text-[15px] text-status-critical-text">Couldn't load notifications.</div>
             )}
             {!loading && !loadError && notifications.length === 0 && (
-              <div className="px-4 py-8 text-center text-[14px] text-muted-foreground">No notifications yet.</div>
+              <div className="px-4 py-8 text-center text-[15px] text-muted-foreground">No notifications yet.</div>
             )}
             {notifications.map((n) => (
               <button
                 key={n.id}
                 onClick={() => handleNotificationClick(n)}
-                className={`w-full text-left px-4 py-3 border-b border-border last:border-0 hover:bg-secondary transition-colors flex gap-2.5 ${
+                className={`w-full text-left px-4 py-3 rounded-lg border border-border hover:bg-secondary transition-colors flex gap-2.5 ${
                   n.read_at === null ? "bg-primary-tint/40" : ""
                 }`}
               >
-                <span className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${n.read_at === null ? "bg-primary" : "bg-transparent"}`} />
+                <span className={`w-1.5 h-1.5 rounded-full mt-2 shrink-0 ${n.read_at === null ? "bg-primary" : "bg-transparent"}`} />
                 <div className="min-w-0">
-                  <div className={`text-[14px] leading-snug ${n.read_at === null ? "font-semibold text-foreground" : "text-muted-foreground"}`}>
+                  <div className={`text-[15px] leading-normal ${n.read_at === null ? "font-semibold text-foreground" : "text-muted-foreground"}`}>
                     {n.message}
                   </div>
-                  <time dateTime={n.created_at} title={formatDateTime(n.created_at)} className="block text-[12px] text-muted-foreground mt-0.5 tabular-nums">
+                  <time dateTime={n.created_at} title={formatDateTime(n.created_at)} className="block text-[13px] leading-normal text-muted-foreground mt-0.5 tabular-nums">
                     {agoText(n.created_at)}
                     <span className="sr-only">, {formatDateTime(n.created_at)}</span>
                   </time>
@@ -358,7 +358,7 @@ export function NotificationBell({ onNavigate }: { onNavigate: (n: NotificationI
               <button
                 onClick={loadOlder}
                 disabled={loadingMore}
-                className="w-full px-4 py-3 text-[13px] font-semibold text-role-accent-text hover:bg-secondary transition-colors disabled:opacity-60"
+                className="w-full px-4 py-3 rounded-lg text-[14px] font-semibold text-role-accent-text hover:bg-secondary transition-colors disabled:opacity-60"
               >
                 {loadingMore ? "Loading…" : "Show older notifications"}
               </button>
