@@ -6,13 +6,16 @@ whole multipart body and written it to a temporary file.
   UploadSizeLimitMiddleware  runs first, on the upload paths only. It refuses a request whose Content-Length is over the limit before
                              reading any of the body, and when there is no Content-Length (chunked) it stops reading as soon as the
                              running total passes the limit. Either way the answer is 413 with a plain message.
+  read_table_upload          the historical stock upload's read: .csv or .xlsx (see check_xlsx); the rest as below
   read_csv_upload            the handler's own read: at most the limit (it reads one chunk at a time and stops one byte past the
                              limit, so an oversize file is never loaded), the .csv extension, and a look at the bytes themselves.
 
 The limit is MAX_UPLOAD_BYTES (default 5 MB), read on every request so changing it needs no code change. The donor upload is NOT in
 the middleware's path list: it is left exactly as it was.
 """
+import io
 import os
+import zipfile
 from typing import Iterable, Optional
 
 from fastapi import HTTPException
@@ -48,12 +51,8 @@ def looks_binary(head: bytes) -> bool:
     return head.startswith(_BINARY_SIGNATURES) or b"\x00" in head
 
 
-def read_csv_upload(file, limit: Optional[int] = None) -> str:
-    """The text of an uploaded CSV, or an HTTPException: 400 for the wrong kind of file, 413 for too big. `file` is a Starlette
-    UploadFile; `file.file` is its synchronous file object (these handlers are plain `def`)."""
-    limit = limit or max_upload_bytes()
-    if not (file.filename or "").lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="only .csv files are accepted")
+def _read_limited(file, limit: int) -> bytes:
+    """The whole upload, one chunk at a time, stopping one byte past the limit so an oversize file is never loaded."""
     chunks, total = [], 0
     while True:
         chunk = file.file.read(min(_READ_CHUNK, limit + 1 - total))
@@ -63,13 +62,65 @@ def read_csv_upload(file, limit: Optional[int] = None) -> str:
         if total > limit:
             raise HTTPException(status_code=413, detail=too_large_message(limit))
         chunks.append(chunk)
-    raw = b"".join(chunks)
+    return b"".join(chunks)
+
+
+def _decode_csv(raw: bytes) -> str:
     if looks_binary(raw[:8192]):
         raise HTTPException(status_code=400, detail="that file is not a plain-text CSV (it looks like a spreadsheet or another binary format); save it as CSV and try again")
     try:
         return raw.decode("utf-8-sig")  # utf-8-sig tolerates a BOM from Excel exports
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="file must be UTF-8 encoded")
+
+
+def read_csv_upload(file, limit: Optional[int] = None) -> str:
+    """The text of an uploaded CSV, or an HTTPException: 400 for the wrong kind of file, 413 for too big. `file` is a Starlette
+    UploadFile; `file.file` is its synchronous file object (these handlers are plain `def`)."""
+    limit = limit or max_upload_bytes()
+    if not (file.filename or "").lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="only .csv files are accepted")
+    return _decode_csv(_read_limited(file, limit))
+
+
+# An .xlsx is a zip: its size on disk says little about what it unpacks to, so the unpacked size and the part count are bounded too.
+XLSX_MAX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
+XLSX_MAX_PARTS = 300
+_OLD_EXCEL = (".xls", ".xlsm", ".xlsb")
+
+
+def check_xlsx(raw: bytes) -> None:
+    """HTTPException unless `raw` is a plain .xlsx workbook of a sane unpacked size. Reads the zip's table of contents only."""
+    bad = lambda msg: HTTPException(status_code=400, detail=msg)
+    if not raw.startswith(b"PK"):
+        raise bad("That file is not a real .xlsx workbook, whatever its name says. Open it in Excel and save it as .xlsx or .csv.")
+    try:
+        parts = zipfile.ZipFile(io.BytesIO(raw)).infolist()
+    except zipfile.BadZipFile:
+        raise bad("That file is not a real .xlsx workbook, whatever its name says. Open it in Excel and save it as .xlsx or .csv.")
+    names = {p.filename for p in parts}
+    if "xl/workbook.xml" not in names or "[Content_Types].xml" not in names:
+        raise bad("That file is not an Excel workbook. Open the data in Excel and save it as .xlsx or .csv.")
+    if "xl/vbaProject.bin" in names:
+        raise bad("That workbook contains macros, which BloodLink does not accept. Save a copy as .xlsx without macros, or as .csv.")
+    if len(parts) > XLSX_MAX_PARTS or sum(p.file_size for p in parts) > XLSX_MAX_UNCOMPRESSED_BYTES:
+        raise bad("That workbook is too large once opened. Save just the stock figures as .csv, or split the workbook into smaller files.")
+
+
+def read_table_upload(file, limit: Optional[int] = None):
+    """For the historical stock upload: ("csv", text) or ("xlsx", bytes), or an HTTPException. The ZIP signature that read_csv_upload
+    treats as a renamed spreadsheet is allowed here only for a name ending in .xlsx, and then the file must really be a workbook."""
+    limit = limit or max_upload_bytes()
+    name = (file.filename or "").lower()
+    if name.endswith(_OLD_EXCEL):
+        raise HTTPException(status_code=400, detail="That Excel format cannot be read. Open the file in Excel and save it as .xlsx or .csv.")
+    if not name.endswith((".csv", ".xlsx")):
+        raise HTTPException(status_code=400, detail="Only .csv or .xlsx files are accepted.")
+    raw = _read_limited(file, limit)
+    if name.endswith(".csv"):
+        return "csv", _decode_csv(raw)
+    check_xlsx(raw)
+    return "xlsx", raw
 
 
 class _TooLarge(Exception):

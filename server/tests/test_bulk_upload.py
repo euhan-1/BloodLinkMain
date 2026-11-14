@@ -81,7 +81,7 @@ class BulkUploadTests(unittest.TestCase):
         lines.insert(5, "not-a-date,O+,10")  # bad row on file line 6
         body, stmts, secs = upload(app.upload_historical_inventory_snapshots, self.fid, "\n".join(lines))
         self.assertEqual(body["rows_processed"], 1440)
-        self.assertEqual(body["errors"], [{"row": 6, "reason": "invalid snapshot_date 'not-a-date', expected YYYY-MM-DD"}])
+        self.assertEqual(body["errors"], [{"row": 6, "reason": "'not-a-date' is not a date we can read"}])  # was "invalid snapshot_date ..., expected YYYY-MM-DD" before other date formats were accepted
         self.assertEqual(body["days_of_history"], 180)
         self.assertLessEqual(stmts, MAX_STATEMENTS, f"{stmts} statements for 1,440 rows: not batched")
         self.assertLess(secs, MAX_SECONDS)

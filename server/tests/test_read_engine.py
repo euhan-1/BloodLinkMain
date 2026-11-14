@@ -31,7 +31,7 @@ READ_ONLY_FUNCTIONS = [
     app.health, app._check_database, app._lookup_account, app.get_me, app.get_inventory, app.get_inventory_summary,
     app._releasable_counts_multi, app.list_facilities, app.get_expiring_inventory, app.list_requests, app.list_incoming_requests,
     app.notifications_unread_count, app._facilities_to_warm, app._read_sync_state, app._conversations_ready, app.list_conversations,
-    app.get_conversation,
+    app.get_conversation, app._require_blood_bank, app.preview_historical_inventory_snapshots,
 ]
 WRITE_WORDS = re.compile(r"\b(INSERT|UPDATE|DELETE|TRUNCATE|CREATE|ALTER|DROP|GRANT|REVOKE|LOCK|COMMIT|FOR UPDATE)\b")
 NORMAL_ENGINE = re.compile(r"(?<![A-Za-z_])engine\.(begin|connect)\(")  # `read_engine.connect(` does not match: it has a letter before
@@ -59,7 +59,7 @@ class ReadOnlyBySourceTests(unittest.TestCase):
     def test_every_one_of_them_is_marked_retry_read_or_is_called_only_from_one_that_is(self):
         for fn in (app.get_me, app.get_inventory, app.get_inventory_summary, app.list_facilities, app.get_expiring_inventory,
                    app.list_requests, app.list_incoming_requests, app.notifications_unread_count, app._check_database, app._lookup_account,
-                   app._conversations_ready, app.list_conversations, app.get_conversation):
+                   app._conversations_ready, app.list_conversations, app.get_conversation, app._require_blood_bank):
             self.assertTrue(hasattr(fn, "__wrapped__"), fn.__name__)  # functools.wraps in retry_read
 
     def test_the_engines_are_configured_as_documented(self):

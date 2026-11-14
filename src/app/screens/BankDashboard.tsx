@@ -1,18 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { liveSync } from "../lib/liveSyncRuntime";
-import { Bell, CheckCircle, ChevronDown, FlaskConical, TrendingUp, Upload } from "lucide-react";
+import { Bell, CheckCircle, ChevronDown, FlaskConical, TrendingUp } from "lucide-react";
 import {
   Area, CartesianGrid, ComposedChart, Line, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import {
-  getExpiringInventory, notifyNearbyHospitalsForGroup, uploadHistoricalInventorySnapshots,
-  type ExpiringGroup, type ExpiringInventory, type HistoricalUploadResult,
+  getExpiringInventory, notifyNearbyHospitalsForGroup,
+  type ExpiringGroup, type ExpiringInventory,
 } from "../lib/api";
 import { BloodTypeBadge, StatusDot } from "../components/BloodTypeBadge";
 import { ReasonTag } from "../components/ReasonTag";
 import { Skeleton } from "../components/Skeleton";
 import { StockDial } from "../components/StockDial";
 import { Tip } from "../components/Tip";
+import { HistoryUpload } from "../components/HistoryUpload";
 import { UploadHistoryPanel } from "../components/UploadHistoryPanel";
 import { type InventorySummaryRow } from "../lib/inventoryTypes";
 import { isRealForecastSource, type ForecastView } from "../lib/forecastTypes";
@@ -692,29 +693,7 @@ function ForecastDetails(p: BankDashboardProps) {
 
 function ForecastDetailsBody(p: BankDashboardProps) {
   const f = p.forecast;
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
-  const [result, setResult] = useState<HistoricalUploadResult | null>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
   const [historyKey, setHistoryKey] = useState(0);
-
-  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    setUploadError(null);
-    setResult(null);
-    try {
-      setResult(await uploadHistoricalInventorySnapshots(file));
-      p.onForecastChanged();
-      setHistoryKey((k) => k + 1);
-    } catch (err) {
-      setUploadError(err instanceof Error ? err.message : "Upload failed");
-    } finally {
-      setUploading(false);
-      if (fileRef.current) fileRef.current.value = "";
-    }
-  }
 
   const real = f !== null && isRealForecastSource(f.forecast_source);
 
@@ -744,10 +723,6 @@ function ForecastDetailsBody(p: BankDashboardProps) {
       {/* The one-time setup: past stock records bring the real forecast forward. Not a daily decision, so it lives here. */}
       <div className="border-t border-gray-200 pt-6 max-w-[75ch]">
         <h3 className="text-[15px] font-semibold text-foreground">Historical stock upload</h3>
-        <p className="text-[14px] text-foreground mt-1">
-          Have past stock records? Upload them to build the forecast from your own history sooner. A CSV of snapshot_date, blood_type and units, one row
-          per day per blood type, dated before today. Today's stock is recorded automatically.
-        </p>
         {f !== null && !real && (
           <div className="mt-3">
             <div className="flex items-center justify-between text-[13px] text-foreground mb-1">
@@ -759,28 +734,8 @@ function ForecastDetailsBody(p: BankDashboardProps) {
             </div>
           </div>
         )}
-        <input ref={fileRef} type="file" accept=".csv" onChange={onFile} className="hidden" />
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <button
-            onClick={() => fileRef.current?.click()}
-            disabled={uploading}
-            className="h-9 px-3 rounded-md border border-border bg-card text-[13px] font-semibold text-foreground hover:bg-secondary transition-colors disabled:opacity-60 inline-flex items-center gap-1.5"
-          >
-            <Upload size={14} aria-hidden="true" /> {uploading ? "Uploading…" : real ? "Add more history" : "Upload historical data"}
-          </button>
-          {real && f !== null && <span className="text-[14px] text-foreground">{f.days_of_history} days of history on file.</span>}
-        </div>
-        {uploadError && <div role="alert" className="mt-3 text-[13px] text-status-critical-text bg-status-critical-tint border border-status-critical-border rounded-md px-3 py-2">{uploadError}</div>}
-        {result && (
-          <div className="mt-3 text-[13px] bg-secondary rounded-md px-3 py-2 space-y-1">
-            <div className="font-semibold text-foreground">
-              {result.rows_processed} {plural(result.rows_processed, "day-of-type record", "day-of-type records")} processed
-              {result.errors.length > 0 && `, ${result.errors.length} ${plural(result.errors.length, "row", "rows")} skipped`}
-            </div>
-            <div className="text-foreground">Now {result.days_of_history} of {result.min_days_required} days of history on file.</div>
-            {result.errors.map((e, i) => <div key={i} className="text-status-critical-text">Row {e.row}: {e.reason}</div>)}
-          </div>
-        )}
+        <HistoryUpload hasRealHistory={real} onSaved={() => { p.onForecastChanged(); setHistoryKey((k) => k + 1); }} />
+        {real && f !== null && <p className="mt-3 text-[14px] text-foreground">{f.days_of_history} days of history on file.</p>}
         <div className="mt-4">
           <UploadHistoryPanel uploadType="historical_stock" refreshKey={historyKey} onUndone={p.onForecastChanged} variant="flat" />
         </div>

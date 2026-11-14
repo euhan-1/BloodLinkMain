@@ -8,8 +8,8 @@
 // environment in screens/PrivacyNotice.tsx and goes through privacyContact() below.
 
 /** Must equal PRIVACY_NOTICE_VERSION in server/main.py (check_privacy.ts compares the two). Raise both when the notice changes. */
-export const PRIVACY_NOTICE_VERSION = "1.1";
-export const PRIVACY_NOTICE_EFFECTIVE_DATE = "11 November 2026";
+export const PRIVACY_NOTICE_VERSION = "1.2";
+export const PRIVACY_NOTICE_EFFECTIVE_DATE = "14 November 2026";
 
 /** A paragraph, a list, a small heading, or the place where the contact address goes. */
 export type NoticeBlock =
@@ -78,7 +78,7 @@ export const NOTICE_SECTIONS: NoticeSection[] = [
           "The contact person on a registration: a name and a phone number, entered only on the Register form. An administrator uses them to review the application, and they are kept with the application afterwards.",
           "Blood stock and transfers: the units you record or upload, your stock limits, and requests between facilities, including when each step happened and the email of the account that accepted, released or received a transfer.",
           "Messages and notifications: what you type in your conversation with another facility, and the notices BloodLink creates for your facility. There is one conversation for each other facility you have a request with. A message can be about one of your requests or about no particular request. BloodLink also stores, for each conversation, how far your facility has read, so that it can show you what is new. A message is free text and BloodLink does not check it, so do not put patient names or other personal details in it.",
-          "Uploaded files: for stock uploads we keep the original text of the file so you can download it again, and a record of which account uploaded it and when.",
+          "Uploaded files: for CSV stock uploads we keep the original text of the file so you can download it again; for Excel (.xlsx) stock uploads we keep only the rows we read, not the file. For every upload we also keep a record of which account uploaded it and when.",
           "Donor lists (blood banks only): if a blood bank uploads a donor list, we store each donor's name, blood type and phone number for that bank. Blood type is health information, which the Data Privacy Act treats as sensitive. BloodLink does not collect this from donors themselves and does not record their consent, and for now it simulates donor messages instead of sending real ones. The bank that uploads a list is responsible for having the donors' permission.",
           "In your browser: a sign-in token and your basic account details (email, facility name and type) in the browser's local storage, your light or dark theme, and which requests you have already seen. Our code sets no cookies and BloodLink uses no advertising or analytics trackers.",
           "While the service runs: to slow down password guessing, the server keeps the email address and network address of recent sign-in and email attempts in memory for a short time. If sending an email fails, the address may be written to the server log. Our hosting providers keep their own logs (see below).",

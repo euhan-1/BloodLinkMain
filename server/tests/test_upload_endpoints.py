@@ -116,7 +116,7 @@ def multipart(filename, content):
     return body, f"multipart/form-data; boundary={boundary}"
 
 
-async def asgi(method, path, headers=(), body=b""):
+async def asgi(method, path, headers=(), body=b"", query=b""):
     """One request through the real ASGI app (routing, auth dependency, UploadFile and BackgroundTasks injection) -> (status, body)."""
     sent = []
     delivered = False
@@ -132,7 +132,7 @@ async def asgi(method, path, headers=(), body=b""):
         sent.append(message)
 
     scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": method, "path": path,
-             "raw_path": path.encode(), "query_string": b"", "root_path": "", "scheme": "http", "server": ("test", 80),
+             "raw_path": path.encode(), "query_string": query, "root_path": "", "scheme": "http", "server": ("test", 80),
              "client": ("test", 1), "headers": [(b"host", b"test"), *[(k.encode(), v.encode()) for k, v in headers]]}
     await app.app(scope, receive, send)
     status = next(m["status"] for m in sent if m["type"] == "http.response.start")
