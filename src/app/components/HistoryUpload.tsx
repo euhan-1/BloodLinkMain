@@ -18,6 +18,9 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
   const fileRef = useRef<HTMLInputElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
+  const chooseRef = useRef<HTMLButtonElement>(null);
+  const readGeneration = useRef(0);   // a preview still on its way when the user cancels must not bring the screen back
+  const focusChooseNext = useRef(false);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<HistoryPreview | null>(null);
   const [order, setOrder] = useState<DateOrder | null>(null);
@@ -31,25 +34,40 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
   // Keyboard and screen reader users land on the preview when it appears, and on the outcome after saving.
   useEffect(() => { if (preview) headingRef.current?.focus(); }, [preview === null]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (result) resultRef.current?.focus(); }, [result]);
+  // After Cancel the preview is gone: focus goes to the upload button, where the user started.
+  useEffect(() => { if (preview === null && focusChooseNext.current) { focusChooseNext.current = false; chooseRef.current?.focus(); } }, [preview]);
 
   function reset() {
     setFile(null); setPreview(null); setOrder(null); setExample(null); setColumns({}); setQuestions({}); setError(null);
     if (fileRef.current) fileRef.current.value = "";
   }
 
+  // Leaves the preview step as if no file had been chosen: the preview, the file and every column or date choice are dropped.
+  // Never calls the server (nothing is saved, nothing already saved is touched); not possible while a save is running.
+  function cancel() {
+    if (busy === "saving") return;
+    readGeneration.current += 1;
+    setBusy(null);
+    reset();
+    focusChooseNext.current = true;
+  }
+
   async function read(f: File, choice: DateOrder | null, cols: ColumnChoices) {
+    const mine = ++readGeneration.current;
     setBusy("reading");
     setError(null);
     try {
       const p = await previewHistoricalUpload(f, choice, cols);
+      if (mine !== readGeneration.current) return;
       if (p.ambiguous_dates && p.ambiguous_example) setExample(p.ambiguous_example);
       if (p.needs_column_choice) setQuestions((q) => ({ ...q, ...p.column_choices }));
       setPreview(p);
     } catch (err) {
+      if (mine !== readGeneration.current) return;
       setError(err instanceof Error ? err.message : "We could not read that file.");
       setPreview(null);
     } finally {
-      setBusy(null);
+      if (mine === readGeneration.current) setBusy(null);
     }
   }
 
@@ -110,6 +128,7 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
       {preview === null && (
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <button
+            ref={chooseRef}
             type="button"
             onClick={() => fileRef.current?.click()}
             disabled={busy !== null}
@@ -128,7 +147,11 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
       )}
 
       {preview && (
-        <section aria-labelledby="history-preview-heading" className="mt-4 rounded-lg border border-border bg-card p-4 space-y-4">
+        <section
+          aria-labelledby="history-preview-heading"
+          className="mt-4 rounded-lg border border-border bg-card p-4 space-y-4"
+          onKeyDown={(e) => { if (e.key === "Escape" && busy !== "saving") { e.preventDefault(); cancel(); } }}
+        >
           <div>
             <h4 id="history-preview-heading" ref={headingRef} tabIndex={-1} className="text-[15px] font-semibold text-foreground outline-none">
               We read your file like this
@@ -240,7 +263,7 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
             </div>
           )}
 
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-1">
+          <div className="flex flex-wrap items-center gap-2 pt-1">
             <button
               type="button"
               onClick={save}
@@ -251,9 +274,19 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
             </button>
             <button
               type="button"
-              onClick={() => { if (fileRef.current) fileRef.current.value = ""; fileRef.current?.click(); }}
+              onClick={cancel}
               disabled={busy === "saving"}
               className={`${BUTTON} border border-border bg-card text-foreground hover:bg-secondary disabled:opacity-60`}
+            >
+              Cancel
+            </button>
+          </div>
+          <div>
+            <button
+              type="button"
+              onClick={() => { if (fileRef.current) fileRef.current.value = ""; fileRef.current?.click(); }}
+              disabled={busy === "saving"}
+              className="py-1.5 text-[14px] font-semibold text-role-accent-text underline underline-offset-2 rounded-sm hover:no-underline disabled:opacity-60 disabled:no-underline"
             >
               Choose a different file
             </button>

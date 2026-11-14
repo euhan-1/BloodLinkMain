@@ -82,4 +82,28 @@ for (const p of ["units_column", "date_column", "type_column"]) {
   if (!serverSource.includes(`${p}: Optional[str] = None`)) fail(`the server does not take ${p}`);
 }
 
+// Cancel: drops the preview and every choice, never talks to the server, cannot run mid-save, and Escape does the same
+// the function's code without its line comments, so a commented-out call cannot satisfy a check
+const bodyOf = (name: string): string =>
+  (screen.match(new RegExp(`function ${name}\\(.*?\\) \\{[\\s\\S]*?\\n  \\}\\n`))?.[0] ?? fail(`function ${name} not found`)).replace(/\/\/.*$/gm, "");
+const reset = bodyOf("reset");
+for (const t of ["setFile(null)", "setPreview(null)", "setOrder(null)", "setExample(null)", "setColumns({})", "setQuestions({})", "setError(null)", 'fileRef.current.value = ""']) {
+  if (!reset.includes(t)) fail(`Cancel must reset the preview state: reset() lacks ${t}`);
+}
+const cancel = bodyOf("cancel");
+if (!cancel.includes('if (busy === "saving") return;')) fail("Cancel must do nothing while a save is running");
+if (!cancel.includes("reset();")) fail("Cancel must call reset()");
+if (!cancel.includes("readGeneration.current += 1")) fail("Cancel must stop a preview that is still on its way from coming back");
+for (const t of ["uploadHistoricalInventorySnapshots", "previewHistoricalUpload", "fetch(", "apiPost", "apiUploadFile", "onSaved"]) {
+  if (cancel.includes(t)) fail(`Cancel must never call the server or report a save: it mentions ${t}`);
+}
+if (!/const mine = \+\+readGeneration\.current;/.test(screen) || (screen.match(/mine !== readGeneration\.current/g) ?? []).length < 2) fail("a stale preview must be ignored after Cancel");
+if (!/onClick=\{cancel\}\s+disabled=\{busy === "saving"\}/.test(screen)) fail("the Cancel button must be disabled while saving");
+if (!/e\.key === "Escape" && busy !== "saving"\) \{ e\.preventDefault\(\); cancel\(\); \}/.test(screen)) fail("Escape inside the preview must cancel, except while saving");
+const saveAt = screen.indexOf("onClick={save}"), cancelAt = screen.indexOf("onClick={cancel}"), linkAt = screen.indexOf("Choose a different file");
+if (!(saveAt > 0 && saveAt < cancelAt && cancelAt < linkAt)) fail("tab order must be Save, Cancel, then the file link");
+const linkButton = screen.slice(screen.lastIndexOf("<button", linkAt), linkAt);
+if (!linkButton.includes("underline") || /border-border|bg-card|bg-primary/.test(linkButton)) fail("'Choose a different file' must be a plain text link, not a third button");
+if (!/disabled=\{busy === "saving"\}\s+className="py-1\.5/.test(linkButton + screen.slice(linkAt, linkAt + 1)) && !linkButton.includes('disabled={busy === "saving"}')) fail("the file link must be disabled while saving");
+
 console.log("ok");
