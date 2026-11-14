@@ -21,7 +21,7 @@ import re
 from datetime import date, datetime
 from typing import Iterator, Optional
 
-MAX_ENTRIES = 50_000        # date + blood type figures in one file (a wide row is up to 8); bounds memory on a 512 MB instance
+MAX_ENTRIES = 15_000        # date + blood type figures in one file (a wide row is up to 8): about 5 years of 8 types. Bounds the request's time on the slow instance
 MAX_COLS = 60
 HEADER_SCAN_ROWS = 10
 MAX_BLANK_RUN = 1000         # a sheet whose "used range" runs on over empty rows stops being read after this many in a row

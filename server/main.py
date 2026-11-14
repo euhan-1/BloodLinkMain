@@ -91,6 +91,10 @@ FORECAST_CHECKPOINTS = [0, 5, 10, 15, 20, 25, 30]
 FORECAST_INTERVAL_CONFIDENCE = 0.95
 # How many days of observed totals GET /forecast returns as `history`, ending today, for the trend chart.
 HISTORY_DAYS = 90
+# The forecast reads at most this many calendar days of a blood type's history, ending today: a fit's time and memory grow with the
+# series (measured locally, one type: 730 days is a fraction of 1,800, and 6,250 days took 34 s and 423 MB). Everything older still
+# counts as recorded history (days_of_history, the 30-day rule) but is not fed to the fit or drawn from. See _forecast_daily_series.
+FORECAST_WINDOW_DAYS = 730
 
 # A materially higher bar than MIN_DAYS_REQUIRED above: SARIMAX(0,1,4)x(1,0,1,7)
 # needs enough runway to estimate a 4-lag MA term plus several full weekly
@@ -1270,6 +1274,17 @@ def _resample_daily_series(
     return result
 
 
+def _forecast_daily_series(
+    type_rows: dict[date, int], observed_dates: set[date], end: date, carry_dates: Optional[set[date]] = None
+) -> list[tuple[date, int]]:
+    """THE daily series the forecast fits and the chart sums: _resample_daily_series, cut to the last FORECAST_WINDOW_DAYS days
+    ending `end` when it is longer. A series of 730 days or fewer is returned as it is (the same list, byte for byte). The cut is made
+    after the fill, so the first day of the window holds exactly what the full series held there: the previous day's value when that
+    day was not recorded (carried from before the window), a real 0 only on a day the app itself recorded."""
+    series = _resample_daily_series(type_rows, observed_dates, end, carry_dates)
+    return series[-FORECAST_WINDOW_DAYS:] if len(series) > FORECAST_WINDOW_DAYS else series
+
+
 def _carry_forward_dates(history_rows) -> set[date]:
     """Days in `history_rows` that came only from uploads: no row for that date was written by the app (upload_history_id
     IS NULL). On those days a blood type with no row is carried forward, not zeroed (see _resample_daily_series). Rows
@@ -1292,7 +1307,7 @@ def _history_totals(history_rows, today: date, days: int = HISTORY_DAYS) -> list
     """The facility's total stock per day for the last `days` days ending `today`, for the trend chart:
     [{"date": ISO, "units": total across all blood types, "observed": bool}], oldest first.
 
-    `units` is built from the same per-type series the SARIMAX fit is fed (_resample_daily_series), so a day
+    `units` is built from the same per-type series the SARIMAX fit is fed (_forecast_daily_series), so a day
     nobody recorded carries the last recorded value forward exactly as the model saw it, and a blood type with
     no row on a day somebody did record counts as a real zero. `observed` is true when the facility has at
     least one snapshot row that date, which is the same test _resample_daily_series uses to tell the two apart.
@@ -1305,7 +1320,7 @@ def _history_totals(history_rows, today: date, days: int = HISTORY_DAYS) -> list
         by_type.setdefault(r["blood_type"], {})[r["snapshot_date"]] = r["units"]
     totals: dict[date, int] = {}
     for type_rows in by_type.values():
-        for d, units in _resample_daily_series(type_rows, observed_dates, today, carry_dates):
+        for d, units in _forecast_daily_series(type_rows, observed_dates, today, carry_dates):
             totals[d] = totals.get(d, 0) + units
     start = today - timedelta(days=days - 1)
     return [{"date": d.isoformat(), "units": totals[d], "observed": d in observed_dates} for d in sorted(totals) if d >= start]
@@ -3977,7 +3992,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
         prefetched_cache: Optional[dict[str, Optional[dict]]] = None
         if use_sarimax:
             carry_dates = _carry_forward_dates(history_rows)
-            daily_by_type = {bt: _resample_daily_series(raw_units_by_type[bt], observed_dates, today, carry_dates) for bt in by_type}
+            daily_by_type = {bt: _forecast_daily_series(raw_units_by_type[bt], observed_dates, today, carry_dates) for bt in by_type}
             prefetched_cache = _read_cached_sarimax_many(
                 conn, facility_id, {bt: sr for bt, sr in daily_by_type.items() if len(sr) >= SARIMAX_MIN_DAYS_REQUIRED}, today
             )
