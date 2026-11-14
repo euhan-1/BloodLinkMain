@@ -5,6 +5,7 @@ import {
   listUploadHistory, downloadUploadHistoryFile, type UploadType, type UploadHistoryEntry,
 } from "../lib/api";
 import { Modal } from "./Modal";
+import { UNDO_ACK_LABEL, undoNeedsAcknowledgement, undoSummarySentence } from "../lib/undoUpload";
 
 // Same row shown two ways (what will be removed, what's blocking removal) —
 // one formatter so both stay in sync with whatever fields each upload type's
@@ -29,6 +30,7 @@ function UndoUploadModal({ entry, onClose, onUndone }: {
   const [applying, setApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
   const [result, setResult] = useState<UndoApplyResult | null>(null);
+  const [understood, setUnderstood] = useState(false);
 
   useEffect(() => {
     previewUploadUndo(entry.id)
@@ -75,6 +77,29 @@ function UndoUploadModal({ entry, onClose, onUndone }: {
             {entry.filename ?? "This upload"} — uploaded{" "}
             {new Date(entry.uploaded_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}.
           </p>
+
+          {preview.summary && (
+            undoNeedsAcknowledgement(preview.summary) ? (
+              <div className="rounded-lg border border-status-critical-border bg-status-critical-tint px-3 py-3 space-y-3">
+                <p className="flex items-start gap-2 text-[14px] font-semibold text-status-critical-text">
+                  <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+                  <span>{undoSummarySentence(preview.summary)}</span>
+                </p>
+                <label htmlFor="undo-understood" className="flex items-start gap-2.5 text-[14px] text-status-critical-text cursor-pointer">
+                  <input
+                    id="undo-understood"
+                    type="checkbox"
+                    checked={understood}
+                    onChange={(e) => setUnderstood(e.target.checked)}
+                    className="mt-0.5 size-4 shrink-0 accent-status-critical-text"
+                  />
+                  <span>{UNDO_ACK_LABEL}</span>
+                </label>
+              </div>
+            ) : (
+              <p className="text-[14px] text-foreground">{undoSummarySentence(preview.summary)}</p>
+            )
+          )}
 
           {preview.eligible.length === 0 && preview.blocked.length === 0 && (
             <div className="text-[14px] text-muted-foreground">There's nothing left from this upload to remove.</div>
@@ -125,8 +150,8 @@ function UndoUploadModal({ entry, onClose, onUndone }: {
             </button>
             <button
               onClick={handleConfirm}
-              disabled={applying}
-              className="flex-1 h-10 bg-status-critical-text text-white text-sm font-bold rounded-md hover:opacity-90 transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+              disabled={applying || (preview.summary != null && undoNeedsAcknowledgement(preview.summary) && !understood)}
+              className="flex-1 h-10 bg-status-critical-text text-white dark:text-background text-sm font-bold rounded-md hover:opacity-90 transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
             >
               {applying ? (
                 <><RefreshCw size={15} className="animate-spin" /> Removing…</>

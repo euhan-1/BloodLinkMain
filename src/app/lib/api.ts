@@ -517,8 +517,38 @@ export type HistoricalUploadResult = {
   min_days_required: number;
 };
 
-export function uploadHistoricalInventorySnapshots(file: File): Promise<HistoricalUploadResult> {
-  return apiUploadFile<HistoricalUploadResult>("/forecast/historical-upload", file);
+// A file with dates such as 03/04/2026 can be read two ways; the server will not guess, so the preview says so and the user's
+// answer travels with the preview and the save.
+export type DateOrder = "dmy" | "mdy";
+
+export type HistoryPreview = {
+  file_type: "csv" | "xlsx";
+  sheet: string | null;
+  other_sheets: string[];
+  layout: "long" | "wide" | null;
+  mapping: { date?: string; blood_type?: string; units?: string; blood_types?: Record<string, string> };
+  header_row: number | null;
+  date_format: string | null;
+  date_order: DateOrder | null;
+  ambiguous_dates: boolean;
+  ambiguous_example: { text: string; day_first: string; month_first: string } | null;
+  row_counts: { total: number; usable: number; skipped: number };
+  repeated: number;
+  sample_rows: { row: number; snapshot_date: string; blood_type: string; units: number }[];
+  problems: { row: number | string; reason: string }[];
+  more_problems: number;
+  fatal: string | null;
+};
+
+const withDateOrder = (path: string, order?: DateOrder | null) => (order ? `${path}?date_order=${order}` : path);
+
+/** What saving this file would do. Writes nothing. */
+export function previewHistoricalUpload(file: File, order?: DateOrder | null): Promise<HistoryPreview> {
+  return apiUploadFile<HistoryPreview>(withDateOrder("/forecast/historical-upload/preview", order), file);
+}
+
+export function uploadHistoricalInventorySnapshots(file: File, order?: DateOrder | null): Promise<HistoricalUploadResult> {
+  return apiUploadFile<HistoricalUploadResult>(withDateOrder("/forecast/historical-upload", order), file);
 }
 
 export function deleteInventoryUnit(din: string): Promise<{ deleted: true; din: string }> {
@@ -640,11 +670,24 @@ export function listUploadHistory(uploadType: UploadType): Promise<UploadHistory
 export type UndoRow = Record<string, string | number>;
 export type UndoBlockedRow = UndoRow & { reason: string };
 
+// Historical uploads only: what the undo does to the facility's recorded DAYS (null once undone; absent for other upload types).
+export type UndoSummary = {
+  days_deleted: number;       // days with no row left afterwards
+  days_restored: number;      // days that stay, with at least one row back to an older value
+  first_date: string | null;  // first and last of every affected day
+  last_date: string | null;
+  deleted_first_date: string | null;  // first and last of the days that go
+  deleted_last_date: string | null;
+  days_remaining: number;     // distinct recorded days after the undo
+  forecast_min_days: number;  // what a real forecast needs
+};
+
 export type UndoPreviewResult = {
   upload_type: UploadType;
   already_undone: boolean;
   eligible: UndoRow[];
   blocked: UndoBlockedRow[];
+  summary?: UndoSummary | null;
 };
 
 export type UndoApplyResult = {

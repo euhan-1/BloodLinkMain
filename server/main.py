@@ -43,6 +43,7 @@ import auth
 import client_ip
 import email_service
 import geocode_service
+import history_import
 import server_timing
 import upload_limits
 from database import engine, read_engine, retry_read
@@ -703,31 +704,93 @@ def _preview_historical_undo(conn, upload_id: int, facility_id: int) -> tuple[li
     return [dict(r) for r in rows], []
 
 
+# Which value a (date, type) goes back to when :upload_id is undone, for the keys in a CTE named `keys`: the newest write-log entry
+# from an upload that has NOT been undone (excluding this one), else the original organic value; no entry means the upload inserted
+# the row and it is deleted. The entry carries its tag, so the older upload keeps owning what it wrote. One definition for the undo
+# itself and for the preview's summary of it.
+_UNDO_WINNER_CTE = """
+    winner AS (
+        SELECT DISTINCT ON (h.snapshot_date, h.blood_type)
+               h.snapshot_date, h.blood_type, h.units, h.upload_history_id
+        FROM inventory_snapshot_write_log h
+        JOIN keys k ON k.snapshot_date = h.snapshot_date AND k.blood_type = h.blood_type
+        LEFT JOIN upload_history u ON u.id = h.upload_history_id
+        WHERE h.facility_id = :facility_id
+          AND h.upload_history_id IS DISTINCT FROM :upload_id
+          AND (h.upload_history_id IS NULL OR u.undone_at IS NULL)
+        ORDER BY h.snapshot_date, h.blood_type, (h.upload_history_id IS NULL), h.id DESC
+    )"""
+
+
+def _historical_undo_summary(conn, upload_id: int, facility_id: int) -> dict:
+    """What undoing this historical upload would do to the facility's recorded DAYS, for the confirmation: days_deleted (a day with
+    no row left afterwards), days_restored (a day that stays and has at least one row going back to an older value),
+    first_date / last_date of every affected day, deleted_first_date / deleted_last_date of the removed ones, days_remaining
+    (distinct recorded days after the undo) and forecast_min_days (SARIMAX_MIN_DAYS_REQUIRED, which a real forecast needs). Read
+    only; the same keys and winner as _apply_historical_undo, so the preview cannot disagree with the undo."""
+    rows = conn.execute(
+        text(
+            f"""
+            WITH keys AS (
+                SELECT snapshot_date, blood_type FROM inventory_snapshot_write_log
+                WHERE upload_history_id = :upload_id AND facility_id = :facility_id
+                UNION
+                SELECT snapshot_date, blood_type FROM inventory_snapshots
+                WHERE upload_history_id = :upload_id AND facility_id = :facility_id
+            ), {_UNDO_WINNER_CTE}
+            SELECT k.snapshot_date, (w.snapshot_date IS NOT NULL) AS restored
+            FROM keys k
+            JOIN inventory_snapshots s ON s.facility_id = :facility_id AND s.snapshot_date = k.snapshot_date AND s.blood_type = k.blood_type
+            LEFT JOIN winner w ON w.snapshot_date = k.snapshot_date AND w.blood_type = k.blood_type
+            """
+        ),
+        {"upload_id": upload_id, "facility_id": facility_id},
+    ).all()
+    per_day = {
+        r.snapshot_date: r.n
+        for r in conn.execute(
+            text("SELECT snapshot_date, count(*) AS n FROM inventory_snapshots WHERE facility_id = :facility_id GROUP BY snapshot_date"),
+            {"facility_id": facility_id},
+        ).all()
+    }
+    deleted_rows: dict[date, int] = {}
+    restored_days: set[date] = set()
+    for r in rows:
+        if r.restored:
+            restored_days.add(r.snapshot_date)
+        else:
+            deleted_rows[r.snapshot_date] = deleted_rows.get(r.snapshot_date, 0) + 1
+    gone = sorted(d for d, n in deleted_rows.items() if n >= per_day[d])
+    kept_restored = [d for d in restored_days if d not in set(gone)]
+    affected = sorted(set(deleted_rows) | restored_days)
+    return {
+        "days_deleted": len(gone),
+        "days_restored": len(kept_restored),
+        "first_date": affected[0].isoformat() if affected else None,
+        "last_date": affected[-1].isoformat() if affected else None,
+        "deleted_first_date": gone[0].isoformat() if gone else None,
+        "deleted_last_date": gone[-1].isoformat() if gone else None,
+        "days_remaining": len(per_day) - len(gone),
+        "forecast_min_days": SARIMAX_MIN_DAYS_REQUIRED,
+    }
+
+
 def _apply_historical_undo(conn, upload_id: int, facility_id: int) -> tuple[int, list[dict]]:
     """Reverts exactly what this upload did to inventory_snapshots, using
     inventory_snapshot_write_log (see schema_snapshot_write_log.sql). For each
-    (date, type) the upload wrote, the winner is the newest write-log entry
-    from an upload that has NOT been undone (excluding this one), falling back
-    to the original organic value; with no winner the upload inserted the row
-    and it is deleted. Returns rows reverted (deleted + restored)."""
+    (date, type) the upload wrote, the winner (_UNDO_WINNER_CTE) is the newest
+    write-log entry from an upload that has NOT been undone (excluding this one),
+    falling back to the original organic value; with no winner the upload inserted
+    the row and it is deleted. The row goes back with the winner's value AND tag, so
+    an older upload that is restored still owns it. Returns rows reverted (deleted + restored)."""
     reverted = conn.execute(
         text(
-            """
+            f"""
             WITH keys AS (
                 SELECT snapshot_date, blood_type FROM inventory_snapshot_write_log
                 WHERE upload_history_id = :upload_id AND facility_id = :facility_id
             ),
-            winner AS (
-                SELECT DISTINCT ON (h.snapshot_date, h.blood_type)
-                       h.snapshot_date, h.blood_type, h.units, h.upload_history_id
-                FROM inventory_snapshot_write_log h
-                JOIN keys k ON k.snapshot_date = h.snapshot_date AND k.blood_type = h.blood_type
-                LEFT JOIN upload_history u ON u.id = h.upload_history_id
-                WHERE h.facility_id = :facility_id
-                  AND h.upload_history_id IS DISTINCT FROM :upload_id
-                  AND (h.upload_history_id IS NULL OR u.undone_at IS NULL)
-                ORDER BY h.snapshot_date, h.blood_type, (h.upload_history_id IS NULL), h.id DESC
-            ),
+            {_UNDO_WINNER_CTE},
             restored AS (
                 UPDATE inventory_snapshots s
                 SET units = w.units, upload_history_id = w.upload_history_id
@@ -1156,7 +1219,7 @@ def dengue_season_index(d: date) -> float:
 
 
 def _resample_daily_series(
-    type_rows: dict[date, int], observed_dates: set[date], end: date
+    type_rows: dict[date, int], observed_dates: set[date], end: date, carry_dates: Optional[set[date]] = None
 ) -> list[tuple[date, int]]:
     """Turns one blood type's own (possibly gappy) snapshot rows into a
     continuous day-by-day series from that type's own first observed date
@@ -1177,6 +1240,12 @@ def _resample_daily_series(
         checked it; the last known level is carried forward instead of
         fabricating a stockout that didn't happen.
 
+    A third case, `carry_dates` (see _carry_forward_dates): an observed day that came only from uploads. The app writes all
+    eight types every time it records a day, so a type missing on one of ITS days is a real zero; an upload may simply
+    not have a row for a type (a row skipped as unreadable, a file that never listed it), and that is "not recorded",
+    not a stockout, so such a day carries the previous value forward like an unobserved one. None (the default) means
+    every observed day is the app's, which is what this function always did.
+
     Starts at this type's own first observed date, not the facility's
     overall first date, so nothing is invented before this type had any
     recorded presence at all. Returns [] if `type_rows` is empty.
@@ -1192,13 +1261,24 @@ def _resample_daily_series(
         if d in type_rows:
             last_known = type_rows[d]
             result.append((d, last_known))
-        elif d in observed_dates:
+        elif d in observed_dates and not (carry_dates and d in carry_dates):
             last_known = 0
             result.append((d, 0))
         else:
             result.append((d, last_known))
         d += timedelta(days=1)
     return result
+
+
+def _carry_forward_dates(history_rows) -> set[date]:
+    """Days in `history_rows` that came only from uploads: no row for that date was written by the app (upload_history_id
+    IS NULL). On those days a blood type with no row is carried forward, not zeroed (see _resample_daily_series). Rows
+    without an upload_history_id column (the order-selection read, which is left as it was) give the empty set: the old
+    rule, every observed day the app's."""
+    if not history_rows or "upload_history_id" not in history_rows[0]:
+        return set()
+    app_days = {r["snapshot_date"] for r in history_rows if r["upload_history_id"] is None}
+    return {r["snapshot_date"] for r in history_rows} - app_days
 
 
 def _count_observed_days(daily_series: list[tuple[date, int]], observed_dates: set[date]) -> int:
@@ -1219,12 +1299,13 @@ def _history_totals(history_rows, today: date, days: int = HISTORY_DAYS) -> list
     Independent of any fit: the rows are already loaded, so this works while forecasts are still pending, and
     for the linear-trend path, which never builds the per-type daily series itself."""
     observed_dates = {r["snapshot_date"] for r in history_rows}
+    carry_dates = _carry_forward_dates(history_rows)
     by_type: dict[str, dict[date, int]] = {}
     for r in history_rows:
         by_type.setdefault(r["blood_type"], {})[r["snapshot_date"]] = r["units"]
     totals: dict[date, int] = {}
     for type_rows in by_type.values():
-        for d, units in _resample_daily_series(type_rows, observed_dates, today):
+        for d, units in _resample_daily_series(type_rows, observed_dates, today, carry_dates):
             totals[d] = totals.get(d, 0) + units
     start = today - timedelta(days=days - 1)
     return [{"date": d.isoformat(), "units": totals[d], "observed": d in observed_dates} for d in sorted(totals) if d >= start]
@@ -2396,7 +2477,7 @@ app = FastAPI(**fastapi_docs_settings(api_docs_enabled()))
 
 # Added before CORS so CORS wraps it (a 413 still carries the CORS headers the browser needs to show the message). The donor upload
 # is deliberately not listed.
-app.add_middleware(upload_limits.UploadSizeLimitMiddleware, paths=("/inventory/upload", "/forecast/historical-upload"))
+app.add_middleware(upload_limits.UploadSizeLimitMiddleware, paths=("/inventory/upload", "/forecast/historical-upload", "/forecast/historical-upload/preview"))
 
 app.add_middleware(
     CORSMiddleware,
@@ -2739,12 +2820,18 @@ def preview_upload_undo(upload_id: int, facility_id: int = Depends(get_acting_fa
         upload = _load_upload_for_undo(conn, upload_id, facility_id)
         preview_fn, _ = UPLOAD_UNDO_HANDLERS[upload["upload_type"]]
         eligible, blocked = preview_fn(conn, upload_id, facility_id)
-    return {
+        summary = None
+        if upload["upload_type"] == "historical_stock" and upload["undone_at"] is None:
+            summary = _historical_undo_summary(conn, upload_id, facility_id)
+    response = {
         "upload_type": upload["upload_type"],
         "already_undone": upload["undone_at"] is not None,
         "eligible": eligible,
         "blocked": blocked,
     }
+    if upload["upload_type"] == "historical_stock":
+        response["summary"] = summary  # days that would go and how many would be left; null once undone
+    return response
 
 
 @app.post("/upload-history/{upload_id}/undo")
@@ -3390,6 +3477,41 @@ def _parse_historical_snapshot_csv(csv_text: str, today: date) -> tuple[list[dic
     return valid_rows, errors
 
 
+@retry_read
+def _require_blood_bank(facility_id: int) -> None:
+    """403 unless the facility is a blood bank (re-read from the database, never trusted from the client). One read-only statement."""
+    with read_engine.connect() as conn:
+        facility_type = conn.execute(text("SELECT facility_type FROM facilities WHERE id = :id"), {"id": facility_id}).scalar()
+    if facility_type != "bloodbank":
+        raise HTTPException(status_code=403, detail="historical data upload is only available to blood bank facilities")
+
+
+def _read_history_upload(file: UploadFile, date_order: Optional[str]):
+    """THE reading of a historical stock file, called by both the preview and the save, so what was shown is what is saved.
+    Returns (kind, content, history_import.Parsed); an HTTPException for a file refused as a whole."""
+    if date_order not in (None, "dmy", "mdy"):
+        raise HTTPException(status_code=400, detail="date_order must be dmy (day first) or mdy (month first)")
+    kind, content = upload_limits.read_table_upload(file)  # .csv or .xlsx, size (MAX_UPLOAD_BYTES), a look at the bytes
+    try:
+        return kind, content, history_import.parse_history_upload(kind, content, business_today(), date_order)
+    except history_import.HistoryFileError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@app.post("/forecast/historical-upload/preview")
+def preview_historical_inventory_snapshots(
+    file: UploadFile = File(...),
+    date_order: Optional[str] = None,
+    facility_id: int = Depends(get_acting_facility_id),
+):
+    """What the historical upload would save from this file, without saving anything: the layout and columns found, the date format
+    assumed, row counts, up to 10 sample rows as they would be stored and the problems (20 shown, the rest counted). Blood banks only.
+    `date_order` (dmy or mdy) is the user's answer when the response says ambiguous_dates. Writes nothing; its one database read is
+    the facility type. Not wrapped in retry_read itself (a second run would find the upload already consumed): the read is."""
+    _require_blood_bank(facility_id)
+    return _read_history_upload(file, date_order)[2].preview()
+
+
 @app.post("/forecast/historical-upload")
 def upload_historical_inventory_snapshots(
     file: UploadFile = File(...),
@@ -3402,6 +3524,7 @@ def upload_historical_inventory_snapshots(
     # since the type annotation must stay bare `BackgroundTasks` (not Optional[...])
     # for FastAPI's injection to recognize it; the `= None` is a runtime-only default.
     background_tasks: BackgroundTasks = None,
+    date_order: Optional[str] = None,
 ):
     """Backfills inventory_snapshots for dates before this facility started
     using BloodLink, from the facility's own past daily/periodic stock
@@ -3437,33 +3560,38 @@ def upload_historical_inventory_snapshots(
     if facility_type != "bloodbank":
         raise HTTPException(status_code=403, detail="historical data upload is only available to blood bank facilities")
 
-    csv_text = upload_limits.read_csv_upload(file)  # .csv, size (MAX_UPLOAD_BYTES), a look at the bytes, UTF-8
-
-    valid_rows, errors = _parse_historical_snapshot_csv(csv_text, business_today())
+    # The same reading the preview did (.csv or .xlsx; long or wide; synonyms), so what the user confirmed is what is saved.
+    kind, content, parsed = _read_history_upload(file, date_order)
+    if parsed.ambiguous:  # before anything is written, not even the upload record
+        raise HTTPException(status_code=400, detail="Some dates could be read day-first or month-first. Choose one and save again.")
+    valid_rows, errors = parsed.rows, parsed.errors
 
     rows_processed = len(valid_rows)
     with engine.begin() as conn:
-        upload_id = _start_upload_record(conn, facility_id, "historical_stock", uploaded_by, file.filename, csv_text)
+        upload_id = _start_upload_record(conn, facility_id, "historical_stock", uploaded_by, file.filename, content if kind == "csv" else None)
 
         # A few statements for the whole file instead of one round trip per row.
         batch = _last_wins(valid_rows, lambda r: (r["snapshot_date"], r["blood_type"]))
         if batch:
             arrays = {c: [r[c] for r in batch] for c in ("snapshot_date", "blood_type", "units")}
             unnest = "unnest(CAST(:snapshot_date AS date[]), CAST(:blood_type AS text[]), CAST(:units AS int[])) AS t(snapshot_date, blood_type, units)"
-            # 1. Save the organic value of any row this upload is about to overwrite
-            #    (once: skipped if a base entry is already logged) so undo can restore it.
+            # 1. Save the value of every row this upload is about to overwrite, whatever wrote it: under its CURRENT tag
+            #    (its own upload_history_id, or NULL for an organic row), unless the log already holds one under that tag
+            #    (a post-log upload logged what it wrote at its step 2). A row from an upload made before the write log
+            #    existed has no entry; without this one, undoing THIS upload had nothing to restore and deleted the day.
+            #    Undo's winner choice then restores the older value together with its older tag.
             conn.execute(
                 text(
                     f"""
                     INSERT INTO inventory_snapshot_write_log (facility_id, snapshot_date, blood_type, units, upload_history_id)
-                    SELECT s.facility_id, s.snapshot_date, s.blood_type, s.units, NULL
+                    SELECT s.facility_id, s.snapshot_date, s.blood_type, s.units, s.upload_history_id
                     FROM inventory_snapshots s
-                    WHERE s.facility_id = :facility_id AND s.upload_history_id IS NULL
+                    WHERE s.facility_id = :facility_id
                       AND (s.snapshot_date, s.blood_type) IN (SELECT t.snapshot_date, t.blood_type FROM {unnest})
                       AND NOT EXISTS (
                           SELECT 1 FROM inventory_snapshot_write_log l
                           WHERE l.facility_id = s.facility_id AND l.snapshot_date = s.snapshot_date
-                            AND l.blood_type = s.blood_type AND l.upload_history_id IS NULL)
+                            AND l.blood_type = s.blood_type AND l.upload_history_id IS NOT DISTINCT FROM s.upload_history_id)
                     """
                 ),
                 {**arrays, "facility_id": facility_id},
@@ -3748,7 +3876,7 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
         history_rows = conn.execute(
             text(
                 """
-                SELECT snapshot_date, blood_type, units
+                SELECT snapshot_date, blood_type, units, upload_history_id
                 FROM inventory_snapshots
                 WHERE facility_id = :facility_id
                 ORDER BY snapshot_date ASC
@@ -3827,7 +3955,8 @@ def get_forecast(facility_id: int = Depends(get_acting_facility_id)):
         daily_by_type: dict[str, list[tuple[date, int]]] = {}
         prefetched_cache: Optional[dict[str, Optional[dict]]] = None
         if use_sarimax:
-            daily_by_type = {bt: _resample_daily_series(raw_units_by_type[bt], observed_dates, today) for bt in by_type}
+            carry_dates = _carry_forward_dates(history_rows)
+            daily_by_type = {bt: _resample_daily_series(raw_units_by_type[bt], observed_dates, today, carry_dates) for bt in by_type}
             prefetched_cache = _read_cached_sarimax_many(
                 conn, facility_id, {bt: sr for bt, sr in daily_by_type.items() if len(sr) >= SARIMAX_MIN_DAYS_REQUIRED}, today
             )
@@ -4199,7 +4328,7 @@ def geocode_facility_address(address: str, request: Request):
 # The version of the Privacy Notice (the /privacy page) a registrant consents to, stored with the account. It must equal
 # PRIVACY_NOTICE_VERSION in src/app/lib/privacyNotice.ts (scripts/check_privacy.ts fails if the two differ). Raise both when the notice
 # changes in a way that needs fresh consent.
-PRIVACY_NOTICE_VERSION = "1.1"
+PRIVACY_NOTICE_VERSION = "1.2"
 
 # The four columns of server/migrate_add_privacy_consent.sql. Until it has been applied the app still registers people (see
 # _consent_columns_ready), it just cannot record the consent.
