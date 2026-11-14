@@ -1,6 +1,6 @@
 // The words of the historical stock upload's preview step. Pure, so scripts/check_history_upload.ts can test them under Node.
 // Plain language: no "parse", "schema" or "mapping" anywhere a user reads.
-import type { HistoryPreview } from "./api.ts";
+import type { ColumnRole, HistoryPreview } from "./api.ts";
 import { formatCalendarDate } from "./dateFormat.ts";
 
 export const SUPPORTED_FILES_LINE = ".csv or .xlsx, one date per row.";
@@ -58,11 +58,25 @@ export function moreProblemsLine(p: HistoryPreview): string | null {
 export const sampleDate = formatCalendarDate;
 
 /** Whether Save is offered, and if not, the one reason shown beside it. */
-export function saveState(p: HistoryPreview, needsChoice: boolean): { canSave: boolean; why: string | null } {
+export function saveState(p: HistoryPreview, needsChoice: boolean, needsColumn = false): { canSave: boolean; why: string | null } {
   if (p.fatal) return { canSave: false, why: null }; // the problem is already on screen
+  if (needsColumn) return { canSave: false, why: "Choose which column to use to continue." };
   if (needsChoice) return { canSave: false, why: "Choose how the dates are written to continue." };
   if (p.row_counts.usable === 0) return { canSave: false, why: "Nothing in this file can be saved." };
   return { canSave: true, why: null };
+}
+
+/** The question asked when several columns could be the same one, in the order a person would think of them. */
+export const COLUMN_QUESTIONS: Record<ColumnRole, string> = {
+  units: "Which column holds the number of units?",
+  date: "Which column holds the date?",
+  type: "Which column holds the blood type?",
+};
+export const COLUMN_ROLE_ORDER: ColumnRole[] = ["units", "date", "type"];
+
+/** "First values: 70, 19, 21", so two columns that look alike can be told apart. */
+export function samplesText(samples: string[]): string {
+  return samples.length > 0 ? `First values: ${samples.join(", ")}` : "No values in the first rows";
 }
 
 export function savedSentence(rowsSaved: number, skipped: number): string {

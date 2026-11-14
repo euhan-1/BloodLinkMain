@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle, RefreshCw, Upload } from "lucide-react";
 import {
   previewHistoricalUpload, uploadHistoricalInventorySnapshots,
-  type DateOrder, type HistoricalUploadResult, type HistoryPreview,
+  type ColumnCandidate, type ColumnChoices, type ColumnRole, type DateOrder, type HistoricalUploadResult, type HistoryPreview,
 } from "../lib/api";
 import {
-  SUPPORTED_FILES_LINE, countsSentence, dateChoices, dateSentence, layoutSentence, moreProblemsLine, problemLine, repeatedSentence,
+  COLUMN_QUESTIONS, COLUMN_ROLE_ORDER, SUPPORTED_FILES_LINE, countsSentence, samplesText, dateChoices, dateSentence, layoutSentence, moreProblemsLine, problemLine, repeatedSentence,
   sampleDate, saveState, savedSentence, sheetSentence,
 } from "../lib/historyUpload";
 
@@ -22,6 +22,8 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
   const [preview, setPreview] = useState<HistoryPreview | null>(null);
   const [order, setOrder] = useState<DateOrder | null>(null);
   const [example, setExample] = useState<HistoryPreview["ambiguous_example"]>(null);
+  const [columns, setColumns] = useState<ColumnChoices>({});
+  const [questions, setQuestions] = useState<Partial<Record<ColumnRole, ColumnCandidate[]>>>({}); // kept once asked, so the answer can be changed
   const [busy, setBusy] = useState<"reading" | "saving" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<HistoricalUploadResult | null>(null);
@@ -31,16 +33,17 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
   useEffect(() => { if (result) resultRef.current?.focus(); }, [result]);
 
   function reset() {
-    setFile(null); setPreview(null); setOrder(null); setExample(null); setError(null);
+    setFile(null); setPreview(null); setOrder(null); setExample(null); setColumns({}); setQuestions({}); setError(null);
     if (fileRef.current) fileRef.current.value = "";
   }
 
-  async function read(f: File, choice: DateOrder | null) {
+  async function read(f: File, choice: DateOrder | null, cols: ColumnChoices) {
     setBusy("reading");
     setError(null);
     try {
-      const p = await previewHistoricalUpload(f, choice);
+      const p = await previewHistoricalUpload(f, choice, cols);
       if (p.ambiguous_dates && p.ambiguous_example) setExample(p.ambiguous_example);
+      if (p.needs_column_choice) setQuestions((q) => ({ ...q, ...p.column_choices }));
       setPreview(p);
     } catch (err) {
       setError(err instanceof Error ? err.message : "We could not read that file.");
@@ -56,13 +59,21 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
     setResult(null);
     setOrder(null);
     setExample(null);
+    setColumns({});
+    setQuestions({});
     setFile(f);
-    read(f, null);
+    read(f, null, {});
   }
 
   function choose(value: DateOrder) {
     setOrder(value);
-    if (file) read(file, value);
+    if (file) read(file, value, columns);
+  }
+
+  function chooseColumn(role: ColumnRole, name: string) {
+    const next = { ...columns, [role]: name };
+    setColumns(next);
+    if (file) read(file, order, next);
   }
 
   async function save() {
@@ -70,7 +81,7 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
     setBusy("saving");
     setError(null);
     try {
-      setResult(await uploadHistoricalInventorySnapshots(file, order));
+      setResult(await uploadHistoricalInventorySnapshots(file, order, columns));
       reset();
       onSaved();
     } catch (err) {
@@ -81,8 +92,11 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
   }
 
   const needsChoice = preview !== null && preview.ambiguous_dates && (order === null || busy === "reading");
-  const asksForChoice = preview !== null && (preview.ambiguous_dates || order !== null);
-  const state = preview ? saveState(preview, needsChoice) : null;
+  const needsColumns = preview !== null && preview.needs_column_choice;
+  const asksForChoice = preview !== null && !needsColumns && (preview.ambiguous_dates || order !== null);
+  const hideDetails = needsChoice || needsColumns;
+  const askedRoles = COLUMN_ROLE_ORDER.filter((r) => questions[r]);
+  const state = preview ? saveState(preview, needsChoice, needsColumns) : null;
 
   return (
     <div>
@@ -124,13 +138,38 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
 
           {preview.fatal ? (
             <p className="text-[14px] text-status-critical-text">{preview.fatal}</p>
-          ) : (
+          ) : !needsColumns && (
             <div className="space-y-1.5 text-[14px] text-foreground">
               <p>{layoutSentence(preview)}</p>
               {dateSentence(preview) && <p>{dateSentence(preview)}</p>}
               {sheetSentence(preview) && <p>{sheetSentence(preview)}</p>}
             </div>
           )}
+
+          {!preview.fatal && askedRoles.map((role) => (
+            <fieldset key={role} className="rounded-md border border-status-watch-border bg-status-watch-tint px-3 py-3">
+              <legend className="px-1 text-[14px] font-semibold text-status-watch-text">{COLUMN_QUESTIONS[role]}</legend>
+              <p className="text-[14px] text-status-watch-text mb-2">More than one column could be it. Pick the one to use; the others are left out.</p>
+              <div className="space-y-2">
+                {(questions[role] ?? []).map((c) => (
+                  <label key={c.name} className="flex items-start gap-2.5 text-[14px] text-status-watch-text cursor-pointer">
+                    <input
+                      type="radio"
+                      name={`history-column-${role}`}
+                      value={c.name}
+                      checked={columns[role] === c.name}
+                      onChange={() => chooseColumn(role, c.name)}
+                      className="mt-1 size-4 shrink-0 accent-primary"
+                    />
+                    <span>
+                      <span className="font-semibold break-all">{c.name}</span>
+                      <span className="block text-[13px] break-words">{samplesText(c.samples)}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          ))}
 
           {asksForChoice && !preview.fatal && (
             <fieldset className="rounded-md border border-status-watch-border bg-status-watch-tint px-3 py-3">
@@ -154,14 +193,14 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
             </fieldset>
           )}
 
-          {!preview.fatal && !needsChoice && (
+          {!preview.fatal && !hideDetails && (
             <div>
               <p className="text-[16px] font-semibold text-foreground">{countsSentence(preview)}</p>
               {repeatedSentence(preview) && <p className="text-[13px] text-foreground mt-1">{repeatedSentence(preview)}</p>}
             </div>
           )}
 
-          {!preview.fatal && !needsChoice && preview.sample_rows.length > 0 && (
+          {!preview.fatal && !hideDetails && preview.sample_rows.length > 0 && (
             <div>
               <p className="text-[13px] font-semibold text-foreground mb-1">The first {preview.sample_rows.length === 1 ? "row" : `${preview.sample_rows.length} rows`}, as they will be saved</p>
               <div className="overflow-x-auto rounded-md border border-border">
@@ -188,7 +227,7 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
             </div>
           )}
 
-          {!needsChoice && preview.problems.length > 0 && !preview.fatal && (
+          {!hideDetails && preview.problems.length > 0 && !preview.fatal && (
             <div className="rounded-md border border-status-watch-border bg-status-watch-tint px-3 py-2.5">
               <p className="flex items-center gap-1.5 text-[13px] font-semibold text-status-watch-text mb-1.5">
                 <AlertTriangle size={14} aria-hidden="true" />

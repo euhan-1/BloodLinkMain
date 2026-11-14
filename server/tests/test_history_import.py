@@ -80,9 +80,12 @@ class LongLayoutTests(unittest.TestCase):
         p = parse("stock date,blood group,count\n2026-01-01,A+,3\n")
         self.assertEqual(p.mapping["units"], "count")
 
-    def test_two_columns_for_one_role_is_reported_not_guessed(self):
+    def test_two_columns_for_one_role_is_put_to_the_user_not_guessed(self):
+        # was: refused with "More than one column could be the units column". Now the candidates come back and nothing is read.
         p = parse("date,blood_type,units,stock\n2026-01-01,A+,3,4\n")
-        self.assertIn("More than one column could be the units column", p.fatal)
+        self.assertIsNone(p.fatal)
+        self.assertEqual(p.rows, [])
+        self.assertEqual(p.column_choices, {"units": [{"name": "units", "samples": ["3"]}, {"name": "stock", "samples": ["4"]}]})
 
     def test_title_rows_above_the_header(self):
         p = parse("Northside stock log\n\nDate,Type,Units\n2026-01-01,B+,5\n")
@@ -422,3 +425,123 @@ class HostileWorkbookTests(unittest.TestCase):
             with self.assertRaises(h.HistoryFileError):
                 h.parse_history_upload("xlsx", raw, TODAY)
         self.assertLess(read[0], 1_000_000)  # stopped near the declared 1000 bytes, not 60 MB
+
+
+# ── more than one column could fill a role: the user picks ───────────────────
+
+NORTHSIDE_HEADER = "facility_code,Snapshot_Date,component, Blood_Type ,total_units,units_available,storage_location,recorded_by,remarks,last_updated,UNITS"
+
+
+def northside_csv(days=3):
+    """Shaped like upload 928's file: units_available is one number and UNITS is that number + 5."""
+    lines = [NORTHSIDE_HEADER]
+    for d in range(days):
+        for i, t in enumerate(ALL):
+            ua = 10 + d * 3 + i
+            lines.append(f"NCB-05,2026-01-{d + 1:02d},Packed RBC,{t},{ua + 100},{ua},Bay 1,avillanueva,,2026-01-01T18:05:00Z,{ua + 5}")
+    return "\r\n".join(lines) + "\r\n"
+
+
+class ColumnChoiceTests(unittest.TestCase):
+    def test_a_northside_shaped_file_returns_both_candidates_with_their_first_values_and_reads_nothing(self):
+        p = parse(northside_csv())
+        v = p.preview()
+        self.assertTrue(v["needs_column_choice"])
+        self.assertEqual(list(v["column_choices"]), ["units"])  # the date and blood type columns are unambiguous
+        self.assertEqual(v["column_choices"]["units"], [{"name": "units_available", "samples": ["10", "11", "12"]},
+                                                        {"name": "UNITS", "samples": ["15", "16", "17"]}])
+        self.assertEqual((v["row_counts"]["usable"], v["sample_rows"], v["fatal"], v["layout"]), (0, [], None, "long"))
+
+    def test_choosing_units_reads_the_units_column_and_ignores_the_other(self):
+        p = parse_cols(northside_csv(), {"units": "UNITS"})
+        self.assertEqual(p.column_choices, {})
+        self.assertEqual(p.mapping, {"date": "Snapshot_Date", "blood_type": "Blood_Type", "units": "UNITS"})
+        self.assertEqual([r["units"] for r in p.rows][:3], [15, 16, 17])
+        self.assertEqual(len(p.rows), 24)
+
+    def test_choosing_units_available_reads_those(self):
+        p = parse_cols(northside_csv(), {"units": "units_available"})
+        self.assertEqual([r["units"] for r in p.rows][:3], [10, 11, 12])
+
+    def test_the_same_choice_gives_the_same_rows_every_time(self):
+        a, b = parse_cols(northside_csv(), {"units": "UNITS"}), parse_cols(northside_csv(), {"units": "UNITS"})
+        self.assertEqual(a.rows, b.rows)
+
+    def test_a_choice_that_is_not_a_header_is_refused(self):
+        for cols in ({"units": "nope"}, {"units": "units"}, {"date": "Date"}, {"type": "Blood Type"}):  # "units" is not spelled that way here
+            with self.assertRaises(h.HistoryFileError) as cm:
+                parse_cols(northside_csv(), cols)
+            self.assertIn("is not in this file", str(cm.exception))
+
+    def test_a_date_column_and_a_blood_type_column_can_be_ambiguous_too(self):
+        p = parse("Date,Stock date,blood_type,Group,units\n2026-01-01,2026-02-01,O+,A+,5\n")
+        self.assertEqual(sorted(p.column_choices), ["date", "type"])
+        self.assertEqual(p.column_choices["date"][1], {"name": "Stock date", "samples": ["2026-02-01"]})
+        done = parse_cols("Date,Stock date,blood_type,Group,units\n2026-01-01,2026-02-01,O+,A+,5\n", {"date": "Stock date", "type": "Group"})
+        self.assertEqual(usable(done), [("2026-02-01", "A+", 5)])
+
+    def test_one_answered_role_does_not_hide_the_others(self):
+        p = parse_cols("Date,Stock date,blood_type,Group,units\n2026-01-01,2026-02-01,O+,A+,5\n", {"date": "Date"})
+        self.assertEqual(list(p.column_choices), ["type"])
+        self.assertEqual(p.rows, [])
+
+    def test_a_wide_files_date_column_can_be_chosen(self):
+        p = parse("Date,As of,O+\n2026-01-01,2026-02-01,5\n")
+        self.assertEqual(list(p.column_choices), ["date"])
+        self.assertEqual(usable(parse_cols("Date,As of,O+\n2026-01-01,2026-02-01,5\n", {"date": "As of"})), [("2026-02-01", "O+", 5)])
+
+    def test_a_choice_for_a_role_with_one_candidate_is_used_when_it_is_a_real_header(self):
+        p = parse_cols("date,type,units,notes\n2026-01-01,O+,5,9\n", {"units": "notes"})
+        self.assertEqual(usable(p), [("2026-01-01", "O+", 9)])
+
+    def test_a_choice_when_nothing_is_ambiguous_changes_nothing(self):
+        text = "date,type,units\n2026-01-01,O+,5\n"
+        self.assertEqual(usable(parse_cols(text, {"units": "units"})), usable(parse(text)))
+
+    def test_samples_skip_blanks_stop_at_three_and_read_excel_dates(self):
+        p = parse("date,type,units,stock\n2026-01-01,O+,,\n2026-01-02,O+,1,\n2026-01-03,O+,2,7\n2026-01-04,O+,3,8\n2026-01-05,O+,4,9\n2026-01-06,O+,5,10\n")
+        self.assertEqual([s["samples"] for s in p.column_choices["units"]], [["1", "2", "3"], ["7", "8", "9"]])
+        wb = xlsx_bytes([["Date", "Stock date", "Type", "Units"], [dt.datetime(2026, 1, 1), dt.datetime(2026, 2, 1), "O+", 5]])
+        self.assertEqual(h.parse_history_upload("xlsx", wb, TODAY).column_choices["date"][1]["samples"], ["2026-02-01"])
+
+
+def parse_cols(text, columns):
+    return h.parse_history_upload("csv", text, TODAY, None, columns)
+
+
+# ── a missing optional library must never stop the server ────────────────────
+
+class MissingLibrariesTests(unittest.TestCase):
+    BLOCK = ("import sys\n"
+             "for m in ('openpyxl', 'defusedxml', 'defusedxml.common'):\n"
+             "    sys.modules[m] = None  # an import of it now raises ImportError, as if it were not installed\n")
+
+    def test_the_server_starts_and_a_csv_still_reads_with_both_libraries_missing(self):
+        import os
+        import subprocess
+        import sys
+        code = self.BLOCK + (
+            "import main, history_import as h\n"
+            "from datetime import date\n"
+            "assert 'openpyxl' not in sys.modules or sys.modules['openpyxl'] is None\n"
+            "p = h.parse_history_upload('csv', 'date,type,units\\n2026-01-01,O+,5\\n', date(2026, 11, 15))\n"
+            "assert len(p.rows) == 1 and p.rows[0]['units'] == 5\n"
+            "try:\n"
+            "    h.parse_history_upload('xlsx', b'PK', date(2026, 11, 15))\n"
+            "except h.ExcelUnavailable as e:\n"
+            "    print('MSG', e)\n"
+            "print('STARTED')\n")
+        server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        r = subprocess.run([sys.executable, "-c", code], cwd=server_dir, env=dict(os.environ), capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-800:])
+        self.assertIn("STARTED", r.stdout)
+        self.assertIn("MSG Excel files can't be read right now; save the file as .csv and try again.", r.stdout)
+
+    def test_each_library_alone_missing_also_means_no_excel_not_a_crash(self):
+        raw = xlsx_bytes([["Date", "Type", "Units"], ["2026-01-01", "O+", 1]])
+        for missing in (("openpyxl",), ("defusedxml", "defusedxml.common")):
+            with mock.patch.dict("sys.modules", {m: None for m in missing}):
+                with self.assertRaises(h.ExcelUnavailable):
+                    h.parse_history_upload("xlsx", raw, TODAY)
+                self.assertEqual(len(parse("date,type,units\n2026-01-01,O+,5\n").rows), 1)
+        self.assertEqual(len(h.parse_history_upload("xlsx", raw, TODAY).rows), 1)  # and it works again once they are back

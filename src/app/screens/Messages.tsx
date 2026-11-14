@@ -409,7 +409,7 @@ export function MessagesTab({
               </button>
               <button
                 onClick={async () => { const id = cancelCard.request.id; setCancelConfirmId(null); await perform(id, "cancel"); }}
-                className="flex-1 h-10 bg-status-critical-text text-white text-sm font-bold rounded-md hover:opacity-90 transition-colors"
+                className="flex-1 h-10 bg-status-critical-text text-white dark:text-background text-sm font-bold rounded-md hover:opacity-90 transition-colors"
               >
                 Cancel Request
               </button>

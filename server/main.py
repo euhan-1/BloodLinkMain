@@ -3486,14 +3486,25 @@ def _require_blood_bank(facility_id: int) -> None:
         raise HTTPException(status_code=403, detail="historical data upload is only available to blood bank facilities")
 
 
-def _read_history_upload(file: UploadFile, date_order: Optional[str]):
+_COLUMN_ROLES = (("units_column", "units"), ("date_column", "date"), ("type_column", "type"))
+
+
+def _column_choices(units_column: Optional[str], date_column: Optional[str], type_column: Optional[str]) -> Optional[dict]:
+    """The user's pick when several columns could be the units, date or blood type column, as the reader wants it; None when no pick."""
+    given = {"units": units_column, "date": date_column, "type": type_column}
+    return {role: name for role, name in given.items() if name} or None
+
+
+def _read_history_upload(file: UploadFile, date_order: Optional[str], columns: Optional[dict] = None):
     """THE reading of a historical stock file, called by both the preview and the save, so what was shown is what is saved.
     Returns (kind, content, history_import.Parsed); an HTTPException for a file refused as a whole."""
     if date_order not in (None, "dmy", "mdy"):
         raise HTTPException(status_code=400, detail="date_order must be dmy (day first) or mdy (month first)")
     kind, content = upload_limits.read_table_upload(file)  # .csv or .xlsx, size (MAX_UPLOAD_BYTES), a look at the bytes
     try:
-        return kind, content, history_import.parse_history_upload(kind, content, business_today(), date_order)
+        return kind, content, history_import.parse_history_upload(kind, content, business_today(), date_order, columns)
+    except history_import.ExcelUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error))  # only a workbook needs the Excel libraries; a CSV never gets here
     except history_import.HistoryFileError as error:
         raise HTTPException(status_code=400, detail=str(error))
 
@@ -3502,14 +3513,18 @@ def _read_history_upload(file: UploadFile, date_order: Optional[str]):
 def preview_historical_inventory_snapshots(
     file: UploadFile = File(...),
     date_order: Optional[str] = None,
+    units_column: Optional[str] = None,
+    date_column: Optional[str] = None,
+    type_column: Optional[str] = None,
     facility_id: int = Depends(get_acting_facility_id),
 ):
     """What the historical upload would save from this file, without saving anything: the layout and columns found, the date format
     assumed, row counts, up to 10 sample rows as they would be stored and the problems (20 shown, the rest counted). Blood banks only.
-    `date_order` (dmy or mdy) is the user's answer when the response says ambiguous_dates. Writes nothing; its one database read is
+    `date_order` (dmy or mdy) is the user's answer when the response says ambiguous_dates; `units_column`, `date_column` and `type_column`
+    (the header text as listed in column_choices) are the answer when it says needs_column_choice. Writes nothing; its one database read is
     the facility type. Not wrapped in retry_read itself (a second run would find the upload already consumed): the read is."""
     _require_blood_bank(facility_id)
-    return _read_history_upload(file, date_order)[2].preview()
+    return _read_history_upload(file, date_order, _column_choices(units_column, date_column, type_column))[2].preview()
 
 
 @app.post("/forecast/historical-upload")
@@ -3525,6 +3540,9 @@ def upload_historical_inventory_snapshots(
     # for FastAPI's injection to recognize it; the `= None` is a runtime-only default.
     background_tasks: BackgroundTasks = None,
     date_order: Optional[str] = None,
+    units_column: Optional[str] = None,
+    date_column: Optional[str] = None,
+    type_column: Optional[str] = None,
 ):
     """Backfills inventory_snapshots for dates before this facility started
     using BloodLink, from the facility's own past daily/periodic stock
@@ -3561,9 +3579,12 @@ def upload_historical_inventory_snapshots(
         raise HTTPException(status_code=403, detail="historical data upload is only available to blood bank facilities")
 
     # The same reading the preview did (.csv or .xlsx; long or wide; synonyms), so what the user confirmed is what is saved.
-    kind, content, parsed = _read_history_upload(file, date_order)
+    kind, content, parsed = _read_history_upload(file, date_order, _column_choices(units_column, date_column, type_column))
     if parsed.ambiguous:  # before anything is written, not even the upload record
         raise HTTPException(status_code=400, detail="Some dates could be read day-first or month-first. Choose one and save again.")
+    if parsed.column_choices:
+        raise HTTPException(status_code=400, detail="More than one column could be used for " + " and ".join(
+            {"units": "the units", "date": "the date", "type": "the blood type"}[role] for role in parsed.column_choices) + ". Choose which one and save again.")
     valid_rows, errors = parsed.rows, parsed.errors
 
     rows_processed = len(valid_rows)

@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import type { HistoryPreview } from "../src/app/lib/api.ts";
 import {
-  SUPPORTED_FILES_LINE, countsSentence, dateChoices, dateSentence, layoutSentence, moreProblemsLine, problemLine, repeatedSentence, saveState,
+  COLUMN_QUESTIONS, COLUMN_ROLE_ORDER, samplesText, SUPPORTED_FILES_LINE, countsSentence, dateChoices, dateSentence, layoutSentence, moreProblemsLine, problemLine, repeatedSentence, saveState,
   savedSentence, sheetSentence,
 } from "../src/app/lib/historyUpload.ts";
 
@@ -13,6 +13,7 @@ const base: HistoryPreview = {
   file_type: "csv", sheet: null, other_sheets: [], layout: "long", mapping: { date: "Date", blood_type: "Group", units: "Qty" }, header_row: 1,
   date_format: "year-month-day, like 2026-11-10", date_order: null, ambiguous_dates: false, ambiguous_example: null,
   row_counts: { total: 1210, usable: 1204, skipped: 6 }, repeated: 0, sample_rows: [], problems: [], more_problems: 0, fatal: null,
+  needs_column_choice: false, column_choices: {},
 };
 
 eq(SUPPORTED_FILES_LINE, ".csv or .xlsx, one date per row.", "the supported-files line");
@@ -46,7 +47,16 @@ eq(choices[0].detail.includes("03/04/2026 means 3 April 2026"), true, "day first
 eq(choices[1].detail.includes("03/04/2026 means 4 March 2026"), true, "month first uses the file's own example");
 
 // words a user reads never use the technical ones
-const words = [layoutSentence(base), dateSentence(base) ?? "", countsSentence(base), SUPPORTED_FILES_LINE, ...choices.map((c) => c.label + c.detail)].join(" ");
+// two columns could both be the units column: the question, the values that tell them apart, and Save waiting for the answer
+eq(COLUMN_QUESTIONS.units, "Which column holds the number of units?", "the units question");
+eq(COLUMN_ROLE_ORDER, ["units", "date", "type"], "questions come in this order");
+eq(samplesText(["70", "19", "21"]), "First values: 70, 19, 21", "first values of a candidate");
+eq(samplesText([]), "No values in the first rows", "a candidate with no values");
+eq(saveState({ ...base, needs_column_choice: true, column_choices: { units: [] } }, false, true), { canSave: false, why: "Choose which column to use to continue." }, "no save until a column is chosen");
+eq(saveState(base, false, false).canSave, true, "no column question, no wait");
+
+const words = [layoutSentence(base), dateSentence(base) ?? "", countsSentence(base), SUPPORTED_FILES_LINE, ...choices.map((c) => c.label + c.detail),
+  ...Object.values(COLUMN_QUESTIONS)].join(" ");
 for (const w of ["parse", "schema", "mapping", "delimiter", "header"]) if (new RegExp(w, "i").test(words)) fail(`"${w}" in the preview wording`);
 
 // the screen: nothing is saved by choosing a file; the save is its own button; the undo list stays under it
@@ -61,5 +71,15 @@ for (const t of ["Save to my history", "Choose a different file", "We read your 
 if (!/disabled=\{!state\?\.canSave \|\| busy !== null\}/.test(screen)) fail("Save must be disabled until the preview says it can be saved");
 if (!/<HistoryUpload [^>]*onSaved=/.test(dash) || dash.indexOf("<HistoryUpload") > dash.indexOf("<UploadHistoryPanel")) fail("the upload sits above the undo list on the Dashboard");
 if (/<HistoryUpload/.test(dash) === false || /snapshot_date, blood_type and units/.test(dash)) fail("the old technical help text is gone");
+
+if (!/uploadHistoricalInventorySnapshots\(file, order, columns\)/.test(screen)) fail("the column choice must be sent again with the save, like the date order");
+if (!/previewHistoricalUpload\(f, choice, cols\)/.test(screen)) fail("the column choice must be sent with the preview");
+for (const t of ["chooseColumn", "COLUMN_QUESTIONS[role]", "samplesText(c.samples)", "history-column-"]) if (!screen.includes(t)) fail(`${t} missing from the column question`);
+const apiSource = readFileSync(new URL("../src/app/lib/api.ts", import.meta.url), "utf8");
+const serverSource = readFileSync(new URL("../server/main.py", import.meta.url), "utf8");
+for (const p of ["units_column", "date_column", "type_column"]) {
+  if (!apiSource.includes(`"${p}"`)) fail(`${p} is not sent`);
+  if (!serverSource.includes(`${p}: Optional[str] = None`)) fail(`the server does not take ${p}`);
+}
 
 console.log("ok");

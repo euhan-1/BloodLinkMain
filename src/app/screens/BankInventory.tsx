@@ -95,7 +95,7 @@ function ExpiredBacklog({ units, clearing }: { units: InventoryUnit[]; clearing:
       {b.clearable > 0 && !confirming && (
         <button
           onClick={() => setConfirming(true)}
-          className="mt-3 inline-flex items-center gap-2 h-10 px-4 rounded-md bg-status-critical-text text-white text-[14px] font-semibold hover:opacity-90 transition-opacity"
+          className="mt-3 inline-flex items-center gap-2 h-10 px-4 rounded-md bg-status-critical-text text-white dark:text-background text-[14px] font-semibold hover:opacity-90 transition-opacity"
         >
           <Archive size={15} aria-hidden="true" /> Clear {b.clearable} expired {plural(b.clearable, "unit", "units")}
         </button>
@@ -107,7 +107,7 @@ function ExpiredBacklog({ units, clearing }: { units: InventoryUnit[]; clearing:
             <button
               onClick={() => { clearing.onClear(); }}
               disabled={clearing.busy}
-              className="h-10 px-4 rounded-md bg-status-critical-text text-white text-[14px] font-semibold hover:opacity-90 transition-opacity disabled:opacity-60"
+              className="h-10 px-4 rounded-md bg-status-critical-text text-white dark:text-background text-[14px] font-semibold hover:opacity-90 transition-opacity disabled:opacity-60"
             >
               {clearing.busy ? "Clearing…" : `Archive ${b.clearable}`}
             </button>

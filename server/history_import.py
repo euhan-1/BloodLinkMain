@@ -21,8 +21,6 @@ import re
 from datetime import date, datetime
 from typing import Iterator, Optional
 
-from defusedxml.common import DefusedXmlException  # openpyxl uses defusedxml's parsers when it is installed (see requirements.txt)
-
 MAX_ENTRIES = 50_000        # date + blood type figures in one file (a wide row is up to 8); bounds memory on a 512 MB instance
 MAX_COLS = 60
 HEADER_SCAN_ROWS = 10
@@ -43,6 +41,25 @@ _ROLE_LABEL = {"date": "date", "type": "blood type", "units": "units"}
 
 class HistoryFileError(Exception):
     """The whole file is refused (too big once opened, not really a workbook): the message is for the user."""
+
+
+EXCEL_UNAVAILABLE = "Excel files can't be read right now; save the file as .csv and try again."
+
+
+class ExcelUnavailable(HistoryFileError):
+    """openpyxl or defusedxml is not installed. Only an .xlsx is affected (the endpoints answer 503); nothing else needs either package, so
+    neither is imported until a workbook is read, and a missing one can never stop the server from starting."""
+
+
+def _excel_libraries():
+    """(load_workbook, DefusedXmlException), imported here and nowhere else. Both are required: openpyxl alone would read a workbook's XML
+    without defusedxml's protection against entity payloads, so a missing defusedxml also means no Excel."""
+    try:
+        from defusedxml.common import DefusedXmlException
+        from openpyxl import load_workbook
+    except ImportError:
+        raise ExcelUnavailable(EXCEL_UNAVAILABLE)
+    return load_workbook, DefusedXmlException
 
 
 # ── blood types ─────────────────────────────────────────────────────────────
@@ -173,6 +190,7 @@ _UNSAFE_XML = ("That workbook contains something unsafe in its XML (a DOCTYPE or
 
 def _is_unsafe_xml(error: BaseException) -> bool:
     """openpyxl wraps an XML error in its own ValueError; defusedxml's refusal is the cause, so look down the chain."""
+    DefusedXmlException = _excel_libraries()[1]
     while error is not None:
         if isinstance(error, DefusedXmlException):
             return True
@@ -181,7 +199,7 @@ def _is_unsafe_xml(error: BaseException) -> bool:
 
 
 def _xlsx_rows(content: bytes, info: dict) -> Iterator[tuple[int, tuple]]:
-    from openpyxl import load_workbook  # imported here: only an .xlsx pays for it
+    load_workbook = _excel_libraries()[0]  # imported here: only an .xlsx pays for it
     try:
         wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)  # data_only: a formula's last saved value, not "=SUM(...)"
     except Exception as error:
@@ -223,8 +241,11 @@ def _key(c) -> str:
     return re.sub(r"[^a-z0-9]", "", c.lower()) if isinstance(c, str) else ""
 
 
-def _find_header(row):
-    """None if this row is not a header; a str (a reason) if it is one but unusable; else the layout and its columns."""
+def _find_header(row, columns: Optional[dict] = None):
+    """None if this row is not a header; a str (a reason) if it is one but unusable; else the layout and its columns.
+    A role (date, blood type, units) that more than one column could fill is not an error: unless `columns` names one
+    ({"units": "UNITS"}, the header text as the preview showed it), the role goes to "ask" with its candidates and its column is None.
+    A name that is not a header of this row is a HistoryFileError (the endpoints answer 400)."""
     roles = {"date": [], "type": [], "units": []}
     wide = []  # (column, canonical type)
     names = {"date": _DATE_HEADERS, "type": _TYPE_HEADERS, "units": _UNITS_HEADERS}
@@ -241,18 +262,28 @@ def _find_header(row):
     text = lambda i: str(row[i]).strip().lstrip("﻿")  # a BOM can sit on the first header
     if wide and (roles["type"] or roles["units"]):
         return "The columns look like two layouts at once: a blood type column and also one column per blood type. Keep only one of them."
-    for role, cols in roles.items():
-        if len(cols) > 1:
-            return f"More than one column could be the {_ROLE_LABEL[role]} column ({', '.join(text(i) for i in cols)}). Remove the extras so only one is left."
+    ask: dict[str, list] = {}
+    chosen = columns or {}
+    for role in (("date",) if wide else ("date", "type", "units")):
+        want = chosen.get(role)
+        if want is not None:
+            same = [i for i in range(len(row)) if not _blank(row[i]) and text(i) == want.strip().lstrip("\ufeff")]
+            if not same:
+                raise HistoryFileError(f"The column you chose, '{want}', is not in this file.")
+            roles[role] = same[:1]  # the user's column; the other candidates are ignored
+        elif len(roles[role]) > 1:
+            ask[role] = [(i, text(i)) for i in roles[role]]
     seen = {}
     for i, canon in wide:
         if canon in seen:
             return f"Two columns are both {canon} ({text(seen[canon])} and {text(i)}). Remove one of them."
         seen[canon] = i
+    col = lambda role: None if role in ask else roles[role][0]
+    name = lambda role: None if role in ask else text(roles[role][0])
     if wide:
-        return {"layout": "wide", "date": roles["date"][0], "cols": wide, "names": {text(i): c for i, c in wide}, "date_name": text(roles["date"][0])}
-    return {"layout": "long", "date": roles["date"][0], "type": roles["type"][0], "units": roles["units"][0],
-            "date_name": text(roles["date"][0]), "type_name": text(roles["type"][0]), "units_name": text(roles["units"][0])}
+        return {"layout": "wide", "date": col("date"), "cols": wide, "names": {text(i): c for i, c in wide}, "date_name": name("date"), "ask": ask}
+    return {"layout": "long", "date": col("date"), "type": col("type"), "units": col("units"),
+            "date_name": name("date"), "type_name": name("type"), "units_name": name("units"), "ask": ask}
 
 
 # ── the result ──────────────────────────────────────────────────────────────
@@ -273,6 +304,7 @@ class Parsed:
         self.kinds: set = set()                    # which kinds of date the file used
         self.sheet: Optional[str] = None
         self.other_sheets: list[str] = []
+        self.column_choices: dict = {}             # role -> [{"name", "samples"}]: columns the user must pick between; then nothing is read
 
     @property
     def errors(self) -> list[dict]:
@@ -293,42 +325,65 @@ class Parsed:
                             for r in self.rows[:SAMPLE_ROWS]],
             "problems": self.errors[:PROBLEMS_SHOWN], "more_problems": max(0, len(self.errors) - PROBLEMS_SHOWN),
             "fatal": self.fatal,
+            "needs_column_choice": bool(self.column_choices),
+            "column_choices": self.column_choices,  # {"units": [{"name": "UNITS", "samples": ["70", "19", "21"]}, ...]} while rows are withheld
         }
 
 
 _FORMAT_WORDS = {"iso": "year-month-day, like 2026-11-10", "excel": "Excel date cells", "written": "the month written out, like 10 Nov 2026"}
 
 
-def parse_history_upload(kind: str, content, today: date, date_order: Optional[str] = None) -> Parsed:
-    """kind "csv" (content: the text) or "xlsx" (content: the bytes). Raises HistoryFileError for a file refused as a whole."""
+def parse_history_upload(kind: str, content, today: date, date_order: Optional[str] = None, columns: Optional[dict] = None) -> Parsed:
+    """kind "csv" (content: the text) or "xlsx" (content: the bytes). `columns` is the user's answer when the preview listed column_choices:
+    {"units": header text, "date": ..., "type": ...}. Raises HistoryFileError for a file refused as a whole (ExcelUnavailable when the Excel
+    libraries are not installed)."""
     out = Parsed(kind)
     info: dict = {}
+    if kind == "xlsx":
+        _excel_libraries()  # fail before anything is opened
     rows_iter = _csv_rows(content) if kind == "csv" else _xlsx_rows(content, info)
     try:
-        _read(rows_iter, out, today, date_order if date_order in ("dmy", "mdy") else None)
+        _read(rows_iter, out, today, date_order if date_order in ("dmy", "mdy") else None, columns)
     finally:
         rows_iter.close()
     out.sheet, out.other_sheets = info.get("sheet"), info.get("other_sheets", [])
     return out
 
 
-def _read(rows_iter, out: Parsed, today: date, order: Optional[str]) -> None:
+def _sample_text(v) -> str:
+    return (v.date().isoformat() if isinstance(v, datetime) else str(v).strip())[:40]
+
+
+def _read(rows_iter, out: Parsed, today: date, order: Optional[str], columns: Optional[dict] = None) -> None:
     header, scanned, first_names = None, 0, []
     for n, row in rows_iter:
         if header is None:
             scanned += 1
             if scanned == 1:
                 first_names = [str(c).strip() for c in row if not _blank(c)][:8]
-            found = _find_header(row)
+            found = _find_header(row, columns)
             if isinstance(found, str):
                 out.fatal = found
                 return
             if found:
                 header, out.header_row = found, n
+                out.column_choices = {role: [{"name": name, "samples": []} for _, name in cands] for role, cands in found["ask"].items()}
             elif scanned >= HEADER_SCAN_ROWS:
                 break
             continue
+        if header["ask"]:
+            # Several columns could fill a role: the first values of each candidate are all the user needs to tell them apart.
+            for role, cands in header["ask"].items():
+                for (i, _), shown in zip(cands, out.column_choices[role]):
+                    if len(shown["samples"]) < 3 and i < len(row) and not _blank(row[i]):
+                        shown["samples"].append(_sample_text(row[i]))
+            if n - out.header_row >= 200 or all(len(s["samples"]) == 3 for c in out.column_choices.values() for s in c):
+                break
+            continue
         _data_row(n, row, header, out)
+    if header is not None and header["ask"]:
+        out.layout = header["layout"]
+        return
     if header is None:
         out.fatal = ("The file is empty." if not scanned else
                      "We could not find the columns we need. The first row has: " + ", ".join(first_names) + ". We need a date column and either "

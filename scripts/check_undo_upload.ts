@@ -51,4 +51,16 @@ if (!/preview\.summary && \(/.test(panel)) fail("the summary is shown only when 
 const server = readFileSync(new URL("../server/main.py", import.meta.url), "utf8");
 if (!/"forecast_min_days": SARIMAX_MIN_DAYS_REQUIRED/.test(server)) fail("the 30-day figure must come from the server's constant");
 
+// the red Confirm buttons: white on the light red of the dark theme is 2.2:1, so every one carries the dark text colour too
+import { readdirSync } from "node:fs";
+const walk = (dir: URL): URL[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+  e.isDirectory() ? walk(new URL(`${e.name}/`, dir)) : e.name.endsWith(".tsx") ? [new URL(e.name, dir)] : []);
+for (const f of walk(new URL("../src/app/", import.meta.url))) {
+  for (const line of readFileSync(f, "utf8").split("\n")) {
+    if (line.includes("bg-status-critical-text text-white") && !line.includes("dark:text-background")) {
+      fail(`${f.pathname.split("/src/")[1]}: a red button with white text and no dark:text-background: ${line.trim().slice(0, 90)}`);
+    }
+  }
+}
+
 console.log("ok");

@@ -238,3 +238,67 @@ class HistoryUploadEndpointTests(unittest.TestCase):
             self.assertEqual(status, 400, path)
             self.assertIn("unsafe", body["detail"])
         self.assertEqual(self.counts()["upload_history"], 0)
+
+    # -- the user picks between two columns that could both be the units column --------------------------------------------
+
+    def with_cols(self, path, **cols):
+        from urllib.parse import quote
+        return path + ("?" + "&".join(f"{k}={quote(v)}" for k, v in cols.items()) if cols else "")
+
+    def snapshot_units(self):
+        with engine.connect() as c:
+            return sorted(c.execute(text("SELECT snapshot_date, blood_type, units FROM inventory_snapshots WHERE facility_id=:f"), {"f": self.bank}).all())
+
+    def test_not_choosing_saves_nothing_and_choosing_saves_that_column(self):
+        from tests.test_history_import import northside_csv
+        data = northside_csv(days=3).encode()
+        PREVIEW, SAVE = "/forecast/historical-upload/preview", "/forecast/historical-upload"
+        before = self.counts()
+
+        status, p = self.post(PREVIEW, "n.csv", data)
+        self.assertEqual(status, 200)
+        self.assertTrue(p["needs_column_choice"])
+        self.assertEqual([c["name"] for c in p["column_choices"]["units"]], ["units_available", "UNITS"])
+        self.assertEqual((p["row_counts"]["usable"], p["sample_rows"]), (0, []))
+        status, body = self.post(SAVE, "n.csv", data)                      # not choosing: refused, nothing written, not even a record
+        self.assertEqual(status, 400)
+        self.assertIn("More than one column could be used for the units", body["detail"])
+        self.assertEqual(self.counts(), before)
+
+        for column, plus in (("UNITS", 5), ("units_available", 0)):
+            with self.subTest(column=column):
+                self.clear()
+                status, p = self.post(self.with_cols(PREVIEW, units_column=column), "n.csv", data)
+                self.assertEqual((status, p["needs_column_choice"], p["row_counts"]["usable"]), (200, False, 24))
+                self.assertEqual(p["mapping"]["units"], column)
+                status, s = self.post(self.with_cols(SAVE, units_column=column), "n.csv", data)
+                self.assertEqual(status, 200, s)
+                self.assertEqual(s["rows_processed"], p["row_counts"]["usable"])  # confirm equals what the preview counted
+                saved = self.snapshot_units()
+                self.assertEqual(len(saved), 24)
+                expected = sorted((__import__("datetime").date(2026, 1, d + 1), t, 10 + d * 3 + i + plus)
+                                  for d in range(3) for i, t in enumerate(BLOOD))
+                self.assertEqual([tuple(r) for r in saved], expected)
+
+    def test_a_choice_that_is_not_a_column_is_a_400_on_both_and_writes_nothing(self):
+        from tests.test_history_import import northside_csv
+        before = self.counts()
+        for path in ("/forecast/historical-upload/preview", "/forecast/historical-upload"):
+            status, body = self.post(self.with_cols(path, units_column="Units Count"), "n.csv", northside_csv().encode())
+            self.assertEqual(status, 400, path)
+            self.assertIn("is not in this file", body["detail"])
+        self.assertEqual(self.counts(), before)
+
+    def test_a_missing_excel_library_only_stops_excel(self):
+        import sys
+        raw = xlsx([["Date", "Type", "Units"], [str(days_ago(1)), "O+", 3]])
+        before = self.counts()
+        with mock.patch.dict(sys.modules, {"openpyxl": None, "defusedxml": None, "defusedxml.common": None}):
+            for path in ("/forecast/historical-upload/preview", "/forecast/historical-upload"):
+                status, body = self.post(path, "h.xlsx", raw)
+                self.assertEqual(status, 503, path)
+                self.assertEqual(body["detail"], "Excel files can't be read right now; save the file as .csv and try again.")
+            status, p = self.preview("h.csv", long_csv(3))              # a CSV preview and save still work
+            self.assertEqual((status, p["row_counts"]["usable"]), (200, 24))
+            self.assertEqual(self.save("h.csv", long_csv(3))[0], 200)
+        self.assertEqual(self.counts()["upload_history"], before["upload_history"] + 1)  # only the CSV save wrote a record

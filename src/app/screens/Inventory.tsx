@@ -462,7 +462,7 @@ export function InventoryScreen() {
               <button
                 onClick={confirmDeleteUnit}
                 disabled={deleting}
-                className="flex-1 h-10 bg-status-critical-text text-white text-sm font-bold rounded-md hover:opacity-90 transition-colors disabled:opacity-60"
+                className="flex-1 h-10 bg-status-critical-text text-white dark:text-background text-sm font-bold rounded-md hover:opacity-90 transition-colors disabled:opacity-60"
               >
                 {deleting ? "Removing…" : "Remove unit"}
               </button>

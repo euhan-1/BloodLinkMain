@@ -521,6 +521,12 @@ export type HistoricalUploadResult = {
 // answer travels with the preview and the save.
 export type DateOrder = "dmy" | "mdy";
 
+// When more than one column could be the units, date or blood type column the server lists them (with their first values) instead
+// of reading the file; the user's pick is the header text, re-sent on the preview and on the save.
+export type ColumnRole = "units" | "date" | "type";
+export type ColumnChoices = Partial<Record<ColumnRole, string>>;
+export type ColumnCandidate = { name: string; samples: string[] };
+
 export type HistoryPreview = {
   file_type: "csv" | "xlsx";
   sheet: string | null;
@@ -538,17 +544,27 @@ export type HistoryPreview = {
   problems: { row: number | string; reason: string }[];
   more_problems: number;
   fatal: string | null;
+  needs_column_choice: boolean;
+  column_choices: Partial<Record<ColumnRole, ColumnCandidate[]>>;
 };
 
-const withDateOrder = (path: string, order?: DateOrder | null) => (order ? `${path}?date_order=${order}` : path);
-
-/** What saving this file would do. Writes nothing. */
-export function previewHistoricalUpload(file: File, order?: DateOrder | null): Promise<HistoryPreview> {
-  return apiUploadFile<HistoryPreview>(withDateOrder("/forecast/historical-upload/preview", order), file);
+function withChoices(path: string, order?: DateOrder | null, columns?: ColumnChoices | null): string {
+  const q = new URLSearchParams();
+  if (order) q.set("date_order", order);
+  if (columns?.units) q.set("units_column", columns.units);
+  if (columns?.date) q.set("date_column", columns.date);
+  if (columns?.type) q.set("type_column", columns.type);
+  const s = q.toString();
+  return s ? `${path}?${s}` : path;
 }
 
-export function uploadHistoricalInventorySnapshots(file: File, order?: DateOrder | null): Promise<HistoricalUploadResult> {
-  return apiUploadFile<HistoricalUploadResult>(withDateOrder("/forecast/historical-upload", order), file);
+/** What saving this file would do. Writes nothing. */
+export function previewHistoricalUpload(file: File, order?: DateOrder | null, columns?: ColumnChoices | null): Promise<HistoryPreview> {
+  return apiUploadFile<HistoryPreview>(withChoices("/forecast/historical-upload/preview", order, columns), file);
+}
+
+export function uploadHistoricalInventorySnapshots(file: File, order?: DateOrder | null, columns?: ColumnChoices | null): Promise<HistoricalUploadResult> {
+  return apiUploadFile<HistoricalUploadResult>(withChoices("/forecast/historical-upload", order, columns), file);
 }
 
 export function deleteInventoryUnit(din: string): Promise<{ deleted: true; din: string }> {
