@@ -289,6 +289,39 @@ class HistoryUploadEndpointTests(unittest.TestCase):
             self.assertIn("is not in this file", body["detail"])
         self.assertEqual(self.counts(), before)
 
+    def test_a_column_no_header_word_names_is_asked_chosen_and_saved_and_not_choosing_saves_nothing(self):
+        PREVIEW, SAVE = "/forecast/historical-upload/preview", "/forecast/historical-upload"
+        rows = [["Stock date", "Blood group", "Units counted in the vault", "Notes"]] + [[days_ago(d), bt, 10 + d, "x"] for d in (3, 2, 1) for bt in BLOOD]
+        data = xlsx(rows)
+        before = self.counts()
+
+        status, p = self.post(PREVIEW, "v.xlsx", data)
+        self.assertEqual((status, p["needs_column_choice"], p["column_missing"], p["fatal"]), (200, True, ["units"], None))
+        self.assertEqual([c["name"] for c in p["column_choices"]["units"]], ["Units counted in the vault", "Notes"])
+        self.assertEqual(p["column_choices"]["units"][0]["samples"], ["13", "13", "13"])
+        status, body = self.post(SAVE, "v.xlsx", data)                          # not choosing: refused, nothing written, not even a record
+        self.assertEqual(status, 400)
+        self.assertIn("We could not tell which column holds the units", body["detail"])
+        self.assertEqual(self.counts(), before)
+
+        status, p = self.post(self.with_cols(PREVIEW, units_column="Units counted in the vault"), "v.xlsx", data)
+        self.assertEqual((status, p["needs_column_choice"], p["row_counts"]["usable"], p["mapping"]["units"]), (200, False, 24, "Units counted in the vault"))
+        status, s = self.post(self.with_cols(SAVE, units_column="Units counted in the vault"), "v.xlsx", data)
+        self.assertEqual((status, s["rows_processed"]), (200, p["row_counts"]["usable"]))
+        saved = {(str(r[0]), r[1]): r[2] for r in self.snapshot_units()}
+        self.assertEqual(saved, {(str(days_ago(d)), bt): 10 + d for d in (3, 2, 1) for bt in BLOOD})
+
+        self.clear()                                                            # a wrong pick shows in the skipped list and saves only what reads
+        status, p = self.post(self.with_cols(PREVIEW, units_column="Notes"), "v.xlsx", data)
+        self.assertEqual((status, p["row_counts"]["usable"], p["row_counts"]["skipped"], len(p["problems"])), (200, 0, 24, 20))
+
+    def test_the_header_from_the_report_and_two_missing_roles(self):
+        status, p = self.preview("r.csv", f"Stock date,Blood group,Qty on hand\n{days_ago(1)},O+,4\n".encode())
+        self.assertEqual((status, p["needs_column_choice"], p["row_counts"]["usable"], p["mapping"]["units"]), (200, False, 1, "Qty on hand"))
+        status, p = self.preview("r.csv", b"Stock date,Counted,Notes\n2026-01-01,5,x\n")
+        self.assertEqual((status, p["needs_column_choice"], p["row_counts"]["usable"]), (200, False, 0))
+        self.assertTrue(p["fatal"].startswith("We found a date column but could not tell which columns hold the blood type and the number of units."))
+
     def test_a_missing_excel_library_only_stops_excel(self):
         import sys
         raw = xlsx([["Date", "Type", "Units"], [str(days_ago(1)), "O+", 3]])

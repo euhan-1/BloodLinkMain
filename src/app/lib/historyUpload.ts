@@ -74,6 +74,13 @@ export const COLUMN_QUESTIONS: Record<ColumnRole, string> = {
 };
 export const COLUMN_ROLE_ORDER: ColumnRole[] = ["units", "date", "type"];
 
+/** The line under a column question: no header was recognised (every free column is listed), or several columns could be it. */
+export function columnHint(notRecognised: boolean): string {
+  return notRecognised
+    ? "We could not tell which column this is from its name. Pick the one to use; the others are left out."
+    : "More than one column could be it. Pick the one to use; the others are left out.";
+}
+
 /** "First values: 70, 19, 21", so two columns that look alike can be told apart. */
 export function samplesText(samples: string[]): string {
   return samples.length > 0 ? `First values: ${samples.join(", ")}` : "No values in the first rows";

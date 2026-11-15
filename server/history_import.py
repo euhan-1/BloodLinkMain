@@ -32,11 +32,16 @@ PROBLEMS_SHOWN = 20
 BLOOD_TYPES = ("A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-")
 
 # Header words, compared after lower-casing and dropping everything but letters and digits; whole-word match only.
-_DATE_HEADERS = {"date", "snapshotdate", "day", "asof", "asofdate", "stockdate", "reportdate", "recorddate", "inventorydate", "dateofstock"}
+_DATE_HEADERS = {"date", "snapshotdate", "day", "asof", "asofdate", "stockdate", "reportdate", "recorddate", "inventorydate", "dateofstock",
+                 "daterecorded", "recordeddate", "dateofrecord", "reportingdate", "datereported", "countdate", "dateofcount", "datecounted"}
 _TYPE_HEADERS = {"bloodtype", "bloodtypes", "bloodgroup", "bloodgroups", "group", "type", "abo", "aborh", "abogroup", "bg"}
 _UNITS_HEADERS = {"units", "unit", "qty", "quantity", "stock", "count", "onhand", "balance", "unitsonhand", "stockonhand", "unitsinstock",
-                  "quantityonhand", "unitsavailable", "unitsavail", "noofunits", "numberofunits"}
+                  "quantityonhand", "unitsavailable", "unitsavail", "noofunits", "numberofunits",
+                  "qtyonhand", "qtyavailable", "quantityavailable", "qtyinstock", "quantityinstock", "stocklevel", "stocklevels", "instock",
+                  "currentstock", "stockquantity", "stockcount", "availableunits"}
 _ROLE_LABEL = {"date": "date", "type": "blood type", "units": "units"}
+_ROLE_FOUND = {"date": "a date column", "type": "a blood type column", "units": "a units column"}
+_ROLE_LOST = {"date": "the date", "type": "the blood type", "units": "the number of units"}
 
 
 class HistoryFileError(Exception):
@@ -241,13 +246,10 @@ def _key(c) -> str:
     return re.sub(r"[^a-z0-9]", "", c.lower()) if isinstance(c, str) else ""
 
 
-def _find_header(row, columns: Optional[dict] = None):
-    """None if this row is not a header; a str (a reason) if it is one but unusable; else the layout and its columns.
-    A role (date, blood type, units) that more than one column could fill is not an error: unless `columns` names one
-    ({"units": "UNITS"}, the header text as the preview showed it), the role goes to "ask" with its candidates and its column is None.
-    A name that is not a header of this row is a HistoryFileError (the endpoints answer 400)."""
+def _scan(row):
+    """The columns of a row that a header word names: ({"date": [i], "type": [i], "units": [i]}, [(i, canonical type)] for a wide layout)."""
     roles = {"date": [], "type": [], "units": []}
-    wide = []  # (column, canonical type)
+    wide = []
     names = {"date": _DATE_HEADERS, "type": _TYPE_HEADERS, "units": _UNITS_HEADERS}
     for i, c in enumerate(row):
         canon = blood_type(c)  # before the generic key: dropping punctuation would make "A+" and "A-" the same word
@@ -257,20 +259,56 @@ def _find_header(row, columns: Optional[dict] = None):
         for role, words in names.items():
             if _key(c) in words:
                 roles[role].append(i)
-    if not (roles["date"] and ((roles["type"] and roles["units"]) or wide)):
+    return roles, wide
+
+
+def _needed(wide) -> tuple:
+    return ("date",) if wide else ("date", "type", "units")
+
+
+def _found_sentence(roles, wide) -> Optional[str]:
+    """"We found a date column and a blood type column but could not tell which column holds the number of units." None when nothing was
+    found, or nothing is missing."""
+    found = [_ROLE_FOUND[r] for r in _needed(wide) if roles[r]] + (["columns for the blood types"] if wide else [])
+    lost = [_ROLE_LOST[r] for r in _needed(wide) if not roles[r]]
+    if not found or not lost:
         return None
-    text = lambda i: str(row[i]).strip().lstrip("﻿")  # a BOM can sit on the first header
+    return f"We found {' and '.join(found)} but could not tell which {'column holds' if len(lost) == 1 else 'columns hold'} {' and '.join(lost)}."
+
+
+def _find_header(row, columns: Optional[dict] = None):
+    """None if this row is not a header; a str (a reason) if it is one but unusable; else the layout and its columns.
+    A role (date, blood type, units) that more than one column could fill is not an error: unless `columns` names one
+    ({"units": "UNITS"}, the header text as the preview showed it), the role goes to "ask" with its candidates and its column is None.
+    The same for ONE role that no header word names while the others are found (a "Qty on hand" nobody listed): every column that is
+    not already another role's is a candidate, and the role is also in the result's "missing". Two roles missing is not a header.
+    A name that is not a header of this row is a HistoryFileError (the endpoints answer 400)."""
+    roles, wide = _scan(row)
+    missing = [r for r in _needed(wide) if not roles[r]]
+    if len(missing) > 1 or (missing and wide and len(wide) < 2):
+        return None
+    sentence = _found_sentence(roles, wide)  # before an answer fills a role
+    text = lambda i: str(row[i]).strip().lstrip("\ufeff")  # a BOM can sit on the first header
     if wide and (roles["type"] or roles["units"]):
         return "The columns look like two layouts at once: a blood type column and also one column per blood type. Keep only one of them."
     ask: dict[str, list] = {}
     chosen = columns or {}
-    for role in (("date",) if wide else ("date", "type", "units")):
+    used = {i for found in roles.values() for i in found} | {i for i, _ in wide}
+    for role in _needed(wide):
         want = chosen.get(role)
         if want is not None:
             same = [i for i in range(len(row)) if not _blank(row[i]) and text(i) == want.strip().lstrip("\ufeff")]
             if not same:
                 raise HistoryFileError(f"The column you chose, '{want}', is not in this file.")
+            if role in missing:
+                same = [i for i in same if i not in used]
+                if not same:
+                    raise HistoryFileError(f"The column you chose, '{want}', is already used for another part of the file.")
             roles[role] = same[:1]  # the user's column; the other candidates are ignored
+        elif role in missing:
+            ask[role] = [(i, text(i)) for i in range(len(row)) if i not in used and not _blank(row[i])]
+            if not ask[role]:
+                return f"{sentence} The first row has: {', '.join(text(i) for i in range(len(row)) if not _blank(row[i]))}."
         elif len(roles[role]) > 1:
             ask[role] = [(i, text(i)) for i in roles[role]]
     seen = {}
@@ -281,9 +319,11 @@ def _find_header(row, columns: Optional[dict] = None):
     col = lambda role: None if role in ask else roles[role][0]
     name = lambda role: None if role in ask else text(roles[role][0])
     if wide:
-        return {"layout": "wide", "date": col("date"), "cols": wide, "names": {text(i): c for i, c in wide}, "date_name": name("date"), "ask": ask}
+        return {"layout": "wide", "date": col("date"), "cols": wide, "names": {text(i): c for i, c in wide}, "date_name": name("date"), "ask": ask,
+                "missing": [r for r in missing if r in ask], "sentence": sentence}
     return {"layout": "long", "date": col("date"), "type": col("type"), "units": col("units"),
-            "date_name": name("date"), "type_name": name("type"), "units_name": name("units"), "ask": ask}
+            "date_name": name("date"), "type_name": name("type"), "units_name": name("units"), "ask": ask,
+            "missing": [r for r in missing if r in ask], "sentence": sentence}
 
 
 # ── the result ──────────────────────────────────────────────────────────────
@@ -305,6 +345,7 @@ class Parsed:
         self.sheet: Optional[str] = None
         self.other_sheets: list[str] = []
         self.column_choices: dict = {}             # role -> [{"name", "samples"}]: columns the user must pick between; then nothing is read
+        self.column_missing: list = []             # the roles in column_choices that no header word named (the rest had several candidates)
 
     @property
     def errors(self) -> list[dict]:
@@ -327,6 +368,7 @@ class Parsed:
             "fatal": self.fatal,
             "needs_column_choice": bool(self.column_choices),
             "column_choices": self.column_choices,  # {"units": [{"name": "UNITS", "samples": ["70", "19", "21"]}, ...]} while rows are withheld
+            "column_missing": self.column_missing,  # e.g. ["units"]: no header was recognised for it, so every free column is listed
         }
 
 
@@ -355,7 +397,7 @@ def _sample_text(v) -> str:
 
 
 def _read(rows_iter, out: Parsed, today: date, order: Optional[str], columns: Optional[dict] = None) -> None:
-    header, scanned, first_names = None, 0, []
+    header, scanned, first_names, best = None, 0, [], (0, None)
     for n, row in rows_iter:
         if header is None:
             scanned += 1
@@ -368,8 +410,15 @@ def _read(rows_iter, out: Parsed, today: date, order: Optional[str], columns: Op
             if found:
                 header, out.header_row = found, n
                 out.column_choices = {role: [{"name": name, "samples": []} for _, name in cands] for role, cands in found["ask"].items()}
-            elif scanned >= HEADER_SCAN_ROWS:
-                break
+                out.column_missing = found["missing"]
+            else:
+                roles, wide = _scan(row)
+                s = _found_sentence(roles, wide)
+                n_found = sum(bool(v) for v in roles.values()) + bool(wide)
+                if s and n_found > best[0]:
+                    best = (n_found, s)
+                if scanned >= HEADER_SCAN_ROWS:
+                    break
             continue
         if header["ask"]:
             # Several columns could fill a role: the first values of each candidate are all the user needs to tell them apart.
@@ -383,10 +432,15 @@ def _read(rows_iter, out: Parsed, today: date, order: Optional[str], columns: Op
         _data_row(n, row, header, out)
     if header is not None and header["ask"]:
         out.layout = header["layout"]
+        for role in header["missing"]:  # a column with nothing in it cannot be the answer
+            out.column_choices[role] = [c for c in out.column_choices[role] if c["samples"]]
+            if not out.column_choices[role]:
+                out.fatal, out.column_choices, out.column_missing = header["sentence"] + f" The first row has: {', '.join(first_names)}.", {}, []
+                return
         return
     if header is None:
         out.fatal = ("The file is empty." if not scanned else
-                     "We could not find the columns we need. The first row has: " + ", ".join(first_names) + ". We need a date column and either "
+                     (best[1] if best[1] else "We could not find the columns we need.") + " The first row has: " + ", ".join(first_names) + ". We need a date column and either "
                      "a blood type column and a units column, or one column per blood type (A+, A-, B+, B-, AB+, AB-, O+, O-).")
         return
     out.layout = header["layout"]

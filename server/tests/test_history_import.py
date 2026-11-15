@@ -509,6 +509,113 @@ def parse_cols(text, columns):
     return h.parse_history_upload("csv", text, TODAY, None, columns)
 
 
+# ── one role has no recognised header: the same question, not a dead end ──────
+
+VAULT = "Stock date,Blood group,Units counted in the vault,Notes\n2026-01-01,O+,5,fine\n2026-01-02,A+,6,\n2026-01-03,B-,7,low\n"
+
+
+class MissingRoleTests(unittest.TestCase):
+    def test_the_exact_header_from_the_report_is_recognised_through_the_synonym(self):
+        p = parse("Stock date,Blood group,Qty on hand\n2026-01-01,O+,5\n")
+        self.assertEqual((p.fatal, p.column_choices, p.column_missing), (None, {}, []))
+        self.assertEqual(p.mapping, {"date": "Stock date", "blood_type": "Blood group", "units": "Qty on hand"})
+        self.assertEqual(usable(p), [("2026-01-01", "O+", 5)])
+        xl = h.parse_history_upload("xlsx", xlsx_bytes([["Stock date", "Blood group", "Qty on hand"], [dt.datetime(2026, 1, 1), "O+", 5]]), TODAY)
+        self.assertEqual(usable(xl), [("2026-01-01", "O+", 5)])
+
+    def test_every_added_synonym_is_recognised_whole(self):
+        for u in ("qty on hand", "quantity on hand", "qty available", "stock level", "Stock Levels", "in stock", "current stock", "units in stock",
+                  "number of units", "quantity available", "qty in stock", "stock quantity", "stock count", "available units"):
+            p = parse(f"date,type,{u}\n2026-01-01,O+,5\n")
+            self.assertEqual((p.column_choices, usable(p)), ({}, [("2026-01-01", "O+", 5)]), u)
+        for d in ("date recorded", "recorded date", "date of record", "reporting date", "date reported", "count date", "date of count", "date counted"):
+            p = parse(f"{d},type,units\n2026-01-01,O+,5\n")
+            self.assertEqual((p.column_choices, usable(p)), ({}, [("2026-01-01", "O+", 5)]), d)
+
+    def test_synonyms_still_match_whole_headers_only(self):
+        # "stock level notes" and "units counted" contain synonyms but are not one: the units role stays missing
+        for u in ("stock level notes", "units counted", "instock items"):
+            p = parse(f"date,type,{u}\n2026-01-01,O+,5\n")
+            self.assertEqual((list(p.column_choices), p.column_missing), (["units"], ["units"]), u)
+
+    def test_a_missing_units_column_is_asked_with_every_free_column_and_its_first_three_values(self):
+        p = parse(VAULT)
+        self.assertEqual((p.fatal, p.rows, p.column_missing), (None, [], ["units"]))
+        self.assertEqual(p.column_choices, {"units": [{"name": "Units counted in the vault", "samples": ["5", "6", "7"]},
+                                                      {"name": "Notes", "samples": ["fine", "low"]}]})  # not Stock date or Blood group
+        v = p.preview()
+        self.assertEqual((v["needs_column_choice"], v["column_missing"], v["row_counts"]["usable"], v["layout"]), (True, ["units"], 0, "long"))
+
+    def test_choosing_it_reads_that_column_through_the_usual_units_rules(self):
+        p = parse_cols(VAULT, {"units": "Units counted in the vault"})
+        self.assertEqual((p.column_choices, p.column_missing, p.fatal), ({}, [], None))
+        self.assertEqual(p.mapping, {"date": "Stock date", "blood_type": "Blood group", "units": "Units counted in the vault"})
+        self.assertEqual(usable(p), [("2026-01-01", "O+", 5), ("2026-01-02", "A+", 6), ("2026-01-03", "B-", 7)])
+        bad = parse_cols("Stock date,Blood group,Counted\n2026-01-01,O+,-3\n2026-01-02,A+,2.5\n2026-01-03,B-,\n2026-01-04,O-,9\n", {"units": "Counted"})
+        self.assertEqual(usable(bad), [("2026-01-04", "O-", 9)])
+        self.assertEqual([e["row"] for e in bad.problems], [2, 3, 4])      # negative, decimal and blank are skipped with a reason, never a 0
+
+    def test_a_chosen_column_most_of_whose_values_cannot_be_read_shows_in_the_skipped_list(self):
+        p = parse_cols(VAULT, {"units": "Notes"})
+        self.assertEqual((len(p.rows), len(p.problems)), (0, 3))
+        v = p.preview()
+        self.assertEqual((v["row_counts"], v["fatal"]), ({"total": 3, "usable": 0, "skipped": 3}, None))
+        self.assertIn("fine", v["problems"][0]["reason"] + str(p.problems[0]))   # says what it could not read
+        dates = parse_cols("Date,Blood group,Qty,Notes\nnope,O+,5,x\nnever,A+,6,y\n2026-01-01,B-,7,z\n", {"date": "Notes"})
+        self.assertEqual((len(dates.rows), len(dates.problems)), (0, 3))
+
+    def test_a_missing_date_or_blood_type_column_is_asked_the_same_way(self):
+        p = parse("Blood group,Units,As recorded\nO+,5,2026-01-01\nA+,6,2026-01-02\n")
+        self.assertEqual((p.column_missing, p.column_choices), (["date"], {"date": [{"name": "As recorded", "samples": ["2026-01-01", "2026-01-02"]}]}))
+        self.assertEqual(usable(parse_cols("Blood group,Units,As recorded\nO+,5,2026-01-01\n", {"date": "As recorded"})), [("2026-01-01", "O+", 5)])
+        t = parse("Date,Units,Kind\n2026-01-01,5,O pos\n")
+        self.assertEqual((t.column_missing, list(t.column_choices)), (["type"], ["type"]))
+        self.assertEqual(usable(parse_cols("Date,Units,Kind\n2026-01-01,5,O pos\n", {"type": "Kind"})), [("2026-01-01", "O+", 5)])
+
+    def test_a_wide_file_with_no_date_header_asks_for_the_date(self):
+        p = parse("Remarks,O+,O-\n2026-01-01,5,6\n")
+        self.assertEqual((p.layout, p.column_missing, list(p.column_choices)), ("wide", ["date"], ["date"]))
+        self.assertEqual(usable(parse_cols("Remarks,O+,O-\n2026-01-01,5,6\n", {"date": "Remarks"})), [("2026-01-01", "O+", 5), ("2026-01-01", "O-", 6)])
+
+    def test_the_question_does_not_hide_another_role_that_also_has_several_candidates(self):
+        p = parse("Date,As of,Blood group,Qty\n2026-01-01,2026-02-01,O+,5\n")
+        self.assertEqual((sorted(p.column_choices), p.column_missing), (["date"], []))   # two date candidates: asked, but not 'missing'
+
+    def test_a_column_already_used_for_another_role_cannot_be_chosen_for_the_missing_one(self):
+        with self.assertRaises(h.HistoryFileError) as cm:
+            parse_cols(VAULT, {"units": "Blood group"})
+        self.assertIn("already used", str(cm.exception))
+        with self.assertRaises(h.HistoryFileError):
+            parse_cols(VAULT, {"units": "Nope"})
+
+    def test_two_roles_missing_is_the_plain_error_naming_what_was_found(self):
+        p = parse("Stock date,Counted,Notes\n2026-01-01,5,x\n")
+        self.assertIsNone(p.layout)
+        self.assertEqual(p.column_choices, {})
+        self.assertTrue(p.fatal.startswith("We found a date column but could not tell which columns hold the blood type and the number of units."))
+        self.assertIn("Stock date, Counted, Notes", p.fatal)
+        self.assertEqual(parse("name,city\nx,y\n").fatal[:38], "We could not find the columns we need.")  # nothing found: as before
+
+    def test_no_free_column_left_to_choose_is_the_plain_error(self):
+        for text in ("Stock date,Blood group\n2026-01-01,O+\n", "Stock date,Blood group,\n2026-01-01,O+,5\n"):   # a blank header cannot be named
+            p = parse(text)
+            self.assertEqual((p.column_choices, p.rows), ({}, []))
+            self.assertTrue(p.fatal.startswith("We found a date column and a blood type column but could not tell which column holds the number of units."), text)
+
+    def test_a_column_with_nothing_in_it_is_not_offered_and_none_left_is_the_plain_error(self):
+        p = parse("Stock date,Blood group,Empty,Counted\n2026-01-01,O+,,5\n")
+        self.assertEqual([c["name"] for c in p.column_choices["units"]], ["Counted"])
+        q = parse("Stock date,Blood group,Empty\n2026-01-01,O+,\n")
+        self.assertEqual((q.column_choices, q.fatal is not None), ({}, True))
+        self.assertIn("number of units", q.fatal)
+
+    def test_the_same_choice_through_the_workbook_reader(self):
+        wb = xlsx_bytes([["Stock date", "Blood group", "Units counted in the vault"], [dt.datetime(2026, 1, 1), "O+", 5]])
+        self.assertEqual(h.parse_history_upload("xlsx", wb, TODAY).column_missing, ["units"])
+        got = h.parse_history_upload("xlsx", wb, TODAY, None, {"units": "Units counted in the vault"})
+        self.assertEqual(usable(got), [("2026-01-01", "O+", 5)])
+
+
 # ── a missing optional library must never stop the server ────────────────────
 
 class MissingLibrariesTests(unittest.TestCase):

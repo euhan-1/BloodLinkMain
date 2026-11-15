@@ -5,7 +5,7 @@ import {
   type ColumnCandidate, type ColumnChoices, type ColumnRole, type DateOrder, type HistoricalUploadResult, type HistoryPreview,
 } from "../lib/api";
 import {
-  COLUMN_QUESTIONS, COLUMN_ROLE_ORDER, SUPPORTED_FILES_LINE, countsSentence, samplesText, dateChoices, dateSentence, layoutSentence, moreProblemsLine, problemLine, repeatedSentence,
+  COLUMN_QUESTIONS, COLUMN_ROLE_ORDER, SUPPORTED_FILES_LINE, columnHint, countsSentence, samplesText, dateChoices, dateSentence, layoutSentence, moreProblemsLine, problemLine, repeatedSentence,
   sampleDate, saveState, savedSentence, sheetSentence,
 } from "../lib/historyUpload";
 
@@ -27,6 +27,7 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
   const [example, setExample] = useState<HistoryPreview["ambiguous_example"]>(null);
   const [columns, setColumns] = useState<ColumnChoices>({});
   const [questions, setQuestions] = useState<Partial<Record<ColumnRole, ColumnCandidate[]>>>({}); // kept once asked, so the answer can be changed
+  const [missingRoles, setMissingRoles] = useState<ColumnRole[]>([]); // asked because no header was recognised; kept like `questions`
   const [busy, setBusy] = useState<"reading" | "saving" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<HistoricalUploadResult | null>(null);
@@ -38,7 +39,7 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
   useEffect(() => { if (preview === null && focusChooseNext.current) { focusChooseNext.current = false; chooseRef.current?.focus(); } }, [preview]);
 
   function reset() {
-    setFile(null); setPreview(null); setOrder(null); setExample(null); setColumns({}); setQuestions({}); setError(null);
+    setFile(null); setPreview(null); setOrder(null); setExample(null); setColumns({}); setQuestions({}); setMissingRoles([]); setError(null);
     if (fileRef.current) fileRef.current.value = "";
   }
 
@@ -60,7 +61,10 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
       const p = await previewHistoricalUpload(f, choice, cols);
       if (mine !== readGeneration.current) return;
       if (p.ambiguous_dates && p.ambiguous_example) setExample(p.ambiguous_example);
-      if (p.needs_column_choice) setQuestions((q) => ({ ...q, ...p.column_choices }));
+      if (p.needs_column_choice) {
+        setQuestions((q) => ({ ...q, ...p.column_choices }));
+        setMissingRoles((m) => [...new Set([...m, ...(p.column_missing ?? [])])]);
+      }
       setPreview(p);
     } catch (err) {
       if (mine !== readGeneration.current) return;
@@ -79,6 +83,7 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
     setExample(null);
     setColumns({});
     setQuestions({});
+    setMissingRoles([]);
     setFile(f);
     read(f, null, {});
   }
@@ -172,7 +177,7 @@ export function HistoryUpload({ hasRealHistory, onSaved }: { hasRealHistory: boo
           {!preview.fatal && askedRoles.map((role) => (
             <fieldset key={role} className="rounded-md border border-status-watch-border bg-status-watch-tint px-3 py-3">
               <legend className="px-1 text-[14px] font-semibold text-status-watch-text">{COLUMN_QUESTIONS[role]}</legend>
-              <p className="text-[14px] text-status-watch-text mb-2">More than one column could be it. Pick the one to use; the others are left out.</p>
+              <p className="text-[14px] text-status-watch-text mb-2">{columnHint(missingRoles.includes(role))}</p>
               <div className="space-y-2">
                 {(questions[role] ?? []).map((c) => (
                   <label key={c.name} className="flex items-start gap-2.5 text-[14px] text-status-watch-text cursor-pointer">

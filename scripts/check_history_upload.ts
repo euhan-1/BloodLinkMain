@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import type { HistoryPreview } from "../src/app/lib/api.ts";
 import {
-  COLUMN_QUESTIONS, COLUMN_ROLE_ORDER, samplesText, SUPPORTED_FILES_LINE, countsSentence, dateChoices, dateSentence, layoutSentence, moreProblemsLine, problemLine, repeatedSentence, saveState,
+  COLUMN_QUESTIONS, COLUMN_ROLE_ORDER, columnHint, samplesText, SUPPORTED_FILES_LINE, countsSentence, dateChoices, dateSentence, layoutSentence, moreProblemsLine, problemLine, repeatedSentence, saveState,
   savedSentence, sheetSentence,
 } from "../src/app/lib/historyUpload.ts";
 
@@ -13,7 +13,7 @@ const base: HistoryPreview = {
   file_type: "csv", sheet: null, other_sheets: [], layout: "long", mapping: { date: "Date", blood_type: "Group", units: "Qty" }, header_row: 1,
   date_format: "year-month-day, like 2026-11-10", date_order: null, ambiguous_dates: false, ambiguous_example: null,
   row_counts: { total: 1210, usable: 1204, skipped: 6 }, repeated: 0, sample_rows: [], problems: [], more_problems: 0, fatal: null,
-  needs_column_choice: false, column_choices: {},
+  needs_column_choice: false, column_choices: {}, column_missing: [],
 };
 
 eq(SUPPORTED_FILES_LINE, ".csv or .xlsx, one date per row.", "the supported-files line");
@@ -54,6 +54,13 @@ eq(samplesText(["70", "19", "21"]), "First values: 70, 19, 21", "first values of
 eq(samplesText([]), "No values in the first rows", "a candidate with no values");
 eq(saveState({ ...base, needs_column_choice: true, column_choices: { units: [] } }, false, true), { canSave: false, why: "Choose which column to use to continue." }, "no save until a column is chosen");
 eq(saveState(base, false, false).canSave, true, "no column question, no wait");
+// a role no header was recognised for uses the same question, with its own line; all three roles are asked in plain words
+eq(COLUMN_QUESTIONS.date, "Which column holds the date?", "the date question");
+eq(COLUMN_QUESTIONS.type, "Which column holds the blood type?", "the blood type question");
+eq(columnHint(true).startsWith("We could not tell which column this is"), true, "the not-recognised line");
+eq(columnHint(false).startsWith("More than one column could be it"), true, "the several-candidates line");
+eq(saveState({ ...base, needs_column_choice: true, column_choices: { date: [] }, column_missing: ["date"] }, false, true).canSave, false, "no save until the missing column is chosen");
+eq(saveState({ ...base, fatal: "We found a date column and a blood type column but could not tell which column holds the number of units." }, false).canSave, false, "the plain error blocks save");
 
 const words = [layoutSentence(base), dateSentence(base) ?? "", countsSentence(base), SUPPORTED_FILES_LINE, ...choices.map((c) => c.label + c.detail),
   ...Object.values(COLUMN_QUESTIONS)].join(" ");
@@ -74,7 +81,7 @@ if (/<HistoryUpload/.test(dash) === false || /snapshot_date, blood_type and unit
 
 if (!/uploadHistoricalInventorySnapshots\(file, order, columns\)/.test(screen)) fail("the column choice must be sent again with the save, like the date order");
 if (!/previewHistoricalUpload\(f, choice, cols\)/.test(screen)) fail("the column choice must be sent with the preview");
-for (const t of ["chooseColumn", "COLUMN_QUESTIONS[role]", "samplesText(c.samples)", "history-column-"]) if (!screen.includes(t)) fail(`${t} missing from the column question`);
+for (const t of ["chooseColumn", "COLUMN_QUESTIONS[role]", "samplesText(c.samples)", "history-column-", "columnHint(missingRoles.includes(role))"]) if (!screen.includes(t)) fail(`${t} missing from the column question`);
 const apiSource = readFileSync(new URL("../src/app/lib/api.ts", import.meta.url), "utf8");
 const serverSource = readFileSync(new URL("../server/main.py", import.meta.url), "utf8");
 for (const p of ["units_column", "date_column", "type_column"]) {
@@ -87,7 +94,7 @@ for (const p of ["units_column", "date_column", "type_column"]) {
 const bodyOf = (name: string): string =>
   (screen.match(new RegExp(`function ${name}\\(.*?\\) \\{[\\s\\S]*?\\n  \\}\\n`))?.[0] ?? fail(`function ${name} not found`)).replace(/\/\/.*$/gm, "");
 const reset = bodyOf("reset");
-for (const t of ["setFile(null)", "setPreview(null)", "setOrder(null)", "setExample(null)", "setColumns({})", "setQuestions({})", "setError(null)", 'fileRef.current.value = ""']) {
+for (const t of ["setFile(null)", "setPreview(null)", "setOrder(null)", "setExample(null)", "setColumns({})", "setQuestions({})", "setMissingRoles([])", "setError(null)", 'fileRef.current.value = ""']) {
   if (!reset.includes(t)) fail(`Cancel must reset the preview state: reset() lacks ${t}`);
 }
 const cancel = bodyOf("cancel");

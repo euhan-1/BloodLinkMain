@@ -546,6 +546,7 @@ export type HistoryPreview = {
   fatal: string | null;
   needs_column_choice: boolean;
   column_choices: Partial<Record<ColumnRole, ColumnCandidate[]>>;
+  column_missing: ColumnRole[]; // roles in column_choices that no header was recognised for (the rest had several candidates)
 };
 
 function withChoices(path: string, order?: DateOrder | null, columns?: ColumnChoices | null): string {

@@ -3598,8 +3598,10 @@ def upload_historical_inventory_snapshots(
     if parsed.ambiguous:  # before anything is written, not even the upload record
         raise HTTPException(status_code=400, detail="Some dates could be read day-first or month-first. Choose one and save again.")
     if parsed.column_choices:
-        raise HTTPException(status_code=400, detail="More than one column could be used for " + " and ".join(
-            {"units": "the units", "date": "the date", "type": "the blood type"}[role] for role in parsed.column_choices) + ". Choose which one and save again.")
+        label = {"units": "the units", "date": "the date", "type": "the blood type"}
+        said = [f"We could not tell which column holds {label[r]}." if r in parsed.column_missing else f"More than one column could be used for {label[r]}."
+                for r in parsed.column_choices]
+        raise HTTPException(status_code=400, detail=" ".join(said) + " Choose which one and save again.")
     valid_rows, errors = parsed.rows, parsed.errors
 
     rows_processed = len(valid_rows)
