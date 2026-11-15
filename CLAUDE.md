@@ -15,7 +15,9 @@ requests, SARIMAX demand forecasting, donor broadcast.
 - **Keep `server/requirements.txt` lean.** scikit-learn and joblib OOM the
   512 MB instance; they live in `requirements-dev.txt` only. Every direct dependency is
   pinned, numpy included (imported directly, but only transitive until 2026-10-29) and pytest in the dev
-  file; transitive dependencies are not pinned.
+  file; transitive dependencies are not pinned. `openpyxl==3.1.5` (the .xlsx upload; about 2 MB on disk, `et_xmlfile` comes with it) and
+  `defusedxml==0.7.1` (32 KB; makes openpyxl refuse XML entity payloads) are direct, pinned, and imported only when a workbook is read (see
+  **The historical upload**): a missing one must never stop the server from starting.
 
 ## Topology
 
@@ -141,7 +143,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `AUTO_ORDER_SELECTION_AFTER_UPLOAD` (default false; when false the upload logs one `[order-selection] skipped` line). Turn it on
   only knowingly: it upserts over existing `facility_sarimax_order` rows (with a new soundness baseline), deletes the type's
   forecast cache, takes the instance's CPU for what is estimated at tens of minutes (one fit is 12-20 s deployed; the 72-fit run was
-  never timed there), and has no guard for any facility (not 158, which has 168 days of history and no stored order today). The
+  never timed there), and has no guard for any facility (not 158, the demo bank, which had 168 days of history and no stored order when last counted, before its restore: see **Facility data**). The
   inventory and historical uploads are plain `def`s so their blocking work runs in the threadpool, not on the event loop; the donor
   upload is still `async def`.
 - **Which order a fit uses** (`_resolve_order`), in precedence: (1) the grid-searched
@@ -168,9 +170,10 @@ requests, SARIMAX demand forecasting, donor broadcast.
   per facility: `archived_expired` and `expired_still_reserved`. It changes no stock figure). October 1-25, 2026 has no rows
   for any facility and cannot be recovered: the job did not exist before 2026-10-27 and upload 605's undo on
   2026-09-30 removed what Northside had. `_resample_daily_series` carries the last value
-  forward over an unobserved day. NaN instead was measured and rejected (O+ fails worse under it, and non-finite
+  forward over an unobserved day, and, on a day that came only from uploads, over a blood type with no row (see **The forecast reads at most 730
+  days**). NaN instead was measured and rejected (O+ fails worse under it, and non-finite
   features would disable the AI selector). Count observed days with `_count_observed_days`, never
-  `len(daily_series)`; the API's `days_of_history` is observed days.
+  `len(daily_series)`; the API's `days_of_history` is observed days over the whole history, not just the 730-day window.
 - **The soundness guard** (`_sarimax_fit_is_sane`) rejects a fit whose AIC per observation exceeds its stored
   selection baseline (`facility_sarimax_order.selection_aic_per_obs`) by more than 0.05; a type whose row has no
   baseline is unguarded. A rejected fit is retried once (Nelder-Mead, then L-BFGS), then the type is served the
@@ -178,7 +181,23 @@ requests, SARIMAX demand forecasting, donor broadcast.
   because the October 1-25 carry-forward turns 26 days of real change into a one-day step on the 26th and their
   full-series fits degrade (that step, relative to a type's usual 26-day variability, has rank correlation 0.93 with
   the degradation). A replay of 2,213 fits found no clean alternative gate, so the guard is unchanged and the
-  limitation is recorded in the selector JSON: do not widen 0.05 or re-baseline without new evidence.
+  limitation is recorded in the selector JSON: do not widen 0.05 or re-baseline without new evidence. That was Northside's state on 2026-10-29: its history was undone and
+  re-uploaded on 2026-11-14/15 (see **Facility data**), a stored order exists for all eight types, and which of them are on the linear trend now
+  has not been re-checked. **A facility with more than 730 recorded days and a stored order**: the baseline came from a selection on the full
+  series and the fit now sees only the last 730 days, so the 0.05 comparison can reject fits it used to accept (none exists today).
+- **The forecast reads at most the last 730 calendar days per blood type** (`FORECAST_WINDOW_DAYS`, `_forecast_daily_series`, used by
+  `get_forecast` and by the chart totals `_history_totals`, so the chart and the fit agree; 2026-11-15). The series is built exactly as before
+  (`_resample_daily_series`) and then cut to its last 730 days ending today; a series of 730 days or fewer is returned untouched, byte for byte.
+  The first day of the window holds what the full series held there: the previous day's value when it was not recorded, a real 0 only on a day
+  the app recorded. **Not changed by the window**: the cache key (`_read_cached_sarimax_many` reads only the series' last value),
+  `facility_sarimax_order`, the guard's baseline, and order selection (it reads the full series and is not windowed); **the 30 recorded days
+  rule and `days_of_history` still count distinct days over the whole history**; the history chart's 90-day window and its counts; and **the
+  linear-trend fallback, which still regresses over the whole history** (cheap, so not windowed). Things to know: a facility with 30 or more
+  old recorded days but fewer than 30 inside the window still passes the 30-day rule and fits mostly carried values; the AI order
+  recommendation reads the windowed series. **A skipped upload row is carried forward, not zeroed**: `GET /forecast` reads
+  `upload_history_id` with the history, and on a day that came only from uploads (no row written by the app, `_carry_forward_dates`) a blood
+  type with no row takes the previous value; on a day the app wrote, a missing type is still a real 0 (the app writes all eight). Complete data
+  gives the same series as before (tested against the old function). The order-selection read does not read the tag and keeps the old fill.
 - **Re-running order selection is not free.** `select_orders.py` / `_run_order_selection_for_facility` overwrites each
   type's `facility_sarimax_order` row and gives every type a baseline. On 2026-10-29 it sent B- to the linear trend,
   skipped AB- and O+ (the hold-out warm refit reports not_converged), and was undone from a dump. There is no audit
@@ -203,12 +222,56 @@ requests, SARIMAX demand forecasting, donor broadcast.
   30 s, never more than 60; a rejection is never remembered; the admin deactivation clears it), so deactivating a facility ends its
   sessions. `GET /facilities` needs a login. `/health` is `{"status":"ok"}` or a bare 503 (the error goes to the log), and `/docs`,
   `/redoc`, `/openapi.json` are off unless `ENABLE_API_DOCS`. The inventory and historical uploads refuse a body over
-  `MAX_UPLOAD_BYTES` (default 5 MB, 413, by `Content-Length` and while reading; `upload_limits.py`) and a file that is not plain text; the
-  donor upload is outside that. `GET /facilities/geocode` is public (registration) but limited: 10 lookups a minute per address, at least
+  `MAX_UPLOAD_BYTES` (default 5 MB, 413, by `Content-Length` and while reading; `upload_limits.py`) and a file that is not plain text (the
+  historical upload and its preview also take a real .xlsx: see **The historical upload**); the donor upload is outside that. `GET /facilities/geocode` is public (registration) but limited: 10 lookups a minute per address, at least
   5 characters, a 5-minute cache, one call a second to Nominatim for the whole process, and an identifying User-Agent.
 - **Uploads are batched** — `INSERT … SELECT … FROM unnest(...)`, never
-  row-by-row. Three CSV parsers require exact column names, filter extras, and
-  reject on a missing required column.
+  row-by-row. Two CSV parsers (inventory, donors) require exact column names, filter extras, and
+  reject on a missing required column; the historical upload reads through `history_import.py` instead (synonyms, two layouts, .xlsx), and
+  `_parse_historical_snapshot_csv` stays in `main.py` with its tests but **no endpoint calls it any more**.
+- **The historical upload** (`POST /forecast/historical-upload/preview`, then `POST /forecast/historical-upload`; `server/history_import.py`,
+  `upload_limits.py`, `components/HistoryUpload.tsx`, `lib/historyUpload.ts`; `tests/test_history_import.py`, `tests/test_history_upload_endpoints.py`,
+  `scripts/check_history_upload.ts`; blood banks only, a hospital gets 403 on both). **.csv or .xlsx**, first sheet only (the preview names other
+  sheets that hold data); `.xls`, `.xlsm` and `.xlsb` are refused with "save it as .xlsx or .csv", as are a workbook with macros, a renamed zip or
+  PDF, and a workbook over 50 MB unpacked (the ZIP signature that makes a CSV "binary" is allowed only for a name ending .xlsx, and only if
+  it really is a workbook). **One function reads it for both calls** (`parse_history_upload`, which also gives the problems list), so what the
+  preview showed is what is saved; the save is the same three batched statements, the write log and the cache invalidation as before. Layouts:
+  *long* (date, blood type, units) and *wide* (one date column and one column per blood type, turned into long rows); any column order, extra
+  columns ignored, the header may sit under up to 9 title rows. Header names are matched whole-word after lower-casing and dropping punctuation
+  (date: date, snapshot_date, day, as of, stock date...; type: blood_type, blood group, group, type, abo...; units: units, qty, quantity,
+  stock, count, on hand, balance, units available...; a header that is itself a blood type is recognised first). Blood types: `O+`, `o+`,
+  `O pos`, `O positive`, `Opositive`, `O+ve`, with the Unicode minus too; anything else is a skipped row, never guessed. Dates: ISO, year-first
+  with `/` or `.`, day/month/year or month/day/year with `/ . -` and a 4-digit year, written months ("10 Nov 2026"), Excel date cells; strictly
+  before today. **A numeric date such as 03/04/2026 is never guessed**: a part over 12 in the file proves its order, and with no proof (or
+  proof of both) the preview returns `ambiguous_dates`, withholds every row, and the user answers day-first or month-first (`date_order=dmy|mdy`,
+  re-sent on the save; a save without it is a 400 that writes nothing, not even an upload record). Units: whole numbers 0 to 1,000,000; "1,200"
+  and "12.0" are accepted; negatives, decimals, blanks and text are skipped with a plain reason (a blank is never a 0). **When two columns could
+  be the units, date or blood type column** (the Northside file has both `units_available` and `UNITS`) the preview does not refuse: it returns
+  `needs_column_choice` and `column_choices` (each candidate's header and first three values) and reads nothing until the user picks;
+  `units_column`, `date_column` and `type_column` (the header text) are optional query parameters on both calls, like `date_order`, and must be
+  re-sent on the save; a name that is not a header is a 400, and the other candidates are ignored. The preview returns layout, columns used, date
+  format, row counts (total, usable, skipped), up to 10 sample rows as they will be stored, up to 20 problems and a count of the rest, and
+  `repeated` (when a date and type repeat, the last one wins). The save's `errors` list is the skipped rows. **The frontend** is choose a
+  file, then "We read your file like this", then **Save to my history** or **Cancel**; the column and date questions block Save; Cancel drops
+  the preview, the file and every choice, never calls the server, is disabled while a save runs, and Escape does the same; "Choose a different
+  file" is a text link. **Limits**: `MAX_UPLOAD_BYTES` 5 MB; **`MAX_ENTRIES` 15,000 date-and-type figures per file** (about 5 years of eight types;
+  lowered from 50,000 on 2026-11-15 after the capacity test), refused with a plain message; the cap is per file, so uploads still add up (what the
+  forecast reads is bounded separately). **openpyxl and defusedxml are loaded lazily** (inside the .xlsx path only): if either is missing only
+  an .xlsx upload fails, with a 503 ("Excel files can't be read right now; save the file as .csv and try again."), and the server, CSV
+  uploads and the preview of a CSV work as usual (a test blocks both imports and checks that). **An .xlsx original is not stored**
+  (`upload_history.raw_content` is text and NULL for a workbook; a CSV's original is kept and can be downloaded), which the privacy notice says.
+  A CSV must be UTF-8 (no fallback for the Windows ANSI "CSV"). `UploadSizeLimitMiddleware` covers the preview path too.
+- **Capacity of the upload and the fit, measured locally on 2026-11-15** (Windows, Python 3.13, the scratch Postgres on the same machine; memory
+  is the Windows working set and tracemalloc; **these are local figures, not Render's: how much slower Render is for this code is UNKNOWN**
+  (10x to 40x was assumed for parsing; the 12-20 s deployed against 0.3 s local for a fit suggests 40-67x for fits)). `import main` is 70 MB,
+  and 179 MB once pandas and statsmodels are imported (1.3 s). Upload, long layout, 3 columns, one row per day per type: CSV 20,000 rows (0.35 MB)
+  parse 0.10 s, save 1.0 s; CSV 50,000 rows (0.86 MB) parse 0.25 s, +24 MB over baseline (+35 MB with the save), save 2.6 s; .xlsx 20,000 rows
+  (0.30 MB) parse 1.1 s, +26 MB, save 1.75 s; .xlsx 50,000 rows (0.74 MB) parse 2.5 s, +43 MB (+52 MB with the save), save 5.3 s (about 2.3 to
+  2.8 s of each save is database work, local). **Which limit binds first**: for a 3-column CSV and for an .xlsx the entry cap (5 MB would be
+  about 300,000 and 330,000 rows); an 11-column export reaches 5 MB at about 53,000 rows. One cold fit of one blood type: 120 days 0.2 s
+  (+7 MB); 420 days 1.04 s (+16 MB); **730 days 1.53 s (+25 MB, 204 MB total)**; **1,800 days 2.96 s (+47 MB, 226 MB)**; 3,650 days 7.6 s
+  (+93 MB); 6,250 days 34 s (+243 MB, 423 MB), which is why the window below exists. Scaling the deployed 12-20 s (at 420 days) by those
+  ratios gives about 18-29 s per fit at 730 days and 34-57 s at 1,800 (two fits per request are allowed): UNKNOWN until measured on Render.
 - **A request names its component** (`COMPONENTS` in `server/main.py`: Packed RBC, Platelets; required, never
   defaulted, no DB CHECK). `confirm_release` and `/facilities/nearby` match it exactly, so search and release agree.
   A unit expiring on the release day is never released (`RELEASE_EXPIRY_FLOOR_DAYS`); `MIN_DAYS_TO_EXPIRY_AT_RELEASE`
@@ -288,7 +351,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
   each one from a type below 30 days carries `limited_history` (with the day count) and the row says "Limited history (6 of 30
   days)"; so below 30 days the outlook is a limited-history recommendation or "Not enough history", never On track. At 30 days or
   more neither marking appears. Measured 2026-10-31 (read-only, from the cache and stored snapshots): 0 of 8 types at Northside
-  (430 days) read At risk; on the four seeded banks with 6-8 snapshot days it would have fired on every type not already ordering
+  (430 days then; its history is 420 uploaded days plus the days since, see **Facility data**) read At risk; on the four seeded banks with 6-8 snapshot days it would have fired on every type not already ordering
   (22 of 22), because that interval is wider than the stock itself, which is why the gate exists. With `MIN_DAYS_REQUIRED = 3` the
   system still recommends an order on three days of history, and the soundness guard can flip a type's method overnight: both are
   recorded in the selector JSON's `limitations` (and in `train_sarimax_selector.py`, which generates it: edit both).
@@ -469,7 +532,7 @@ requests, SARIMAX demand forecasting, donor broadcast.
   style +5%, the ranges of off and on overlap in places and the same build drifts between sessions. **Layout shift**: none from sending, from polls
   or from a message arriving; two shifts after the Dashboard loaded, both on a click the script made with `.click()` (so the browser does not
   call it input): opening a conversation (0.013 at 1280, 0.031 at 390: the log's "Loading" line becomes its rows) and expanding a finished request
-  (0.011, 0.020: the rows below it move down, which is the point). **Privacy notice 1.1** (see its bullet).
+  (0.011, 0.020: the rows below it move down, which is the point). **Privacy notice 1.1** (now 1.2: see its bullet).
 - **Live sync** (`GET /sync`, `lib/liveSync.ts`, `lib/liveSyncRuntime.ts`, `scripts/check_live_sync.ts`, `tests/test_sync.py`): one
   poller per signed-in tab asks `GET /sync` about every 15 s (±10 % jitter) **while the tab is visible**, instead of each screen polling
   its own endpoint, so a change another facility makes shows within about 15-17 s with no reload. No websocket and no SSE: they hold a
@@ -551,20 +614,23 @@ requests, SARIMAX demand forecasting, donor broadcast.
   conversation parts out, the old POST writes the old way. **Order**: backup, part 1, deploy the server, then part 2 (NOT NULL), which is the
   only step that can make an old writer fail and has its own file; see the header of each file, which is the instruction. The unread count is
   per facility and server-side (`conversation_reads`), after the owner's decision for option 2 of the proposal; the nav badge stays
-  "needs action". The privacy notice's chat statements were reworded in stage 2 (**version 1.1, 11 November 2026**: one conversation per other
+  "needs action". The privacy notice's chat statements were reworded in stage 2 (**version 1.1, 11 November 2026**, raised to 1.2 on 14 November 2026 for the upload line: one conversation per other
   facility, a message can be about no request, the stored read position, and that the other facility sees the whole conversation but is
   not shown how far you have read; `check_privacy.ts` requires that wording). **Why the version was raised**: no earlier statement became
   false, but the notice itself says "when this notice changes, the version number changes", a new item is now stored (a read position
   per facility per conversation) and a message may now exist with no request; a reworded notice under the old number would break its own
-  promise. There is no re-consent flow (`docs/BACKLOG.md` proposes asking the accounts that existed before; that now covers 1.0 to
-  1.1 as well): registrations from now on record 1.1, earlier ones keep their recorded 1.0 and NULL stays "not recorded". **Deploy
-  order for the version**: the server accepts only the version it names, so a Vercel build with 1.1 and a Render instance still on 1.0
+  promise. There is no re-consent flow (`docs/BACKLOG.md` proposes asking the accounts that existed before; that now covers 1.0 and
+  1.1 as well): registrations from now on record 1.2, earlier ones keep their recorded 1.0 or 1.1 and NULL stays "not recorded". **Deploy
+  order for the version**: the server accepts only the version it names, so a Vercel build with 1.2 and a Render instance still on 1.1
   (or the reverse) refuses registrations (400) until both are live; deploy the server first. `docs/DATA_DICTIONARY.md` was **not** regenerated (it introspects production,
   which does not have the tables yet): `docs/build_data_dictionary.py` has the descriptions and was dry-run against the scratch database.
 - **Privacy notice and consent (RA 10173)** (`/privacy`, `screens/PrivacyNotice.tsx`, text as data in `lib/privacyNotice.ts`,
-  `scripts/check_privacy.ts`, `tests/test_privacy_consent.py`, `server/migrate_add_privacy_consent.sql`). `/privacy` is handled in `App.tsx`
+  `scripts/check_privacy.ts`, `tests/test_privacy_consent.py`, `server/migrate_add_privacy_consent.sql`). **The notice is version 1.2, effective 14 November 2026** (`PRIVACY_NOTICE_VERSION` in
+  `main.py` and `privacyNotice.ts`; 1.0 at launch, 1.1 on 11 November 2026 for the conversations; 1.2 reworded the uploaded-files line: CSV stock
+  uploads keep the original text of the file so it can be downloaded again, .xlsx stock uploads keep only the rows read, not the file, and every
+  upload keeps a record of which account uploaded it and when). `/privacy` is handled in `App.tsx`
   before the signed-in branches (works signed out and signed in) and is linked from sign-in, Register and the account menu. **Every
-  statement in the notice was checked against the code, the schema or the running system on 2026-11-10; when one stops being true
+  statement in the notice was checked against the code, the schema or the running system on 2026-11-10 (the uploaded-files line again on 2026-11-14); when one stops being true
   (a retention job, an anonymise function, a new third party, a changed provider), change the text AND raise the version.** The check
   script forbids claims the code does not back (encryption at rest, "compliant", retention periods, guarantees) and requires the ones
   it must make. What the notice says is deliberately plain about the gaps: nothing is deleted automatically and there is no retention
@@ -627,14 +693,35 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `request` block and `summary` of `GET /requests/{id}` (`_request_block`, `_received_counts`), so history and receipt
   cannot disagree. Dates are written by `src/app/lib/dateFormat.ts` ("30 Oct 2026, 20:27"), never by `toLocale*`, so
   the table, the receipt and the chat timeline and bubbles agree (other screens still use `toLocale*`). Totals cover every match; `transfers` is capped at 500 with `truncated`.
-- **Undo** reads `inventory_snapshot_write_log` to restore displaced counts, and
-  clears `facility_forecast_cache` for the facility.
+- **Undo** (`undo_upload`, `_apply_historical_undo`, `_UNDO_WINNER_CTE`) reads `inventory_snapshot_write_log` to restore displaced counts, and
+  clears `facility_forecast_cache` for the facility. **Undoing a historical upload deletes the days it added**: each (date, type) it wrote goes
+  back to the newest log entry from an upload that has not been undone (its value and its tag), else the original organic value, and with no entry
+  the row is deleted. An upload made before the write log existed (before 2026-09-26, commit 34f8d2d) has no log rows, and its undo deletes
+  every row still tagged with it: that is how upload 21 (the demo bank's 150-day history) and upload 928 (Northside's 420 days) disappeared
+  on 2026-11-14 (see **Facility data**). **Since 2026-11-15 an upload logs the value of every row it overwrites, whatever its tag** (step 1 of the
+  save: an entry under the row's current tag, unless the log already holds one), so undoing the newer upload brings the older value back with
+  its older tag and undoing the older one still removes it, in any order (tested for chains of three). **Only for uploads made from now on**:
+  older overwrites left no entry and cannot be repaired, and an undo still deletes a key's row when no entry exists even if a legacy upload
+  now owns it. **The confirmation**: `GET /upload-history/{id}/undo-preview` adds `summary` for historical uploads (`days_deleted`,
+  `days_restored`, `first_date`, `last_date`, `deleted_first_date`, `deleted_last_date`, `days_remaining`, `forecast_min_days`; null once undone;
+  the old keys are unchanged) and the dialog says in words how many days go and how many remain; when 30 or more days go, or days go and under
+  30 would be left, it is a warning and Confirm stays disabled until "I understand this removes this history" is ticked (`lib/undoUpload.ts`,
+  `scripts/check_undo_upload.ts`; the server does not enforce the tick).
+- **Facility data, and what went wrong (2026-11-14/15).** **Northside** (facility 5) has 445 recorded days (read 2026-11-15): 420 from upload 933
+  (`northside_history_v2_nostep_units.csv`, 3 Aug 2025 to 26 Sep 2026, uploaded 15 Nov Manila time) and 25 written by the app (27-30 Sep, 26 Oct
+  on); this replaces the old "430 days". That file is `northside_history_v2_nostep.csv` with the `units_available` column removed: the original
+  has both `units_available` and `UNITS` (= `units_available` + 5), the strict reader used `UNITS`, and the new reader now asks which. The
+  October 1-25 hole remains, and all eight types have a stored order. **Facility 158 (Demo Blood Bank)** was restored on 15 Nov from
+  `demo/demo_historical_stock.csv` (150 days, 24 Apr to 20 Sep 2026), per Euhan; Claude did not re-check it (158 is off limits). **What
+  happened**: on 14 Nov test uploads were made and undone on both; upload 21 (158) predated the write log and upload 928 (Northside) owned all
+  its rows, so their undos deleted the days they had added (see **Undo**). **Lessons: never run test uploads or undo tests on 158 or Northside;
+  use a throwaway blood bank account and remove its rows afterwards.**
 
 ## Working expectations
 
 - Run the full suite before reporting done, with `TEST_DATABASE_URL` set to a
-  local scratch Postgres: `python -m pytest server/tests -q` (844 tests plus
-  160 subtests; use `server/.venv`, system Python lacks pytest). Never run
+  local scratch Postgres: `python -m pytest server/tests -q` (970 tests plus
+  176 subtests; use `server/.venv`, system Python lacks pytest). Never run
   tests via `python -m unittest` — that skips conftest and hits `.env`'s
   production `DATABASE_URL`, despite what older test docstrings say. `server/tests/conftest.py`
   refuses to run without it or against a non-local host, overrides
@@ -660,7 +747,9 @@ requests, SARIMAX demand forecasting, donor broadcast.
   `node scripts/check_live_sync.ts` (the shared poller: baseline, 304, one timer, hidden tab, backoff, 401/403 stop, restart) and
   `node scripts/check_accessibility.ts` (one h1 per screen state, headings keep their size, no title-only controls, dialog focus rules and wiring, chart text alternatives, status never colour alone, the password rule the forms state) and
   `node scripts/check_privacy.ts` (the Privacy Notice: contact address set, version equals the server's, required wording and forbidden claims, the `/privacy` route and its links; **it fails until `VITE_PRIVACY_CONTACT_EMAIL` is set**, e.g. `VITE_PRIVACY_CONTACT_EMAIL=you@your-domain node scripts/check_privacy.ts`) and
-  `node scripts/check_request_cache.ts` (the shared request layer under `apiGet`: in-flight sharing, the short cache, invalidation), each printing `ok`, plus
+  `node scripts/check_request_cache.ts` (the shared request layer under `apiGet`: in-flight sharing, the short cache, invalidation) and
+  `node scripts/check_history_upload.ts` (the historical upload's preview wording, column and date questions, Cancel resetting everything and never calling the server, the parameters sent) and
+  `node scripts/check_undo_upload.ts` (the undo confirmation's wording and its tick-box rule, and that every red Confirm button carries `dark:text-background`), each printing `ok`, plus
   `npm run typecheck`. The frontend has no component test runner.
   A red suite is a finding, not a footnote — "known failure" is how a real
   bug hides.

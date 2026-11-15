@@ -17,3 +17,6 @@ server/models/*
 
 # local audit reports, never committed
 .audit/
+
+# screenshot folders from UI checks (shots_upload, shots_undo, ...), never committed
+shots_*/

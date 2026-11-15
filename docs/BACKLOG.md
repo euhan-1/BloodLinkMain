@@ -5,7 +5,7 @@ Remove an entry when it ships.
 
 ## Consent for accounts that existed before the Privacy Notice
 
-*Update 2026-11-11: the notice is now version 1.1 (conversations and the stored read position). The proposal below applies to 1.0 to 1.1 as much as to "never asked": an account that consented to 1.0 is recorded as 1.0 and nothing asks it again.*
+*Update 2026-11-14: the notice is now version 1.2 (1.1 on 2026-11-11 for the conversations and the stored read position; 1.2 for the uploaded-files line). The proposal below applies to every earlier version as much as to "never asked": an account that consented to 1.0 or 1.1 is recorded as that version and nothing asks it again.*
 
 **Where it comes from.** The Register form now records consent (version and time) on the new account. Every account that exists today (9 on
 2026-11-10: 8 staff and 1 admin) has `users.privacy_consented_at`
@@ -55,6 +55,28 @@ itself when the release is confirmed (or the request leaves `accepted`), like th
   scheduled job on cron-job.org every few minutes, or checking at read time (the supplier's request lists and `GET /notifications` already
   poll every 20 to 25 seconds while the tab is open). A reminder is only useful to someone who is looking, so the read-time check may be enough.
 - A new type (for example `release_reminder`), not a revival of the old shared `transfer_confirmation_needed`: one type, one meaning.
+
+## Historical upload and forecast: known gaps
+
+Noticed while building the .xlsx upload, the undo warning and the 730-day forecast window (2026-11-15); each was left alone on purpose. See `CLAUDE.md`
+(**The historical upload**, **Undo**, **The forecast reads at most 730 days**).
+
+- **Overwrites made before 2026-11-15 cannot be undone back to the older value.** Uploads now log the value they overwrite whatever its tag, but
+  older ones did not, and an undo still deletes a key's row when no log entry exists even if a legacy upload now owns it. Possible hardening:
+  have the undo delete only rows still tagged with the undone upload, and leave a row another untracked writer owns.
+- **The 730-day window and order selection disagree.** Order selection reads the full series and stores a baseline from it; the forecast fits
+  the last 730 days. For a facility with more than 730 recorded days and a stored order the soundness guard (0.05 AIC per observation) can reject
+  fits it would have accepted. None exists today (Northside has 445 days). Fix when one does: select orders on the same windowed series, then
+  re-baseline (see "Re-running order selection is not free").
+- **The linear-trend fallback still regresses over the whole history.** Cheap, but an old stretch dilutes the slope. Window it the same way if it matters.
+- **Nothing caps a facility's total history across uploads.** `MAX_ENTRIES` (15,000) is per file; the forecast now reads at most 730 days, but
+  `inventory_snapshots` still grows and `days_of_history` counts it all.
+- **A facility with 30 or more old recorded days but fewer than 30 in the last 730** passes the 30-day rule and fits mostly carried-forward values.
+  Counting recorded days inside the window instead would change the rule; deliberately not done.
+- **Upload timings on Render are UNKNOWN.** The capacity figures are local (Windows); a 50,000-row .xlsx took 2.5 s to parse locally. If someone
+  times a large file on Render, `MAX_ENTRIES` can be revisited.
+- **Smaller:** a CSV saved in the Windows ANSI encoding is refused ("must be UTF-8"); two columns with the identical header text cannot be told
+  apart in the column question (the first is used); an .xlsx original is not kept (a CSV's is).
 
 ## Tests that fit a real SARIMAX can fail at a month boundary
 
